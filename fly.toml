@@ -1,0 +1,56 @@
+# fly.toml app configuration generated for qring-backend
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+
+app = "qring-backend"
+primary_region = "ams"
+
+[build]
+  dockerfile = "./Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  DEBUG = "false"
+  BACKEND_HOST = "0.0.0.0"
+  BACKEND_PORT = "8080"
+  API_V1_PREFIX = "/api/v1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 80
+
+  [[services.ports]]
+    number = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    number = 443
+    handlers = ["tls", "http"]
+
+  [[services.tcp_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+[metrics]
+  port = 9090
+  handlers = ["http"]
+  path = "/metrics"
