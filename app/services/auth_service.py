@@ -25,14 +25,16 @@ logger = logging.getLogger(__name__)
 
 try:
     import firebase_admin
+    from firebase_admin import credentials as firebase_credentials
     from firebase_admin import auth as firebase_auth
 except ImportError:
     firebase_admin = None
+    firebase_credentials = None
     firebase_auth = None
 
 
 def _ensure_firebase_app():
-    if firebase_admin is None or firebase_auth is None:
+    if firebase_admin is None or firebase_auth is None or firebase_credentials is None:
         raise AppException(
             "Firebase Admin SDK is not installed. Add firebase-admin to dependencies.",
             status_code=500,
@@ -46,6 +48,16 @@ def _ensure_firebase_app():
             return firebase_admin.get_app()
         if not settings.FIREBASE_PROJECT_ID:
             raise AppException("FIREBASE_PROJECT_ID is not configured", status_code=500)
+        service_account = _load_firebase_service_account()
+        if service_account:
+            cred = firebase_credentials.Certificate(service_account)
+            return firebase_admin.initialize_app(
+                credential=cred,
+                options={"projectId": settings.FIREBASE_PROJECT_ID},
+            )
+        logger.warning(
+            "Firebase service account credentials not configured. Falling back to default credentials lookup."
+        )
         return firebase_admin.initialize_app(options={"projectId": settings.FIREBASE_PROJECT_ID})
 
 
@@ -98,6 +110,25 @@ def _peek_token_claims(id_token: str) -> dict:
         }
     except Exception as exc:
         return {"error": f"peek_failed:{exc.__class__.__name__}"}
+
+
+def _load_firebase_service_account() -> dict | None:
+    raw_json = (settings.FIREBASE_SERVICE_ACCOUNT_JSON or "").strip()
+    if raw_json:
+        try:
+            return json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise AppException("FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON", status_code=500) from exc
+
+    raw_base64 = (settings.FIREBASE_SERVICE_ACCOUNT_BASE64 or "").strip()
+    if raw_base64:
+        try:
+            decoded = base64.b64decode(raw_base64).decode("utf-8")
+            return json.loads(decoded)
+        except Exception as exc:
+            raise AppException("FIREBASE_SERVICE_ACCOUNT_BASE64 is invalid", status_code=500) from exc
+
+    return None
 
 
 def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address: str = "") -> AuthResponse:

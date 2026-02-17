@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     PAYSTACK_PUBLIC_KEY: str = ""
     FRONTEND_BASE_URL: str = "http://localhost:5173"
     FIREBASE_PROJECT_ID: str = ""
+    FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
+    FIREBASE_SERVICE_ACCOUNT_BASE64: str = ""
     ADMIN_SIGNUP_KEY: str = ""
 
     @property
