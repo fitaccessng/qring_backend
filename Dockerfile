@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+ENV ENVIRONMENT=production
 
 # Install dependencies with caching
 COPY requirements.txt .
