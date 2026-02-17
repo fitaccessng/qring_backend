@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlparse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -67,6 +67,11 @@ class Settings(BaseSettings):
                 value = f"{parsed.scheme}://{parsed.netloc}"
             origins.append(value.rstrip("/"))
         return origins
+
+    @property
+    def cors_allow_origin_regex(self) -> Optional[str]:
+        value = (self.CORS_ALLOW_ORIGIN_REGEX or "").strip()
+        return value or None
 
 
 @lru_cache
