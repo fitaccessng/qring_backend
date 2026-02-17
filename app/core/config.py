@@ -23,7 +23,12 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
-    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ORIGINS: str = (
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "https://useqring.online,"
+        "https://www.useqring.online"
+    )
     # Dev-friendly default: allow localhost + RFC1918 private LAN ranges so phones/tablets on the same Wi-Fi can reach the API.
     # In production, set CORS_ORIGINS / CORS_ALLOW_ORIGIN_REGEX explicitly to your real domain(s).
     CORS_ALLOW_ORIGIN_REGEX: str = (
@@ -31,7 +36,8 @@ class Settings(BaseSettings):
         r"localhost|127\\.0\\.0\\.1|"
         r"192\\.168\\.\\d{1,3}\\.\\d{1,3}|"
         r"10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|"
-        r"172\\.(1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}"
+        r"172\\.(1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|"
+        r"useqring\\.online|www\\.useqring\\.online"
         r")(\\:\\d+)?$"
     )
 
