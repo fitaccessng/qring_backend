@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import List
+from urllib.parse import urlparse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -56,7 +57,16 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> List[str]:
-        return [v.strip() for v in self.CORS_ORIGINS.split(",") if v.strip()]
+        origins: list[str] = []
+        for raw in self.CORS_ORIGINS.split(","):
+            value = raw.strip()
+            if not value:
+                continue
+            parsed = urlparse(value)
+            if parsed.scheme and parsed.netloc:
+                value = f"{parsed.scheme}://{parsed.netloc}"
+            origins.append(value.rstrip("/"))
+        return origins
 
 
 @lru_cache
