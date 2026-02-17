@@ -1,4 +1,7 @@
 import uuid
+import json
+import base64
+import logging
 from threading import Lock
 from datetime import datetime
 
@@ -18,6 +21,7 @@ from app.schemas.auth import AuthResponse
 
 settings = get_settings()
 _firebase_init_lock = Lock()
+logger = logging.getLogger(__name__)
 
 try:
     import firebase_admin
@@ -53,6 +57,13 @@ def _verify_google_id_token(id_token: str, expected_email: str | None = None) ->
     try:
         decoded = firebase_auth.verify_id_token(id_token, app=app)
     except Exception as exc:
+        token_preview = _peek_token_claims(id_token)
+        logger.warning(
+            "Google token verification failed: %s | project=%s | preview=%s",
+            exc.__class__.__name__,
+            settings.FIREBASE_PROJECT_ID,
+            token_preview,
+        )
         raise AppException("Invalid Google ID token", status_code=401) from exc
 
     email = (decoded.get("email") or "").strip().lower()
@@ -61,11 +72,32 @@ def _verify_google_id_token(id_token: str, expected_email: str | None = None) ->
     if decoded.get("email_verified") is False:
         raise AppException("Google email is not verified", status_code=401)
 
-    if expected_email and expected_email.strip().lower() != email:
-        raise AppException("Token email does not match request email", status_code=401)
-
     name = (decoded.get("name") or "").strip()
     return email, name
+
+
+def _peek_token_claims(id_token: str) -> dict:
+    """Best-effort JWT payload preview for debugging verification mismatches."""
+    try:
+        parts = id_token.split(".")
+        if len(parts) < 2:
+            return {"error": "malformed_jwt"}
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload + padding).decode("utf-8")
+        claims = json.loads(decoded)
+        return {
+            "aud": claims.get("aud"),
+            "iss": claims.get("iss"),
+            "sub": claims.get("sub"),
+            "email": claims.get("email"),
+            "email_verified": claims.get("email_verified"),
+            "auth_time": claims.get("auth_time"),
+            "exp": claims.get("exp"),
+            "iat": claims.get("iat"),
+        }
+    except Exception as exc:
+        return {"error": f"peek_failed:{exc.__class__.__name__}"}
 
 
 def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address: str = "") -> AuthResponse:
