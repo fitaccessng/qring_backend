@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     PAYSTACK_SECRET_KEY: str = ""
     PAYSTACK_PUBLIC_KEY: str = ""
     FRONTEND_BASE_URL: str = "http://localhost:5173"
+    FIREBASE_PROJECT_ID: str = ""
     ADMIN_SIGNUP_KEY: str = ""
 
     @property

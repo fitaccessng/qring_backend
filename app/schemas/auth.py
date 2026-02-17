@@ -58,3 +58,18 @@ class AuthResponse(BaseModel):
     accessToken: str
     refreshToken: str
     user: AuthUser
+
+
+class GoogleSigninRequest(BaseModel):
+    idToken: str
+    email: EmailStr | None = None
+    displayName: str | None = None
+    photoURL: str | None = None
+
+
+class GoogleSignupRequest(BaseModel):
+    idToken: str
+    email: EmailStr | None = None
+    displayName: str | None = None
+    photoURL: str | None = None
+    role: str = "homeowner"

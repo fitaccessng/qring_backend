@@ -1,4 +1,6 @@
 import random
+import uuid
+from threading import Lock
 from datetime import datetime, timedelta
 
 from sqlalchemy import or_
@@ -17,6 +19,89 @@ from app.schemas.auth import AuthResponse
 
 _reset_otp_store: dict[str, dict] = {}
 settings = get_settings()
+_firebase_init_lock = Lock()
+
+try:
+    import firebase_admin
+    from firebase_admin import auth as firebase_auth
+except ImportError:
+    firebase_admin = None
+    firebase_auth = None
+
+
+def _ensure_firebase_app():
+    if firebase_admin is None or firebase_auth is None:
+        raise AppException(
+            "Firebase Admin SDK is not installed. Add firebase-admin to dependencies.",
+            status_code=500,
+        )
+
+    if firebase_admin._apps:
+        return firebase_admin.get_app()
+
+    with _firebase_init_lock:
+        if firebase_admin._apps:
+            return firebase_admin.get_app()
+        if not settings.FIREBASE_PROJECT_ID:
+            raise AppException("FIREBASE_PROJECT_ID is not configured", status_code=500)
+        return firebase_admin.initialize_app(options={"projectId": settings.FIREBASE_PROJECT_ID})
+
+
+def _verify_google_id_token(id_token: str, expected_email: str | None = None) -> tuple[str, str]:
+    if not id_token:
+        raise AppException("idToken is required", status_code=400)
+
+    app = _ensure_firebase_app()
+    try:
+        decoded = firebase_auth.verify_id_token(id_token, app=app)
+    except Exception as exc:
+        raise AppException("Invalid Google ID token", status_code=401) from exc
+
+    email = (decoded.get("email") or "").strip().lower()
+    if not email:
+        raise AppException("Google account email is missing", status_code=400)
+    if decoded.get("email_verified") is False:
+        raise AppException("Google email is not verified", status_code=401)
+
+    if expected_email and expected_email.strip().lower() != email:
+        raise AppException("Token email does not match request email", status_code=401)
+
+    name = (decoded.get("name") or "").strip()
+    return email, name
+
+
+def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address: str = "") -> AuthResponse:
+    access_token = create_access_token(user.id, user.role.value)
+    refresh_token = create_refresh_token(user.id)
+
+    device_session = DeviceSession(
+        user_id=user.id,
+        refresh_token=refresh_token,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+    db.add(device_session)
+    existing_notification = db.query(Notification).filter(Notification.user_id == user.id).first()
+    if not existing_notification:
+        db.add(
+            Notification(
+                user_id=user.id,
+                kind="system",
+                payload='{"message":"Welcome to Qring dashboard. Notifications are now active."}',
+            )
+        )
+    db.commit()
+
+    return AuthResponse(
+        accessToken=access_token,
+        refreshToken=refresh_token,
+        user={
+            "id": user.id,
+            "fullName": user.full_name,
+            "email": user.email,
+            "role": user.role.value,
+        },
+    )
 
 
 def signup(
@@ -87,38 +172,56 @@ def login(db: Session, email: str, password: str, user_agent: str = "", ip_addre
     )
     if not user or not verify_password(password, user.password_hash):
         raise AppException("Invalid credentials", status_code=401)
+    return _issue_auth_tokens(db=db, user=user, user_agent=user_agent, ip_address=ip_address)
 
-    access_token = create_access_token(user.id, user.role.value)
-    refresh_token = create_refresh_token(user.id)
 
-    device_session = DeviceSession(
-        user_id=user.id,
-        refresh_token=refresh_token,
-        user_agent=user_agent,
-        ip_address=ip_address,
+def google_signin(
+    db: Session,
+    id_token: str,
+    email: str | None = None,
+    display_name: str | None = None,
+    user_agent: str = "",
+    ip_address: str = "",
+) -> AuthResponse:
+    token_email, _ = _verify_google_id_token(id_token=id_token, expected_email=email)
+    user = db.query(User).filter(User.email == token_email).first()
+    if not user:
+        raise AppException("Account not found. Please sign up first.", status_code=404)
+    return _issue_auth_tokens(db=db, user=user, user_agent=user_agent, ip_address=ip_address)
+
+
+def google_signup(
+    db: Session,
+    id_token: str,
+    role: str = "homeowner",
+    email: str | None = None,
+    display_name: str | None = None,
+    user_agent: str = "",
+    ip_address: str = "",
+) -> AuthResponse:
+    token_email, token_name = _verify_google_id_token(id_token=id_token, expected_email=email)
+    existing = db.query(User).filter(User.email == token_email).first()
+    if existing:
+        raise AppException("Email already exists", status_code=409)
+
+    try:
+        user_role = UserRole(role)
+    except ValueError as exc:
+        raise AppException("Invalid role", status_code=400) from exc
+
+    resolved_name = (display_name or token_name or token_email.split("@")[0]).strip()
+    user = User(
+        full_name=resolved_name,
+        email=token_email,
+        password_hash=hash_password(str(uuid.uuid4())),
+        role=user_role,
+        email_verified=True,
+        is_active=True,
     )
-    db.add(device_session)
-    existing_notification = db.query(Notification).filter(Notification.user_id == user.id).first()
-    if not existing_notification:
-        db.add(
-            Notification(
-                user_id=user.id,
-                kind="system",
-                payload='{"message":"Welcome to Qring dashboard. Notifications are now active."}',
-            )
-        )
+    db.add(user)
     db.commit()
-
-    return AuthResponse(
-        accessToken=access_token,
-        refreshToken=refresh_token,
-        user={
-            "id": user.id,
-            "fullName": user.full_name,
-            "email": user.email,
-            "role": user.role.value,
-        },
-    )
+    db.refresh(user)
+    return _issue_auth_tokens(db=db, user=user, user_agent=user_agent, ip_address=ip_address)
 
 
 def rotate_refresh_token(db: Session, refresh_token: str):

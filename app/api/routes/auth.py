@@ -8,6 +8,8 @@ from app.schemas.auth import (
     AdminSignupRequest,
     ChangePasswordRequest,
     ForgotPasswordRequest,
+    GoogleSigninRequest,
+    GoogleSignupRequest,
     LoginRequest,
     LogoutRequest,
     ResetPasswordRequest,
@@ -49,6 +51,33 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         db=db,
         email=payload.email,
         password=payload.password,
+        user_agent=request.headers.get("user-agent", ""),
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"data": data.model_dump()}
+
+
+@router.post("/google-signin")
+def google_signin(payload: GoogleSigninRequest, request: Request, db: Session = Depends(get_db)):
+    data = auth_service.google_signin(
+        db=db,
+        id_token=payload.idToken,
+        email=payload.email,
+        display_name=payload.displayName,
+        user_agent=request.headers.get("user-agent", ""),
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"data": data.model_dump()}
+
+
+@router.post("/google-signup")
+def google_signup(payload: GoogleSignupRequest, request: Request, db: Session = Depends(get_db)):
+    data = auth_service.google_signup(
+        db=db,
+        id_token=payload.idToken,
+        email=payload.email,
+        display_name=payload.displayName,
+        role=payload.role,
         user_agent=request.headers.get("user-agent", ""),
         ip_address=request.client.host if request.client else "",
     )
