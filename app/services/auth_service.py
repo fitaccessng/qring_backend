@@ -1,7 +1,6 @@
-import random
 import uuid
 from threading import Lock
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -17,7 +16,6 @@ from app.core.security import (
 from app.db.models import DeviceSession, Notification, User, UserRole
 from app.schemas.auth import AuthResponse
 
-_reset_otp_store: dict[str, dict] = {}
 settings = get_settings()
 _firebase_init_lock = Lock()
 
@@ -165,7 +163,7 @@ def login(db: Session, email: str, password: str, user_agent: str = "", ip_addre
         .filter(
             or_(
                 User.email == login_key,
-                User.email.like(f"{login_key}@estate.useqring.online"),
+                User.email.like(f"{login_key}@%"),
             )
         )
         .first()
@@ -257,46 +255,17 @@ def logout(db: Session, refresh_token: str):
 
 def request_password_reset(db: Session, email: str):
     user = db.query(User).filter(User.email == email).first()
-    # Keep response stable even when user doesn't exist to avoid enumeration.
     if not user:
-        return {"email": email, "status": "otp_sent"}
-
-    otp = f"{random.randint(0, 999999):06d}"
-    expires_at = datetime.utcnow() + timedelta(minutes=10)
-    _reset_otp_store[email.lower()] = {
-        "otp": otp,
-        "expires_at": expires_at,
-    }
-
-    return {
-        "email": email,
-        "status": "otp_sent",
-        "otp": otp,  # dev-mode return; replace with email delivery in production
-        "expiresAt": expires_at.isoformat(),
-    }
+        raise AppException("Email not found", status_code=404)
+    return {"email": email, "status": "email_verified"}
 
 
-def verify_password_reset_otp(email: str, otp: str):
-    key = email.lower()
-    entry = _reset_otp_store.get(key)
-    if not entry:
-        raise AppException("OTP not requested", status_code=400)
-    if datetime.utcnow() > entry["expires_at"]:
-        _reset_otp_store.pop(key, None)
-        raise AppException("OTP expired", status_code=400)
-    if entry["otp"] != otp:
-        raise AppException("Invalid OTP", status_code=400)
-    return {"email": email, "status": "verified"}
-
-
-def reset_password(db: Session, email: str, otp: str, new_password: str):
-    verify_password_reset_otp(email, otp)
+def reset_password(db: Session, email: str, new_password: str):
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        raise AppException("User not found", status_code=404)
+        raise AppException("Email not found", status_code=404)
     user.password_hash = hash_password(new_password)
     db.commit()
-    _reset_otp_store.pop(email.lower(), None)
     return {"status": "password_reset"}
 
 

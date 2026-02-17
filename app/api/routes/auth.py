@@ -15,7 +15,6 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     RefreshTokenRequest,
     SignupRequest,
-    VerifyOtpRequest,
 )
 from app.services import auth_service
 
@@ -89,14 +88,9 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     return {"data": auth_service.request_password_reset(db, payload.email)}
 
 
-@router.post("/verify-otp")
-def verify_otp(payload: VerifyOtpRequest):
-    return {"data": auth_service.verify_password_reset_otp(payload.email, payload.otp)}
-
-
 @router.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
-    return {"data": auth_service.reset_password(db, payload.email, payload.otp, payload.newPassword)}
+    return {"data": auth_service.reset_password(db, payload.email, payload.newPassword)}
 
 
 @router.post("/refresh-token")
