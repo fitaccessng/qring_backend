@@ -62,6 +62,8 @@ class Settings(BaseSettings):
             value = raw.strip()
             if not value:
                 continue
+            if "://" not in value:
+                value = f"https://{value}"
             parsed = urlparse(value)
             if parsed.scheme and parsed.netloc:
                 value = f"{parsed.scheme}://{parsed.netloc}"
