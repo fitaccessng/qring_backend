@@ -296,14 +296,31 @@ def is_paid_subscription_expired(db: Session, user_id: str) -> bool:
     return bool(expiry_at and datetime.utcnow() > expiry_at)
 
 
-def initialize_paystack_transaction(user_id: str, email: str, plan_id: str, callback_url: str | None):
+def initialize_paystack_transaction(
+    user_id: str,
+    email: str,
+    plan_id: str,
+    callback_url: str | None,
+    billing_cycle: str = "monthly",
+):
     raise AppException("Internal error: use initialize_paystack_transaction_db", status_code=500)
 
 
-def initialize_paystack_transaction_db(db: Session, user_id: str, email: str, plan_id: str, callback_url: str | None):
+def initialize_paystack_transaction_db(
+    db: Session,
+    user_id: str,
+    email: str,
+    plan_id: str,
+    callback_url: str | None,
+    billing_cycle: str = "monthly",
+):
     plan = get_plan_or_raise(db, plan_id)
     if plan["amount"] <= 0:
         raise AppException("Free plan does not require Paystack checkout", status_code=400)
+    cycle = (billing_cycle or "monthly").strip().lower()
+    if cycle not in {"monthly", "yearly"}:
+        raise AppException("Invalid billing cycle", status_code=400)
+    cycle_multiplier = 12 if cycle == "yearly" else 1
     if not settings.PAYSTACK_SECRET_KEY:
         raise AppException("Paystack is not configured", status_code=500)
     if settings.PAYSTACK_SECRET_KEY.startswith("sk_live") and (
@@ -317,12 +334,13 @@ def initialize_paystack_transaction_db(db: Session, user_id: str, email: str, pl
     reference = f"qring-{uuid.uuid4().hex[:18]}"
     payload = {
         "email": email,
-        "amount": int(plan["amount"] * 100),
+        "amount": int(plan["amount"] * cycle_multiplier * 100),
         "currency": (plan.get("currency") or "NGN").upper(),
         "reference": reference,
         "metadata": {
             "user_id": user_id,
             "plan": plan_id,
+            "billing_cycle": cycle,
             "source": "qring-billing",
         },
     }

@@ -42,6 +42,7 @@ class SubscriptionRequest(BaseModel):
 class PaystackInitializePayload(BaseModel):
     plan: str
     callbackUrl: str | None = None
+    billingCycle: str = "monthly"
 
 
 @router.post("/purpose")
@@ -119,6 +120,7 @@ def payment_paystack_initialize(
         email=user.email,
         plan_id=payload.plan,
         callback_url=payload.callbackUrl,
+        billing_cycle=payload.billingCycle,
     )
     return {"data": data}
 
