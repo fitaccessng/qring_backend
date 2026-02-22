@@ -11,6 +11,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     role: str = "homeowner"
+    referralCode: str | None = None
 
 
 class AdminSignupRequest(BaseModel):
@@ -46,6 +47,8 @@ class AuthUser(BaseModel):
     fullName: str
     email: EmailStr
     role: str
+    referralCode: str | None = None
+    referralEarnings: int | None = None
 
 
 class AuthResponse(BaseModel):
@@ -67,3 +70,4 @@ class GoogleSignupRequest(BaseModel):
     displayName: str | None = None
     photoURL: str | None = None
     role: str = "homeowner"
+    referralCode: str | None = None

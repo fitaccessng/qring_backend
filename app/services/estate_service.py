@@ -10,6 +10,7 @@ from app.core.security import hash_password
 from app.db.models import Door, Estate, Home, Notification, QRCode, User, UserRole, VisitorSession
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 settings = get_settings()
+FREE_ESTATE_LIMIT = 5
 
 
 def _require_estate_owner(db: Session, estate_id: str, owner_id: str) -> Estate:
@@ -69,9 +70,13 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             qr_by_door.setdefault(door_id, []).append(qr.qr_id)
 
     usage = _usage_for_owner(db, owner_id)
-    limits = get_effective_subscription(db, owner_id).get("limits", {})
+    effective_sub = get_effective_subscription(db, owner_id)
+    limits = effective_sub.get("limits", {})
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
+    if effective_sub.get("plan") == "free":
+        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
+        max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
 
     return {
         "estates": [{"id": row.id, "name": row.name, "createdAt": row.created_at.isoformat()} for row in estates],
@@ -216,8 +221,8 @@ def add_estate_door(
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr = int(limits.get("maxQrCodes", 0) or 0)
     if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, 1)
-        max_qr = max(max_qr, 1)
+        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
+        max_qr = max(max_qr, FREE_ESTATE_LIMIT)
 
     if max_doors and usage["doors"] >= max_doors:
         raise AppException(f"Door limit reached ({max_doors})", status_code=402)
@@ -415,6 +420,9 @@ def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
     limits = effective_sub.get("limits", {})
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
+    if effective_sub.get("plan") == "free":
+        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
+        max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
 
     return {
         "plan": effective_sub.get("plan", "free"),
@@ -439,8 +447,11 @@ def create_estate_shared_selector_qr(db: Session, owner_id: str, estate_id: str)
     if not doors:
         raise AppException("No doors available for this estate", status_code=400)
 
-    limits = get_effective_subscription(db, owner_id).get("limits", {})
+    effective_sub = get_effective_subscription(db, owner_id)
+    limits = effective_sub.get("limits", {})
     max_qr = int(limits.get("maxQrCodes", 0) or 0)
+    if effective_sub.get("plan") == "free":
+        max_qr = max(max_qr, FREE_ESTATE_LIMIT)
     usage = _usage_for_owner(db, owner_id)
     if max_qr and usage["qr_codes"] >= max_qr:
         raise AppException(f"QR limit reached ({max_qr})", status_code=402)

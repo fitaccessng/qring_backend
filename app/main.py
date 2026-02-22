@@ -4,6 +4,7 @@ import uuid
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -98,9 +99,53 @@ def _seed_dev_data(db: Session):
         db.rollback()
 
 
+def _next_referral_code() -> str:
+    return f"QR{uuid.uuid4().hex[:8].upper()}"
+
+
+def _ensure_referral_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    user_columns = {col["name"] for col in inspector.get_columns("users")} if "users" in table_names else set()
+
+    with engine.begin() as conn:
+        if "users" in table_names and "referral_code" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN referral_code VARCHAR(24)"))
+        if "users" in table_names and "referred_by_user_id" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_user_id VARCHAR(36)"))
+        if "users" in table_names and "referral_earnings" not in user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN referral_earnings INTEGER DEFAULT 0"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_referral_code ON users (referral_code)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_referred_by_user_id ON users (referred_by_user_id)"))
+
+    # Create referral reward table for existing installs.
+    Base.metadata.tables["referral_rewards"].create(bind=engine, checkfirst=True)
+
+    db = SessionLocal()
+    try:
+        used_codes = {row[0] for row in db.query(User.referral_code).filter(User.referral_code.is_not(None)).all()}
+        changed = False
+        for user in db.query(User).all():
+            if not user.referral_code:
+                code = _next_referral_code()
+                while code in used_codes:
+                    code = _next_referral_code()
+                user.referral_code = code
+                used_codes.add(code)
+                changed = True
+            if user.referral_earnings is None:
+                user.referral_earnings = 0
+                changed = True
+        if changed:
+            db.commit()
+    finally:
+        db.close()
+
+
 @fastapi_app.on_event("startup")
 async def on_startup():
     Base.metadata.create_all(bind=engine)
+    _ensure_referral_schema()
     db = SessionLocal()
     try:
         if settings.ENVIRONMENT.lower() == "development":

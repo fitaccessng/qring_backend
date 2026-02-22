@@ -11,6 +11,7 @@ from app.services.payment_service import (
     activate_subscription,
     create_payment_purpose,
     get_effective_subscription,
+    get_referral_summary,
     handle_paystack_webhook,
     initialize_paystack_transaction_db,
     list_subscription_plans,
@@ -89,6 +90,14 @@ def payment_subscription_me(
     user: User = Depends(get_current_user),
 ):
     return {"data": get_effective_subscription(db, user.id)}
+
+
+@router.get("/referral/me")
+def payment_referral_me(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": get_referral_summary(db, user.id)}
 
 
 @router.get("/plans")

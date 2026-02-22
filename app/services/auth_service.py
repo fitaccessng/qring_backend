@@ -161,8 +161,27 @@ def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address
             "fullName": user.full_name,
             "email": user.email,
             "role": user.role.value,
+            "referralCode": user.referral_code,
+            "referralEarnings": int(user.referral_earnings or 0),
         },
     )
+
+
+def _normalize_referral_code(referral_code: str | None) -> str | None:
+    if referral_code is None:
+        return None
+    cleaned = referral_code.strip().upper()
+    return cleaned or None
+
+
+def _resolve_referrer(db: Session, referral_code: str | None) -> User | None:
+    code = _normalize_referral_code(referral_code)
+    if not code:
+        return None
+    referrer = db.query(User).filter(User.referral_code == code).first()
+    if not referrer:
+        raise AppException("Invalid referral code", status_code=400)
+    return referrer
 
 
 def signup(
@@ -171,6 +190,7 @@ def signup(
     email: str,
     password: str,
     role: str,
+    referral_code: str | None = None,
 ):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
@@ -183,11 +203,14 @@ def signup(
     if user_role == UserRole.admin:
         raise AppException("Admin signup is not allowed on this endpoint", status_code=403)
 
+    referrer = _resolve_referrer(db, referral_code)
+
     user = User(
         full_name=full_name,
         email=email,
         password_hash=hash_password(password),
         role=user_role,
+        referred_by_user_id=referrer.id if referrer else None,
     )
     db.add(user)
     db.commit()
@@ -257,6 +280,7 @@ def google_signup(
     role: str = "homeowner",
     email: str | None = None,
     display_name: str | None = None,
+    referral_code: str | None = None,
     user_agent: str = "",
     ip_address: str = "",
 ) -> AuthResponse:
@@ -270,6 +294,8 @@ def google_signup(
     except ValueError as exc:
         raise AppException("Invalid role", status_code=400) from exc
 
+    referrer = _resolve_referrer(db, referral_code)
+
     resolved_name = (display_name or token_name or token_email.split("@")[0]).strip()
     user = User(
         full_name=resolved_name,
@@ -278,6 +304,7 @@ def google_signup(
         role=user_role,
         email_verified=True,
         is_active=True,
+        referred_by_user_id=referrer.id if referrer else None,
     )
     db.add(user)
     db.commit()

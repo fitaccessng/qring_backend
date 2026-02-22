@@ -9,6 +9,8 @@ from app.db.models import Door, Home, Message, QRCode, VisitorSession
 from app.core.exceptions import AppException
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
+FREE_HOMEOWNER_LIMIT = 1
+FREE_ESTATE_MANAGED_LIMIT = 5
 
 STATUS_LABELS = {
     "pending": "Pending",
@@ -260,8 +262,9 @@ def get_homeowner_doors_data(db: Session, homeowner_id: str) -> dict[str, Any]:
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
     if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, 1)
-        max_qr_codes = max(max_qr_codes, 1)
+        floor = FREE_ESTATE_MANAGED_LIMIT if context.get("managedByEstate") else FREE_HOMEOWNER_LIMIT
+        max_doors = max(max_doors, floor)
+        max_qr_codes = max(max_qr_codes, floor)
 
     door_count = len(doors)
     qr_count = sum(len(door.get("qr", [])) for door in doors)
@@ -318,8 +321,8 @@ def create_homeowner_door(
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
     if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, 1)
-        max_qr_codes = max(max_qr_codes, 1)
+        max_doors = max(max_doors, FREE_HOMEOWNER_LIMIT)
+        max_qr_codes = max(max_qr_codes, FREE_HOMEOWNER_LIMIT)
 
     total_doors = db.query(Door).filter(Door.home_id.in_(home_ids)).count() if home_ids else 0
     if max_doors and total_doors >= max_doors:

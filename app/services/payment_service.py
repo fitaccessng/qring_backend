@@ -9,16 +9,17 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import PaymentPurpose, Subscription, SubscriptionPlan
+from app.db.models import Notification, PaymentPurpose, ReferralReward, Subscription, SubscriptionPlan, User
 
 settings = get_settings()
+REFERRAL_REWARD_AMOUNT = 2000
 
 DEFAULT_PLAN_CATALOG = [
-    {"id": "free", "name": "Free", "amount": 0, "currency": "NGN", "maxDoors": 1, "maxQrCodes": 1},
-    {"id": "doors_20", "name": "1-20 doors", "amount": 20000, "currency": "NGN", "maxDoors": 20, "maxQrCodes": 20},
-    {"id": "doors_40", "name": "1-40 doors", "amount": 50000, "currency": "NGN", "maxDoors": 40, "maxQrCodes": 40},
-    {"id": "doors_80", "name": "1-80 doors", "amount": 80000, "currency": "NGN", "maxDoors": 80, "maxQrCodes": 80},
-    {"id": "doors_100", "name": "1-100 doors", "amount": 120000, "currency": "NGN", "maxDoors": 100, "maxQrCodes": 100},
+    {"id": "free", "name": "Starter", "amount": 0, "currency": "NGN", "maxDoors": 1, "maxQrCodes": 1, "active": True},
+    {"id": "doors_20", "name": "Basic Plan", "amount": 12000, "currency": "NGN", "maxDoors": 10, "maxQrCodes": 10, "active": True},
+    {"id": "doors_40", "name": "Standard Plan", "amount": 25000, "currency": "NGN", "maxDoors": 22, "maxQrCodes": 22, "active": True},
+    {"id": "doors_80", "name": "Pro Estate Plan", "amount": 50000, "currency": "NGN", "maxDoors": 46, "maxQrCodes": 46, "active": True},
+    {"id": "doors_100", "name": "Premium Estate Plan", "amount": 100000, "currency": "NGN", "maxDoors": 100, "maxQrCodes": 100, "active": True},
 ]
 
 
@@ -31,6 +32,7 @@ def create_payment_purpose(db: Session, name: str, description: str, account_inf
 
 
 def activate_subscription(db: Session, user_id: str, plan: str):
+    plan_meta = get_plan_or_raise(db, plan, include_inactive=True)
     row = Subscription(
         user_id=user_id,
         plan=plan,
@@ -38,35 +40,114 @@ def activate_subscription(db: Session, user_id: str, plan: str):
         starts_at=datetime.utcnow(),
     )
     db.add(row)
+    db.flush()
+    _award_referral_reward_if_eligible(db=db, subscribed_user_id=user_id, plan_meta=plan_meta)
     db.commit()
     db.refresh(row)
     return row
+
+
+def _award_referral_reward_if_eligible(db: Session, subscribed_user_id: str, plan_meta: dict) -> None:
+    if int(plan_meta.get("amount") or 0) <= 0:
+        return
+
+    user = db.query(User).filter(User.id == subscribed_user_id).first()
+    if not user or not user.referred_by_user_id:
+        return
+
+    already_rewarded = (
+        db.query(ReferralReward)
+        .filter(ReferralReward.referred_user_id == subscribed_user_id)
+        .first()
+    )
+    if already_rewarded:
+        return
+
+    referrer = db.query(User).filter(User.id == user.referred_by_user_id).first()
+    if not referrer:
+        return
+
+    reward = ReferralReward(
+        referrer_user_id=referrer.id,
+        referred_user_id=user.id,
+        plan_id=str(plan_meta.get("id") or ""),
+        reward_amount=REFERRAL_REWARD_AMOUNT,
+        currency=(plan_meta.get("currency") or "NGN").upper(),
+    )
+    db.add(reward)
+    referrer.referral_earnings = int(referrer.referral_earnings or 0) + REFERRAL_REWARD_AMOUNT
+    db.add(
+        Notification(
+            user_id=referrer.id,
+            kind="referral.reward",
+            payload=json.dumps(
+                {
+                    "message": f"You earned {reward.currency} {REFERRAL_REWARD_AMOUNT:,} referral reward.",
+                    "referredUserId": user.id,
+                    "plan": plan_meta.get("id"),
+                    "amount": REFERRAL_REWARD_AMOUNT,
+                    "currency": reward.currency,
+                }
+            ),
+        )
+    )
 
 
 def list_payment_purposes(db: Session):
     return db.query(PaymentPurpose).order_by(PaymentPurpose.created_at.desc()).all()
 
 
-def _ensure_default_plans(db: Session) -> None:
-    # Keep existing installs working by seeding defaults once.
-    if db.query(SubscriptionPlan).count() > 0:
-        return
+def get_referral_summary(db: Session, user_id: str) -> dict:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise AppException("User not found", status_code=404)
 
-    db.add_all(
-        [
-            SubscriptionPlan(
-                id=row["id"],
-                name=row["name"],
-                amount=int(row["amount"]),
-                currency=row.get("currency") or "NGN",
-                max_doors=int(row.get("maxDoors") or 1),
-                max_qr_codes=int(row.get("maxQrCodes") or 1),
-                active=True,
-            )
-            for row in DEFAULT_PLAN_CATALOG
-        ]
+    total_referrals = db.query(User).filter(User.referred_by_user_id == user_id).count()
+    rewarded_referrals = db.query(ReferralReward).filter(ReferralReward.referrer_user_id == user_id).count()
+    recent_rewards = (
+        db.query(ReferralReward)
+        .filter(ReferralReward.referrer_user_id == user_id)
+        .order_by(ReferralReward.created_at.desc())
+        .limit(10)
+        .all()
     )
-    db.commit()
+    return {
+        "referralCode": user.referral_code,
+        "earnings": int(user.referral_earnings or 0),
+        "rewardPerReferral": REFERRAL_REWARD_AMOUNT,
+        "currency": "NGN",
+        "totalReferrals": total_referrals,
+        "rewardedReferrals": rewarded_referrals,
+        "recentRewards": [
+            {
+                "referredUserId": row.referred_user_id,
+                "plan": row.plan_id,
+                "amount": int(row.reward_amount or 0),
+                "currency": row.currency or "NGN",
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in recent_rewards
+        ],
+    }
+
+
+def _ensure_default_plans(db: Session) -> None:
+    existing = {row.id: row for row in db.query(SubscriptionPlan).all()}
+    changed = False
+    for row in DEFAULT_PLAN_CATALOG:
+        plan = existing.get(row["id"])
+        if not plan:
+            plan = SubscriptionPlan(id=row["id"])
+            db.add(plan)
+        plan.name = row["name"]
+        plan.amount = int(row["amount"])
+        plan.currency = (row.get("currency") or "NGN").upper()
+        plan.max_doors = int(row.get("maxDoors") or 1)
+        plan.max_qr_codes = int(row.get("maxQrCodes") or 1)
+        plan.active = bool(row.get("active", True))
+        changed = True
+    if changed:
+        db.commit()
 
 
 def list_subscription_plans(db: Session, include_inactive: bool = False):
@@ -237,7 +318,7 @@ def initialize_paystack_transaction_db(db: Session, user_id: str, email: str, pl
     payload = {
         "email": email,
         "amount": int(plan["amount"] * 100),
-        "currency": "NGN",
+        "currency": (plan.get("currency") or "NGN").upper(),
         "reference": reference,
         "metadata": {
             "user_id": user_id,
@@ -365,13 +446,5 @@ def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None)
     if payment_status != "success" or not user_id or not plan_id:
         return {"status": "ignored"}
 
-    get_plan_or_raise(db, plan_id)
-    row = Subscription(
-        user_id=user_id,
-        plan=plan_id,
-        status="active",
-        starts_at=datetime.utcnow(),
-    )
-    db.add(row)
-    db.commit()
+    activate_subscription(db=db, user_id=user_id, plan=plan_id)
     return {"status": "processed", "plan": plan_id}
