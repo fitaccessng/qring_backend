@@ -29,6 +29,8 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173,"
         "capacitor://localhost,"
         "ionic://localhost,"
+        "https://qring.io,"
+        "https://www.qring.io,"
         "https://useqring.online,"
         "https://www.useqring.online"
     )
@@ -40,6 +42,7 @@ class Settings(BaseSettings):
         r"192\\.168\\.\\d{1,3}\\.\\d{1,3}|"
         r"10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|"
         r"172\\.(1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|"
+        r"qring\\.io|www\\.qring\\.io|"
         r"useqring\\.online|www\\.useqring\\.online"
         r")(\\:\\d+)?$"
     )
