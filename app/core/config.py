@@ -27,13 +27,15 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = (
         "http://localhost:5173,"
         "http://127.0.0.1:5173,"
+        "capacitor://localhost,"
+        "ionic://localhost,"
         "https://useqring.online,"
         "https://www.useqring.online"
     )
     # Dev-friendly default: allow localhost + RFC1918 private LAN ranges so phones/tablets on the same Wi-Fi can reach the API.
     # In production, set CORS_ORIGINS / CORS_ALLOW_ORIGIN_REGEX explicitly to your real domain(s).
     CORS_ALLOW_ORIGIN_REGEX: str = (
-        r"^https?://("
+        r"^(https?|capacitor|ionic)://("
         r"localhost|127\\.0\\.0\\.1|"
         r"192\\.168\\.\\d{1,3}\\.\\d{1,3}|"
         r"10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|"
