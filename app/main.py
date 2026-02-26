@@ -4,7 +4,7 @@ import uuid
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect, text
+from sqlalchemy import DateTime, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -149,7 +149,8 @@ def _ensure_message_read_schema() -> None:
 
     with engine.begin() as conn:
         if "messages" in table_names and "read_by_homeowner_at" not in message_columns:
-            conn.execute(text("ALTER TABLE messages ADD COLUMN read_by_homeowner_at DATETIME"))
+            datetime_sql = DateTime().compile(dialect=conn.dialect)
+            conn.execute(text(f"ALTER TABLE messages ADD COLUMN read_by_homeowner_at {datetime_sql}"))
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_messages_read_by_homeowner_at "
