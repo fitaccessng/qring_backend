@@ -147,6 +147,7 @@ def register_socket_events(sio):
     async def chat_message(sid, payload):
         session_id = (payload or {}).get("sessionId")
         body = (payload or {}).get("text")
+        client_id = (payload or {}).get("clientId")
         if not session_id or not body:
             return
         db = SessionLocal()
@@ -176,6 +177,7 @@ def register_socket_events(sio):
                 "id": message_id,
                 "sessionId": session_id,
                 "text": str(body).strip(),
+                "clientId": client_id,
                 "senderType": sender_type,
                 "senderSid": sid,
                 "displayName": (payload or {}).get("displayName") or "Participant",

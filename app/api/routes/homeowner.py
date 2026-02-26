@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
@@ -53,6 +54,7 @@ class VisitDecisionPayload(BaseModel):
 
 class HomeownerMessagePayload(BaseModel):
     text: str
+    clientId: Optional[str] = None
 
 
 @router.get("/visits")
@@ -108,6 +110,7 @@ async def homeowner_send_message(
         "chat.message",
         {
             **data,
+            "clientId": payload.clientId,
             "displayName": user.full_name or "Homeowner",
         },
         room=f"session:{session_id}",
