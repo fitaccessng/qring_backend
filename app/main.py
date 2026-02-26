@@ -142,10 +142,27 @@ def _ensure_referral_schema() -> None:
         db.close()
 
 
+def _ensure_message_read_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    message_columns = {col["name"] for col in inspector.get_columns("messages")} if "messages" in table_names else set()
+
+    with engine.begin() as conn:
+        if "messages" in table_names and "read_by_homeowner_at" not in message_columns:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN read_by_homeowner_at DATETIME"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_read_by_homeowner_at "
+                "ON messages (read_by_homeowner_at)"
+            )
+        )
+
+
 @fastapi_app.on_event("startup")
 async def on_startup():
     Base.metadata.create_all(bind=engine)
     _ensure_referral_schema()
+    _ensure_message_read_schema()
     db = SessionLocal()
     try:
         if settings.ENVIRONMENT.lower() == "development":

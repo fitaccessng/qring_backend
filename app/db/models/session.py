@@ -28,6 +28,7 @@ class Message(Base):
     session_id: Mapped[str] = mapped_column(String(36), ForeignKey("visitor_sessions.id"), nullable=False, index=True)
     sender_type: Mapped[str] = mapped_column(String(20), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    read_by_homeowner_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

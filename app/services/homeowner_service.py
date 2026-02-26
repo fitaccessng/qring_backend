@@ -104,7 +104,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     for message in messages:
         if message.session_id not in latest_by_session:
             latest_by_session[message.session_id] = message
-        if message.sender_type != "homeowner":
+        if message.sender_type != "homeowner" and message.read_by_homeowner_at is None:
             unread_by_session[message.session_id] += 1
 
     threads: list[dict[str, Any]] = []
@@ -138,6 +138,17 @@ def list_homeowner_session_messages(
     )
     if not session:
         return []
+
+    # Opening a conversation marks all visitor messages in that session as read for homeowner.
+    db.query(Message).filter(
+        Message.session_id == session_id,
+        Message.sender_type != "homeowner",
+        Message.read_by_homeowner_at.is_(None),
+    ).update(
+        {Message.read_by_homeowner_at: datetime.utcnow()},
+        synchronize_session=False,
+    )
+    db.commit()
 
     rows = (
         db.query(Message)
