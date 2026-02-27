@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
     FIREBASE_SERVICE_ACCOUNT_BASE64: str = ""
     ADMIN_SIGNUP_KEY: str = ""
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_ROOM_PREFIX: str = "qring-session-"
 
     @property
     def cors_origins(self) -> List[str]:

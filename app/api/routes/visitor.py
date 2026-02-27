@@ -2,11 +2,14 @@ import logging
 from time import perf_counter
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.exceptions import AppException
 from app.db.session import get_db
 from app.schemas.visitor import VisitorRequestCreate
+from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import create_notification
 from app.services.qr_service import resolve_qr
 from app.services.session_service import create_visitor_session
@@ -15,6 +18,10 @@ from app.socket.server import sio
 router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+class VisitorLiveKitTokenPayload(BaseModel):
+    displayName: str | None = None
 
 
 @router.post("/request")
@@ -131,3 +138,28 @@ def visitor_session_messages(session_id: str, db: Session = Depends(get_db)):
             for row in rows
         ]
     }
+
+
+@router.post("/sessions/{session_id}/livekit-token")
+def visitor_livekit_token(
+    session_id: str,
+    payload: VisitorLiveKitTokenPayload,
+    db: Session = Depends(get_db),
+):
+    from app.db.models import VisitorSession
+
+    session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+    if not session:
+        raise AppException("Session not found", status_code=404)
+    if session.status in {"closed", "rejected"}:
+        raise AppException("Session is not available for calls.", status_code=400)
+
+    display_name = (payload.displayName or session.visitor_label or "Visitor").strip() or "Visitor"
+    data = issue_livekit_token(
+        session_id=session_id,
+        identity=f"visitor:{session_id}",
+        display_name=display_name,
+        can_publish=True,
+        can_subscribe=True,
+    )
+    return {"data": data}

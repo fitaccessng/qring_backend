@@ -295,3 +295,55 @@ def register_socket_events(sio):
             room=f"session:{session_id}",
             namespace=settings.SIGNALING_NAMESPACE,
         )
+
+    @sio.on("call.invite", namespace=settings.SIGNALING_NAMESPACE)
+    async def call_invite(sid, payload):
+        session_id = (payload or {}).get("sessionId")
+        if not session_id:
+            return
+        await sio.emit(
+            "call.invite",
+            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
+    @sio.on("call.accepted", namespace=settings.SIGNALING_NAMESPACE)
+    async def call_accepted(sid, payload):
+        session_id = (payload or {}).get("sessionId")
+        if not session_id:
+            return
+        await sio.emit(
+            "call.accepted",
+            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
+    @sio.on("call.rejected", namespace=settings.SIGNALING_NAMESPACE)
+    async def call_rejected(sid, payload):
+        session_id = (payload or {}).get("sessionId")
+        if not session_id:
+            return
+        await sio.emit(
+            "call.rejected",
+            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
+    @sio.on("call.ended", namespace=settings.SIGNALING_NAMESPACE)
+    async def call_ended(sid, payload):
+        session_id = (payload or {}).get("sessionId")
+        if not session_id:
+            return
+        await sio.emit(
+            "call.ended",
+            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
