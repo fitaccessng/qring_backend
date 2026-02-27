@@ -159,8 +159,27 @@ def _ensure_message_read_schema() -> None:
         )
 
 
+def _validate_livekit_runtime() -> tuple[bool, list[str]]:
+    missing: list[str] = []
+    if not settings.LIVEKIT_URL.strip():
+        missing.append("LIVEKIT_URL")
+    if not settings.LIVEKIT_API_KEY.strip():
+        missing.append("LIVEKIT_API_KEY")
+    if not settings.LIVEKIT_API_SECRET.strip():
+        missing.append("LIVEKIT_API_SECRET")
+    return (len(missing) == 0, missing)
+
+
 @fastapi_app.on_event("startup")
 async def on_startup():
+    livekit_ok, missing = _validate_livekit_runtime()
+    env = settings.ENVIRONMENT.lower().strip()
+    if not livekit_ok:
+        message = f"LiveKit configuration missing: {', '.join(missing)}"
+        if env in {"production", "staging"}:
+            raise RuntimeError(message)
+        logging.warning("%s (continuing because ENVIRONMENT=%s)", message, settings.ENVIRONMENT)
+
     Base.metadata.create_all(bind=engine)
     _ensure_referral_schema()
     _ensure_message_read_schema()
