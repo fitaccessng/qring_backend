@@ -133,6 +133,9 @@ Namespaces:
   /realtime/signaling    # WebRTC peer signaling
 ```
 
+TURN deployment checklist:
+- See `REALTIME_TURN_DEPLOYMENT.md`
+
 ## 🏗️ Architecture
 
 ```

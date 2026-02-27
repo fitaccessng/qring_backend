@@ -1,0 +1,42 @@
+services:
+  coturn:
+    image: coturn/coturn:4.6.3
+    container_name: qring-coturn
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env.turn
+    command: >
+      -n
+      --listening-ip=0.0.0.0
+      --relay-ip=${TURN_RELAY_IP}
+      --external-ip=${TURN_EXTERNAL_IP}
+      --listening-port=3478
+      --tls-listening-port=5349
+      --min-port=49152
+      --max-port=65535
+      --realm=${TURN_REALM}
+      --lt-cred-mech
+      --user=${TURN_USERNAME}:${TURN_PASSWORD}
+      --fingerprint
+      --stale-nonce=600
+      --no-tlsv1
+      --no-tlsv1_1
+      --no-multicast-peers
+      --no-loopback-peers
+      --cert=/certs/fullchain.pem
+      --pkey=/certs/privkey.pem
+      --simple-log
+      --log-file=stdout
+    volumes:
+      - ./certs:/certs:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "turnutils_uclient -n 1 -t 1 -u \"$${TURN_USERNAME}\" -w \"$${TURN_PASSWORD}\" -p 3478 127.0.0.1 >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

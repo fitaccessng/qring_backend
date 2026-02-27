@@ -1,3 +1,5 @@
+import asyncio
+import uuid
 from collections import defaultdict
 from datetime import datetime
 
@@ -9,6 +11,7 @@ from app.socket.manager import socket_state
 
 settings = get_settings()
 session_members: dict[str, set[str]] = defaultdict(set)
+CHAT_PERSIST_RETRY_DELAYS = (0.35, 1.0, 2.0)
 
 
 def _resolve_user_id(auth: dict | None) -> str | None:
@@ -26,6 +29,82 @@ def _resolve_user_id(auth: dict | None) -> str | None:
 
 
 def register_socket_events(sio):
+    async def persist_chat_message_with_retry(
+        *,
+        sid: str,
+        session_id: str,
+        message_id: str,
+        body: str,
+        sender_user_id: str | None,
+        optimistic_sender_type: str,
+        display_name: str,
+        created_at_iso: str,
+        client_id: str | None,
+    ):
+        last_error = "unknown_error"
+
+        for attempt, delay in enumerate(CHAT_PERSIST_RETRY_DELAYS, start=1):
+            db = SessionLocal()
+            try:
+                session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+                if not session:
+                    last_error = "session_not_found"
+                    break
+
+                resolved_sender_type = (
+                    "homeowner" if sender_user_id and sender_user_id == session.homeowner_id else "visitor"
+                )
+                message = Message(
+                    id=message_id,
+                    session_id=session_id,
+                    sender_type=resolved_sender_type,
+                    body=body,
+                    created_at=datetime.fromisoformat(created_at_iso),
+                )
+                db.add(message)
+                db.commit()
+
+                await sio.emit(
+                    "chat.persisted",
+                    {
+                        "id": message_id,
+                        "sessionId": session_id,
+                        "clientId": client_id,
+                        "senderType": resolved_sender_type,
+                        "displayName": display_name,
+                        "text": body,
+                        "at": created_at_iso,
+                        "persisted": True,
+                    },
+                    room=f"session:{session_id}",
+                    namespace=settings.SIGNALING_NAMESPACE,
+                )
+                return
+            except Exception as exc:
+                last_error = str(exc)
+            finally:
+                db.close()
+
+            if attempt < len(CHAT_PERSIST_RETRY_DELAYS):
+                await asyncio.sleep(delay)
+
+        await sio.emit(
+            "chat.persist_failed",
+            {
+                "id": message_id,
+                "sessionId": session_id,
+                "clientId": client_id,
+                "senderType": optimistic_sender_type,
+                "displayName": display_name,
+                "text": body,
+                "at": created_at_iso,
+                "persisted": False,
+                "error": last_error,
+            },
+            to=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
     @sio.event(namespace=settings.DASHBOARD_NAMESPACE)
     async def connect(sid, environ, auth):
         user_id = _resolve_user_id(auth)
@@ -146,45 +225,57 @@ def register_socket_events(sio):
     @sio.on("chat.message", namespace=settings.SIGNALING_NAMESPACE)
     async def chat_message(sid, payload):
         session_id = (payload or {}).get("sessionId")
-        body = (payload or {}).get("text")
+        body = str((payload or {}).get("text") or "").strip()
         client_id = (payload or {}).get("clientId")
         if not session_id or not body:
             return
-        db = SessionLocal()
-        try:
-            session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
-            if not session:
-                return
-            sender_user_id = socket_state.sid_user.get(sid)
-            sender_type = "homeowner" if sender_user_id and sender_user_id == session.homeowner_id else "visitor"
-            message = Message(
-                session_id=session_id,
-                sender_type=sender_type,
-                body=str(body).strip(),
-            )
-            if not message.body:
-                return
-            db.add(message)
-            db.commit()
-            db.refresh(message)
-            created_at = message.created_at.isoformat()
-            message_id = message.id
-        finally:
-            db.close()
+        sender_user_id = socket_state.sid_user.get(sid)
+        raw_sender_type = (payload or {}).get("senderType")
+        optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor"} else "visitor"
+        display_name = (payload or {}).get("displayName") or "Participant"
+        created_at = datetime.utcnow().isoformat()
+        message_id = str(uuid.uuid4())
+
         await sio.emit(
             "chat.message",
             {
                 "id": message_id,
                 "sessionId": session_id,
-                "text": str(body).strip(),
+                "text": body,
                 "clientId": client_id,
-                "senderType": sender_type,
+                "senderType": optimistic_sender_type,
                 "senderSid": sid,
-                "displayName": (payload or {}).get("displayName") or "Participant",
+                "displayName": display_name,
                 "at": created_at,
+                "persisted": False,
             },
             room=f"session:{session_id}",
             namespace=settings.SIGNALING_NAMESPACE,
+        )
+        await sio.emit(
+            "chat.ack",
+            {
+                "id": message_id,
+                "sessionId": session_id,
+                "clientId": client_id,
+                "at": created_at,
+                "status": "queued",
+            },
+            to=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+        asyncio.create_task(
+            persist_chat_message_with_retry(
+                sid=sid,
+                session_id=session_id,
+                message_id=message_id,
+                body=body,
+                sender_user_id=sender_user_id,
+                optimistic_sender_type=optimistic_sender_type,
+                display_name=display_name,
+                created_at_iso=created_at,
+                client_id=client_id,
+            )
         )
 
     @sio.on("session.control", namespace=settings.SIGNALING_NAMESPACE)
