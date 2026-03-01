@@ -17,6 +17,7 @@ from app.db.base import Base
 from app.db.models import Door, Home, Notification, QRCode, User, UserRole
 from app.db.session import SessionLocal, engine
 from app.middleware.request_context import RequestContextMiddleware
+from app.middleware.access_control import AccessControlMiddleware
 from app.socket.server import sio
 
 settings = get_settings()
@@ -25,6 +26,7 @@ setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 fastapi_app.add_middleware(RequestContextMiddleware)
+fastapi_app.add_middleware(AccessControlMiddleware)
 fastapi_app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -159,6 +161,112 @@ def _ensure_message_read_schema() -> None:
         )
 
 
+def _ensure_auth_runtime_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    if "device_sessions" not in table_names:
+        Base.metadata.tables["device_sessions"].create(bind=engine, checkfirst=True)
+    else:
+        session_columns = {col["name"] for col in inspector.get_columns("device_sessions")}
+        with engine.begin() as conn:
+            if "revoked_at" not in session_columns:
+                datetime_sql = DateTime().compile(dialect=conn.dialect)
+                conn.execute(text(f"ALTER TABLE device_sessions ADD COLUMN revoked_at {datetime_sql}"))
+
+
+def _add_column_if_missing(
+    conn,
+    table_columns: set[str],
+    table: str,
+    column: str,
+    sql_fragment: str,
+) -> None:
+    if column in table_columns:
+        return
+    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_fragment}"))
+
+
+def _ensure_runtime_compatibility_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        datetime_sql = str(DateTime().compile(dialect=conn.dialect))
+
+        if "device_sessions" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("device_sessions")}
+            _add_column_if_missing(conn, columns, "device_sessions", "user_agent", "VARCHAR(255) DEFAULT ''")
+            _add_column_if_missing(conn, columns, "device_sessions", "ip_address", "VARCHAR(80) DEFAULT ''")
+            _add_column_if_missing(conn, columns, "device_sessions", "created_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "device_sessions", "revoked_at", datetime_sql)
+
+        if "notifications" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("notifications")}
+            _add_column_if_missing(conn, columns, "notifications", "kind", "VARCHAR(50) DEFAULT 'system'")
+            _add_column_if_missing(conn, columns, "notifications", "payload", "TEXT DEFAULT '{}'")
+            _add_column_if_missing(conn, columns, "notifications", "read_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "notifications", "created_at", datetime_sql)
+
+        if "visitor_sessions" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("visitor_sessions")}
+            _add_column_if_missing(conn, columns, "visitor_sessions", "home_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "door_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "homeowner_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "visitor_label", "VARCHAR(120) DEFAULT 'Visitor'")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "status", "VARCHAR(40) DEFAULT 'pending'")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "started_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "visitor_sessions", "ended_at", datetime_sql)
+
+        if "messages" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("messages")}
+            _add_column_if_missing(conn, columns, "messages", "sender_type", "VARCHAR(20) DEFAULT 'visitor'")
+            _add_column_if_missing(conn, columns, "messages", "body", "TEXT DEFAULT ''")
+            _add_column_if_missing(conn, columns, "messages", "created_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "messages", "read_by_homeowner_at", datetime_sql)
+
+        if "homeowner_settings" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("homeowner_settings")}
+            _add_column_if_missing(conn, columns, "homeowner_settings", "push_alerts", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, "homeowner_settings", "sound_alerts", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(
+                conn,
+                columns,
+                "homeowner_settings",
+                "auto_reject_unknown_visitors",
+                "BOOLEAN DEFAULT 0",
+            )
+            _add_column_if_missing(conn, columns, "homeowner_settings", "created_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "homeowner_settings", "updated_at", datetime_sql)
+
+
+def _ensure_notification_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    if "notifications" not in table_names:
+        Base.metadata.tables["notifications"].create(bind=engine, checkfirst=True)
+    else:
+        notification_columns = {col["name"] for col in inspector.get_columns("notifications")}
+        with engine.begin() as conn:
+            if "read_at" not in notification_columns:
+                datetime_sql = DateTime().compile(dialect=conn.dialect)
+                conn.execute(text(f"ALTER TABLE notifications ADD COLUMN read_at {datetime_sql}"))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_notifications_user_read "
+                    "ON notifications (user_id, read_at)"
+                )
+            )
+
+
+def _ensure_homeowner_settings_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "homeowner_settings" not in table_names:
+        Base.metadata.tables["homeowner_settings"].create(bind=engine, checkfirst=True)
+
+
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
     missing: list[str] = []
     if not settings.LIVEKIT_URL.strip():
@@ -181,6 +289,10 @@ async def on_startup():
         logging.warning("%s (continuing because ENVIRONMENT=%s)", message, settings.ENVIRONMENT)
 
     Base.metadata.create_all(bind=engine)
+    _ensure_runtime_compatibility_schema()
+    _ensure_auth_runtime_schema()
+    _ensure_notification_schema()
+    _ensure_homeowner_settings_schema()
     _ensure_referral_schema()
     _ensure_message_read_schema()
     db = SessionLocal()

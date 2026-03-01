@@ -313,13 +313,19 @@ def google_signup(
 
 
 def rotate_refresh_token(db: Session, refresh_token: str):
+    token_value = (refresh_token or "").strip()
+    if not token_value:
+        raise AppException("Refresh token is required", status_code=400)
+
     session = (
         db.query(DeviceSession)
-        .filter(DeviceSession.refresh_token == refresh_token, DeviceSession.revoked_at.is_(None))
+        .filter(DeviceSession.refresh_token == token_value, DeviceSession.revoked_at.is_(None))
         .first()
     )
     if not session:
         raise AppException("Invalid refresh token", status_code=401)
+    if not session.user or not session.user.is_active:
+        raise AppException("User not found", status_code=401)
 
     access_token = create_access_token(session.user_id, session.user.role.value)
     new_refresh = create_refresh_token(session.user_id)
