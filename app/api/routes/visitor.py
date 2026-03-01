@@ -9,6 +9,13 @@ from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.db.session import get_db
 from app.schemas.visitor import VisitorRequestCreate
+from app.services.appointment_service import (
+    accept_appointment_share,
+    report_appointment_arrival,
+    resolve_appointment_share_token,
+    resolve_qr_appointment_token_for_request,
+    mark_appointment_qr_used,
+)
 from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import create_notification
 from app.services.qr_service import resolve_qr
@@ -24,14 +31,47 @@ class VisitorLiveKitTokenPayload(BaseModel):
     displayName: str | None = None
 
 
+class VisitorAppointmentAcceptPayload(BaseModel):
+    shareToken: str
+    deviceId: str
+    visitorName: str | None = None
+
+
+class VisitorAppointmentArrivalPayload(BaseModel):
+    shareToken: str
+    deviceId: str
+    lat: float | None = None
+    lng: float | None = None
+    batteryPct: int | None = None
+
+
 @router.post("/request")
 async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(get_db)):
     started = perf_counter()
     phase = "resolve_qr"
     session = None
     try:
-        qr = resolve_qr(db, payload.qrId)
+        appointment = None
+        if str(payload.qrId or "").startswith("qt1."):
+            resolved_appointment_qr = resolve_qr_appointment_token_for_request(
+                db,
+                qr_token=payload.qrId,
+                device_id=payload.deviceId,
+            )
+            appointment = resolved_appointment_qr.get("appointment")
+            qr = {
+                "home_id": resolved_appointment_qr.get("homeId"),
+                "doors": [resolved_appointment_qr.get("doorId")] if resolved_appointment_qr.get("doorId") else [],
+                "mode": "direct",
+            }
+        else:
+            qr = resolve_qr(db, payload.qrId)
         phase = "create_session"
+        effective_visitor_name = (payload.name or "").strip()
+        if not effective_visitor_name and appointment:
+            effective_visitor_name = appointment.visitor_name or "Visitor"
+        if not effective_visitor_name:
+            effective_visitor_name = "Visitor"
         session = create_visitor_session(
             db=db,
             qr_id=payload.qrId,
@@ -39,8 +79,11 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             doors=qr["doors"],
             mode=qr["mode"],
             requested_door=payload.doorId,
-            visitor_label=(payload.name or "Visitor").strip() or "Visitor",
+            visitor_label=effective_visitor_name,
+            appointment_id=appointment.id if appointment else None,
         )
+        if appointment:
+            mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
 
         phase = "create_notification"
         create_notification(
@@ -93,6 +136,77 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             payload.doorId,
         )
         raise
+
+
+@router.get("/appointments/resolve/{share_token}")
+def visitor_resolve_appointment_share(share_token: str, db: Session = Depends(get_db)):
+    appt = resolve_appointment_share_token(db, share_token)
+    return {
+        "data": {
+            "id": appt.id,
+            "visitorName": appt.visitor_name,
+            "purpose": appt.purpose,
+            "status": appt.status,
+            "startsAt": appt.starts_at.isoformat() if appt.starts_at else None,
+            "endsAt": appt.ends_at.isoformat() if appt.ends_at else None,
+            "doorId": appt.door_id,
+            "homeId": appt.home_id,
+            "geofenceLat": appt.geofence_lat,
+            "geofenceLng": appt.geofence_lng,
+            "geofenceRadiusMeters": int(appt.geofence_radius_m or 0),
+        }
+    }
+
+
+@router.post("/appointments/{appointment_id}/accept")
+def visitor_accept_appointment(
+    appointment_id: str,
+    payload: VisitorAppointmentAcceptPayload,
+    db: Session = Depends(get_db),
+):
+    data = accept_appointment_share(
+        db,
+        share_token=payload.shareToken,
+        device_id=payload.deviceId,
+        visitor_name=payload.visitorName,
+    )
+    if data.get("appointment", {}).get("id") != appointment_id:
+        raise AppException("Appointment mismatch.", status_code=400)
+    return {"data": data}
+
+
+@router.post("/appointments/{appointment_id}/arrival")
+async def visitor_appointment_arrival(
+    appointment_id: str,
+    payload: VisitorAppointmentArrivalPayload,
+    db: Session = Depends(get_db),
+):
+    data = report_appointment_arrival(
+        db,
+        appointment_id=appointment_id,
+        share_token=payload.shareToken,
+        device_id=payload.deviceId,
+        lat=payload.lat,
+        lng=payload.lng,
+        battery_pct=payload.batteryPct,
+    )
+    await sio.emit(
+        "dashboard.patch",
+        {
+            "data": {
+                "activity": [
+                    {
+                        "id": data.get("id"),
+                        "event": f"{data.get('visitorName') or 'Visitor'} entered geofence",
+                        "time": data.get("arrivedAt") or "",
+                        "state": "arrived",
+                    }
+                ]
+            }
+        },
+        namespace=settings.DASHBOARD_NAMESPACE,
+    )
+    return {"data": data}
 
 
 @router.get("/sessions/{session_id}")

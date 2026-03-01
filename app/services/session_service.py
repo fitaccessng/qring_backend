@@ -14,6 +14,7 @@ def create_visitor_session(
     mode: str,
     requested_door: str | None,
     visitor_label: str = "Visitor",
+    appointment_id: str | None = None,
 ) -> VisitorSession:
     selected_door = select_door(doors, mode, requested_door)
     door = db.query(Door).filter(Door.id == selected_door).first()
@@ -25,6 +26,7 @@ def create_visitor_session(
         home_id=home.id if home else qr_home_id,
         door_id=door.id if door else selected_door,
         homeowner_id=homeowner_id,
+        appointment_id=appointment_id,
         visitor_label=visitor_label,
         status="pending",
     )

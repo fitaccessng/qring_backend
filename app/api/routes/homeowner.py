@@ -21,6 +21,11 @@ from app.services.homeowner_service import (
     list_homeowner_message_threads,
     list_homeowner_visits,
 )
+from app.services.appointment_service import (
+    create_appointment,
+    create_appointment_share,
+    list_homeowner_appointments,
+)
 from app.services.session_service import mark_session_status
 from app.core.exceptions import AppException
 from app.services.livekit_service import issue_livekit_token
@@ -62,12 +67,63 @@ class LiveKitTokenPayload(BaseModel):
     displayName: Optional[str] = None
 
 
+class AppointmentCreatePayload(BaseModel):
+    doorId: str
+    visitorName: str
+    visitorContact: str = ""
+    purpose: str = ""
+    startsAt: str
+    endsAt: str
+    geofenceLat: float | None = None
+    geofenceLng: float | None = None
+    geofenceRadiusMeters: int | None = None
+
+
 @router.get("/visits")
 def homeowner_visits(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
     return {"data": list_homeowner_visits(db, homeowner_id=user.id)}
+
+
+@router.get("/appointments")
+def homeowner_appointments(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    return {"data": list_homeowner_appointments(db, homeowner_id=user.id)}
+
+
+@router.post("/appointments")
+def homeowner_create_appointment(
+    payload: AppointmentCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = create_appointment(
+        db,
+        homeowner_id=user.id,
+        door_id=payload.doorId,
+        visitor_name=payload.visitorName,
+        visitor_contact=payload.visitorContact,
+        purpose=payload.purpose,
+        starts_at_iso=payload.startsAt,
+        ends_at_iso=payload.endsAt,
+        geofence_lat=payload.geofenceLat,
+        geofence_lng=payload.geofenceLng,
+        geofence_radius_meters=payload.geofenceRadiusMeters,
+    )
+    return {"data": data}
+
+
+@router.post("/appointments/{appointment_id}/share")
+def homeowner_share_appointment(
+    appointment_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    return {"data": create_appointment_share(db, homeowner_id=user.id, appointment_id=appointment_id)}
 
 
 @router.get("/context")

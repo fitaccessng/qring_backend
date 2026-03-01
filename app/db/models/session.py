@@ -15,6 +15,7 @@ class VisitorSession(Base):
     home_id: Mapped[str] = mapped_column(String(36), ForeignKey("homes.id"), nullable=False, index=True)
     door_id: Mapped[str] = mapped_column(String(36), ForeignKey("doors.id"), nullable=False, index=True)
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    appointment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True, index=True)
     visitor_label: Mapped[str] = mapped_column(String(120), default="Visitor")
     status: Mapped[str] = mapped_column(String(40), default="pending")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

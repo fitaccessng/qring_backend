@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     LIVEKIT_ROOM_PREFIX: str = "qring-session-"
+    APPOINTMENT_SHARE_BASE_URL: str = "http://localhost:5173"
+    QR_TOKEN_SIGNING_KEY: str = ""
+    QR_TOKEN_ENCRYPTION_KEY: str = ""
+    APPOINTMENT_DEFAULT_GEOFENCE_RADIUS_METERS: int = 120
 
     @property
     def cors_origins(self) -> List[str]:

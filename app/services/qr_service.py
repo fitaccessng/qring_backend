@@ -2,10 +2,27 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.db.models import Door, Estate, Home, QRCode, User
+from app.services.appointment_service import resolve_qr_appointment_token_for_request
 from app.services.payment_service import is_paid_subscription_expired
 
 
 def resolve_qr(db: Session, qr_id: str) -> dict:
+    if str(qr_id or "").startswith("qt1."):
+        resolved = resolve_qr_appointment_token_for_request(db, qr_token=qr_id, device_id=None)
+        appointment = resolved.get("appointment")
+        return {
+            "qr_id": qr_id,
+            "plan": "appointment",
+            "home_id": resolved.get("homeId"),
+            "doors": [resolved.get("doorId")] if resolved.get("doorId") else [],
+            "doorOptions": resolved.get("doorOptions") or [],
+            "mode": "direct",
+            "estate_id": None,
+            "active": True,
+            "appointmentId": appointment.id if appointment else None,
+            "appointmentStatus": appointment.status if appointment else None,
+        }
+
     qr = db.query(QRCode).filter(QRCode.qr_id == qr_id).first()
     if not qr or not qr.active:
         raise AppException("QR not found or inactive", status_code=404)

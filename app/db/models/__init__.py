@@ -1,3 +1,4 @@
+from app.db.models.appointment import Appointment
 from app.db.models.device_session import DeviceSession
 from app.db.models.estate import Door, Estate, Home
 from app.db.models.homeowner_setting import HomeownerSetting
@@ -15,6 +16,7 @@ __all__ = [
     "Home",
     "HomeownerSetting",
     "AuditLog",
+    "Appointment",
     "Message",
     "Notification",
     "PaymentPurpose",

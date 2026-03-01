@@ -6,6 +6,7 @@ class VisitorRequestCreate(BaseModel):
     doorId: str | None = None
     name: str | None = None
     purpose: str | None = None
+    deviceId: str | None = None
 
 
 class VisitorRequestResponse(BaseModel):
