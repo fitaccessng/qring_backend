@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     VAPID_SUBJECT: str = "mailto:admin@useqring.online"
     PAYSTACK_SECRET_KEY: str = ""
     PAYSTACK_PUBLIC_KEY: str = ""
-    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    FRONTEND_BASE_URL: str = "https://www.useqring.online"
     FIREBASE_PROJECT_ID: str = ""
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
     FIREBASE_SERVICE_ACCOUNT_BASE64: str = ""
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     LIVEKIT_ROOM_PREFIX: str = "qring-session-"
-    APPOINTMENT_SHARE_BASE_URL: str = "http://localhost:5173"
+    APPOINTMENT_SHARE_BASE_URL: str = "https://www.useqring.online"
     QR_TOKEN_SIGNING_KEY: str = ""
     QR_TOKEN_ENCRYPTION_KEY: str = ""
     APPOINTMENT_DEFAULT_GEOFENCE_RADIUS_METERS: int = 120

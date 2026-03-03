@@ -15,11 +15,102 @@ settings = get_settings()
 REFERRAL_REWARD_AMOUNT = 2000
 
 DEFAULT_PLAN_CATALOG = [
-    {"id": "free", "name": "Starter", "amount": 0, "currency": "NGN", "maxDoors": 1, "maxQrCodes": 1, "active": True},
-    {"id": "doors_20", "name": "Basic Plan", "amount": 12000, "currency": "NGN", "maxDoors": 10, "maxQrCodes": 10, "active": True},
-    {"id": "doors_40", "name": "Standard Plan", "amount": 25000, "currency": "NGN", "maxDoors": 22, "maxQrCodes": 22, "active": True},
-    {"id": "doors_80", "name": "Pro Estate Plan", "amount": 50000, "currency": "NGN", "maxDoors": 46, "maxQrCodes": 46, "active": True},
-    {"id": "doors_100", "name": "Premium Estate Plan", "amount": 100000, "currency": "NGN", "maxDoors": 100, "maxQrCodes": 100, "active": True},
+    {
+        "id": "estate_starter",
+        "name": "Starter Estate",
+        "amount": 0,
+        "currency": "NGN",
+        "maxDoors": 3,
+        "maxQrCodes": 3,
+        "active": True,
+        "audience": "estate",
+        "trialDays": 60,
+        "selfServe": True,
+        "description": "Trial only - 60 days",
+    },
+    {
+        "id": "estate_basic",
+        "name": "Estate Basic",
+        "amount": 8000,
+        "currency": "NGN",
+        "maxDoors": 10,
+        "maxQrCodes": 10,
+        "active": True,
+        "audience": "estate",
+        "selfServe": True,
+    },
+    {
+        "id": "estate_growth",
+        "name": "Estate Growth",
+        "amount": 18000,
+        "currency": "NGN",
+        "maxDoors": 25,
+        "maxQrCodes": 25,
+        "active": True,
+        "audience": "estate",
+        "selfServe": True,
+    },
+    {
+        "id": "estate_pro",
+        "name": "Estate Pro",
+        "amount": 35000,
+        "currency": "NGN",
+        "maxDoors": 60,
+        "maxQrCodes": 60,
+        "active": True,
+        "audience": "estate",
+        "selfServe": True,
+    },
+    {
+        "id": "estate_enterprise",
+        "name": "Enterprise Estate",
+        "amount": 0,
+        "currency": "NGN",
+        "maxDoors": 0,
+        "maxQrCodes": 0,
+        "active": True,
+        "audience": "estate",
+        "selfServe": False,
+        "description": "Custom annual contract",
+    },
+    {
+        "id": "free",
+        "name": "Free",
+        "amount": 0,
+        "currency": "NGN",
+        "maxDoors": 1,
+        "maxQrCodes": 1,
+        "active": True,
+        "audience": "homeowner",
+        "selfServe": True,
+    },
+    {
+        "id": "home_pro",
+        "name": "Home Pro",
+        "amount": 2500,
+        "currency": "NGN",
+        "maxDoors": 1,
+        "maxQrCodes": 5,
+        "active": True,
+        "audience": "homeowner",
+        "selfServe": True,
+    },
+    {
+        "id": "home_premium",
+        "name": "Home Premium",
+        "amount": 4500,
+        "currency": "NGN",
+        "maxDoors": 5,
+        "maxQrCodes": 20,
+        "active": True,
+        "audience": "homeowner",
+        "selfServe": True,
+    },
+    # Legacy plans retained for backwards compatibility with existing subscriptions.
+    {"id": "doors_20", "name": "Legacy Basic Plan", "amount": 12000, "currency": "NGN", "maxDoors": 10, "maxQrCodes": 10, "active": True, "audience": "legacy", "selfServe": False, "hidden": True},
+    {"id": "doors_40", "name": "Legacy Standard Plan", "amount": 25000, "currency": "NGN", "maxDoors": 22, "maxQrCodes": 22, "active": True, "audience": "legacy", "selfServe": False, "hidden": True},
+    {"id": "doors_80", "name": "Legacy Pro Estate Plan", "amount": 50000, "currency": "NGN", "maxDoors": 46, "maxQrCodes": 46, "active": True, "audience": "legacy", "selfServe": False, "hidden": True},
+    {"id": "doors_100", "name": "Legacy Premium Estate Plan", "amount": 100000, "currency": "NGN", "maxDoors": 100, "maxQrCodes": 100, "active": True, "audience": "legacy", "selfServe": False, "hidden": True},
 ]
 
 
@@ -156,6 +247,7 @@ def list_subscription_plans(db: Session, include_inactive: bool = False):
     if not include_inactive:
         q = q.filter(SubscriptionPlan.active == True)  # noqa: E712
     rows = q.all()
+    catalog_by_id = {row["id"]: row for row in DEFAULT_PLAN_CATALOG}
     return [
         {
             "id": row.id,
@@ -165,6 +257,11 @@ def list_subscription_plans(db: Session, include_inactive: bool = False):
             "maxDoors": int(row.max_doors or 0),
             "maxQrCodes": int(row.max_qr_codes or 0),
             "active": bool(row.active),
+            "audience": (catalog_by_id.get(row.id) or {}).get("audience", "homeowner"),
+            "trialDays": int((catalog_by_id.get(row.id) or {}).get("trialDays", 0) or 0),
+            "selfServe": bool((catalog_by_id.get(row.id) or {}).get("selfServe", True)),
+            "hidden": bool((catalog_by_id.get(row.id) or {}).get("hidden", False)),
+            "description": (catalog_by_id.get(row.id) or {}).get("description", ""),
         }
         for row in rows
     ]
@@ -177,6 +274,7 @@ def get_plan_or_raise(db: Session, plan_id: str, include_inactive: bool = False)
         q = q.filter(SubscriptionPlan.active == True)  # noqa: E712
     row = q.first()
     if row:
+        catalog_row = next((item for item in DEFAULT_PLAN_CATALOG if item["id"] == row.id), {})
         return {
             "id": row.id,
             "name": row.name,
@@ -185,6 +283,11 @@ def get_plan_or_raise(db: Session, plan_id: str, include_inactive: bool = False)
             "maxDoors": int(row.max_doors or 0),
             "maxQrCodes": int(row.max_qr_codes or 0),
             "active": bool(row.active),
+            "audience": catalog_row.get("audience", "homeowner"),
+            "trialDays": int(catalog_row.get("trialDays", 0) or 0),
+            "selfServe": bool(catalog_row.get("selfServe", True)),
+            "hidden": bool(catalog_row.get("hidden", False)),
+            "description": catalog_row.get("description", ""),
         }
     raise AppException("Invalid plan selected", status_code=400)
 
@@ -228,21 +331,21 @@ def get_effective_subscription(db: Session, user_id: str):
     row = get_user_subscription(db, user_id)
     now = datetime.utcnow()
     if row and row.status == "active":
+        try:
+            plan_meta = get_plan_or_raise(db, row.plan) if row.plan else get_plan_or_raise(db, "free")
+        except AppException:
+            plan_meta = get_plan_or_raise(db, "free")
+            row.plan = "free"
+
+        trial_days = int(plan_meta.get("trialDays") or 0)
         if row.plan != "free":
-            expiry_at = row.ends_at or (
-                (row.starts_at + timedelta(days=30)) if row.starts_at else None
-            )
+            expiry_days = trial_days if trial_days > 0 else 30
+            expiry_at = row.ends_at or ((row.starts_at + timedelta(days=expiry_days)) if row.starts_at else None)
             if expiry_at and now > expiry_at:
                 row.status = "expired"
                 row.ends_at = row.ends_at or expiry_at
                 db.commit()
             else:
-                try:
-                    plan_meta = get_plan_or_raise(db, row.plan) if row.plan else get_plan_or_raise(db, "free")
-                except AppException:
-                    # Fail closed to free plan limits when an unexpected plan id exists.
-                    plan_meta = get_plan_or_raise(db, "free")
-                    row.plan = "free"
                 return {
                     "id": row.id,
                     "plan": row.plan,
@@ -315,6 +418,8 @@ def initialize_paystack_transaction_db(
     billing_cycle: str = "monthly",
 ):
     plan = get_plan_or_raise(db, plan_id)
+    if not plan.get("selfServe", True):
+        raise AppException("This plan requires manual sales onboarding", status_code=400)
     if plan["amount"] <= 0:
         raise AppException("Free plan does not require Paystack checkout", status_code=400)
     cycle = (billing_cycle or "monthly").strip().lower()

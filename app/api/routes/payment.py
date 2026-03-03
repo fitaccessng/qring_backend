@@ -141,7 +141,10 @@ def payment_request_subscription(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner", "estate")),
 ):
-    if payload.plan != "free":
+    plan = get_plan_or_raise(db, payload.plan)
+    if not plan.get("selfServe", True):
+        raise AppException("This plan requires manual sales onboarding", status_code=400)
+    if int(plan.get("amount") or 0) > 0:
         raise AppException("Use Paystack checkout for paid plans", status_code=400)
     sub = activate_subscription(db, user_id=user.id, plan=payload.plan)
     return {"data": {"id": sub.id, "plan": sub.plan, "status": sub.status}}
