@@ -3,6 +3,7 @@ import hmac
 import uuid
 from datetime import datetime, timedelta
 from hashlib import sha512
+from urllib.parse import urlparse
 from urllib import error, request
 
 from sqlalchemy.orm import Session
@@ -112,6 +113,35 @@ DEFAULT_PLAN_CATALOG = [
     {"id": "doors_80", "name": "Legacy Pro Estate Plan", "amount": 50000, "currency": "NGN", "maxDoors": 46, "maxQrCodes": 46, "active": True, "audience": "legacy", "selfServe": False, "hidden": True},
     {"id": "doors_100", "name": "Legacy Premium Estate Plan", "amount": 100000, "currency": "NGN", "maxDoors": 100, "maxQrCodes": 100, "active": True, "audience": "legacy", "selfServe": False, "hidden": True},
 ]
+
+
+def _normalize_url(value: str | None) -> str:
+    return (value or "").strip().rstrip("/")
+
+
+def _is_public_https_url(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and host not in {"", "localhost", "127.0.0.1"}
+
+
+def _extract_paystack_error(detail: str) -> tuple[str | None, str]:
+    fallback_message = (detail or "").strip()
+    try:
+        parsed = json.loads(detail)
+    except Exception:
+        return None, fallback_message
+
+    code = parsed.get("code")
+    message = parsed.get("message") or fallback_message
+    if not code and isinstance(parsed.get("data"), dict):
+        code = parsed["data"].get("code")
+        message = parsed["data"].get("message") or message
+    if code is not None:
+        code = str(code).strip()
+    return code, str(message).strip()
 
 
 def create_payment_purpose(db: Session, name: str, description: str, account_info: str):
@@ -428,8 +458,9 @@ def initialize_paystack_transaction_db(
     cycle_multiplier = 12 if cycle == "yearly" else 1
     if not settings.PAYSTACK_SECRET_KEY:
         raise AppException("Paystack is not configured", status_code=500)
+    frontend_base_url = _normalize_url(settings.FRONTEND_BASE_URL)
     if settings.PAYSTACK_SECRET_KEY.startswith("sk_live") and (
-        "localhost" in settings.FRONTEND_BASE_URL or "127.0.0.1" in settings.FRONTEND_BASE_URL
+        "localhost" in frontend_base_url or "127.0.0.1" in frontend_base_url
     ):
         raise AppException(
             "Live Paystack cannot be initialized with localhost frontend. Use a public HTTPS domain in FRONTEND_BASE_URL or use test keys for local development.",
@@ -450,13 +481,9 @@ def initialize_paystack_transaction_db(
         },
     }
 
-    resolved_callback = callback_url or f"{settings.FRONTEND_BASE_URL}/billing/callback"
-    callback_is_public_https = (
-        isinstance(resolved_callback, str)
-        and resolved_callback.startswith("https://")
-        and "localhost" not in resolved_callback
-        and "127.0.0.1" not in resolved_callback
-    )
+    normalized_callback = _normalize_url(callback_url)
+    resolved_callback = normalized_callback or f"{frontend_base_url}/billing/callback"
+    callback_is_public_https = _is_public_https_url(resolved_callback)
     if callback_is_public_https:
         payload["callback_url"] = resolved_callback
     body = json.dumps(payload).encode("utf-8")
@@ -474,12 +501,15 @@ def initialize_paystack_transaction_db(
             data = json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        if '"code":"1010"' in detail or '"code":1010' in detail:
+        error_code, error_message = _extract_paystack_error(detail)
+        if error_code == "1010":
             raise AppException(
-                "Paystack blocked this initialization (1010). Check IP whitelist, live-mode domain/callback, and use public HTTPS URLs.",
+                f"Paystack blocked initialization (1010: {error_message or 'operation blocked'}). "
+                f"Check Paystack live-mode restrictions: callback/domain allowlist and server IP allowlist. "
+                f"frontendBaseUrl={frontend_base_url}, callback={resolved_callback if callback_is_public_https else '<omitted>'}",
                 status_code=502,
             )
-        raise AppException(f"Paystack initialize failed: {detail}", status_code=502)
+        raise AppException(f"Paystack initialize failed: {error_message or detail}", status_code=502)
     except Exception:
         raise AppException("Paystack initialize failed", status_code=502)
 
