@@ -557,15 +557,28 @@ def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None)
     except Exception:
         raise AppException("Invalid webhook payload", status_code=400)
 
-    if event.get("event") != "charge.success":
+    event_name = str(event.get("event") or "").strip().lower()
+    if event_name not in {"charge.success", "charge.failed"}:
         return {"status": "ignored"}
 
     data = event.get("data") or {}
     metadata = data.get("metadata") or {}
+    if metadata.get("payment_kind") == "estate_alert":
+        from app.services.estate_alert_service import apply_alert_payment_webhook
+
+        return apply_alert_payment_webhook(
+            db=db,
+            metadata=metadata,
+            reference=data.get("reference"),
+            status=data.get("status") or ("failed" if event_name == "charge.failed" else "success"),
+            amount_kobo=data.get("amount"),
+            paid_at_iso=data.get("paid_at"),
+            paystack_transaction_id=data.get("id"),
+        )
+
     user_id = metadata.get("user_id")
     plan_id = metadata.get("plan")
     payment_status = data.get("status")
-
     if payment_status != "success" or not user_id or not plan_id:
         return {"status": "ignored"}
 

@@ -1,10 +1,18 @@
-from fastapi import APIRouter, Depends
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
 from app.db.models import User
 from app.db.session import get_db
+from app.services.estate_alert_service import (
+    create_estate_alert,
+    list_estate_alert_payment_overview,
+    list_estate_alerts,
+    list_homeowner_alerts,
+)
 from app.services.estate_service import (
     add_estate_door,
     add_home,
@@ -73,6 +81,15 @@ class DoorAdminProfileUpdatePayload(BaseModel):
     homeownerName: str | None = None
     homeownerEmail: str | None = None
     newPassword: str | None = None
+
+
+class EstateAlertCreatePayload(BaseModel):
+    estateId: str
+    title: str
+    description: str = ""
+    alertType: str
+    amountDue: float | None = None
+    dueDate: str | None = None
 
 
 @router.post("/")
@@ -255,3 +272,63 @@ def estate_plan_restrictions(
     user: User = Depends(require_roles("estate", "admin")),
 ):
     return {"data": get_estate_plan_restrictions(db=db, owner_id=user.id)}
+
+
+@router.post("/alerts")
+def estate_create_alert(
+    payload: EstateAlertCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    due_date = None
+    if payload.dueDate:
+        try:
+            due_date = datetime.fromisoformat(payload.dueDate.replace("Z", "+00:00"))
+        except Exception:
+            due_date = None
+
+    data = create_estate_alert(
+        db=db,
+        estate_id=payload.estateId,
+        estate_admin_id=user.id,
+        title=payload.title,
+        description=payload.description,
+        alert_type=payload.alertType,
+        amount_due=payload.amountDue,
+        due_date=due_date,
+    )
+    return {"data": data}
+
+
+@router.get("/{estate_id}/alerts")
+def estate_alerts_list(
+    estate_id: str,
+    alert_type: str | None = Query(default=None, alias="alertType"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "homeowner")),
+):
+    data = list_estate_alerts(
+        db=db,
+        estate_id=estate_id,
+        actor_id=user.id,
+        actor_role=user.role,
+        alert_type=alert_type,
+    )
+    return {"data": data}
+
+
+@router.get("/alerts/me")
+def estate_alerts_me(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    return {"data": list_homeowner_alerts(db, homeowner_id=user.id)}
+
+
+@router.get("/{estate_id}/alerts/payments")
+def estate_alerts_payment_overview(
+    estate_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate")),
+):
+    return {"data": list_estate_alert_payment_overview(db, estate_id=estate_id, estate_admin_id=user.id)}

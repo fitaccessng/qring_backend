@@ -18,6 +18,8 @@ from app.db.models import Door, Home, Notification, QRCode, User, UserRole
 from app.db.session import SessionLocal, engine
 from app.middleware.request_context import RequestContextMiddleware
 from app.middleware.access_control import AccessControlMiddleware
+from app.middleware.input_sanitization import InputSanitizationMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.socket.server import sio
 
 settings = get_settings()
@@ -26,6 +28,14 @@ setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 fastapi_app.add_middleware(RequestContextMiddleware)
+fastapi_app.add_middleware(
+    RateLimitMiddleware,
+    window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+    max_requests=settings.RATE_LIMIT_MAX_REQUESTS,
+    auth_window_seconds=settings.RATE_LIMIT_AUTH_WINDOW_SECONDS,
+    auth_max_requests=settings.RATE_LIMIT_AUTH_MAX_REQUESTS,
+)
+fastapi_app.add_middleware(InputSanitizationMiddleware)
 fastapi_app.add_middleware(AccessControlMiddleware)
 fastapi_app.add_middleware(
     CORSMiddleware,

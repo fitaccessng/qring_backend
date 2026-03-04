@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     QR_TOKEN_SIGNING_KEY: str = ""
     QR_TOKEN_ENCRYPTION_KEY: str = ""
     APPOINTMENT_DEFAULT_GEOFENCE_RADIUS_METERS: int = 120
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_MAX_REQUESTS: int = 120
+    RATE_LIMIT_AUTH_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_AUTH_MAX_REQUESTS: int = 20
 
     @property
     def cors_origins(self) -> List[str]:

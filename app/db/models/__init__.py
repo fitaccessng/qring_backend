@@ -1,5 +1,6 @@
 from app.db.models.appointment import Appointment
 from app.db.models.device_session import DeviceSession
+from app.db.models.estate_alert import EstateAlert, EstateAlertType, HomeownerPayment, HomeownerPaymentStatus
 from app.db.models.estate import Door, Estate, Home
 from app.db.models.homeowner_setting import HomeownerSetting
 from app.db.models.audit import AuditLog
@@ -13,8 +14,12 @@ __all__ = [
     "DeviceSession",
     "Door",
     "Estate",
+    "EstateAlert",
+    "EstateAlertType",
     "Home",
     "HomeownerSetting",
+    "HomeownerPayment",
+    "HomeownerPaymentStatus",
     "AuditLog",
     "Appointment",
     "Message",
