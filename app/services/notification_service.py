@@ -71,3 +71,9 @@ def mark_all_notifications_read(db: Session, user_id: str) -> int:
         row.read_at = now
     db.commit()
     return len(rows)
+
+
+def clear_all_notifications(db: Session, user_id: str) -> int:
+    deleted = db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
+    db.commit()
+    return int(deleted or 0)
