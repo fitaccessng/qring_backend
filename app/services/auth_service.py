@@ -13,6 +13,7 @@ from app.core.exceptions import AppException
 from app.core.security import (
     create_access_token,
     create_refresh_token,
+    decode_token,
     hash_password,
     verify_password,
 )
@@ -317,6 +318,16 @@ def rotate_refresh_token(db: Session, refresh_token: str):
     if not token_value:
         raise AppException("Refresh token is required", status_code=400)
 
+    try:
+        claims = decode_token(token_value)
+    except ValueError as exc:
+        raise AppException("Invalid or expired refresh token", status_code=401) from exc
+
+    token_type = str(claims.get("type") or "").strip().lower()
+    token_subject = str(claims.get("sub") or "").strip()
+    if token_type != "refresh" or not token_subject:
+        raise AppException("Invalid refresh token", status_code=401)
+
     session = (
         db.query(DeviceSession)
         .filter(DeviceSession.refresh_token == token_value, DeviceSession.revoked_at.is_(None))
@@ -324,7 +335,13 @@ def rotate_refresh_token(db: Session, refresh_token: str):
     )
     if not session:
         raise AppException("Invalid refresh token", status_code=401)
+    if str(session.user_id) != token_subject:
+        session.revoked_at = datetime.utcnow()
+        db.commit()
+        raise AppException("Invalid refresh token", status_code=401)
     if not session.user or not session.user.is_active:
+        session.revoked_at = datetime.utcnow()
+        db.commit()
         raise AppException("User not found", status_code=401)
 
     access_token = create_access_token(session.user_id, session.user.role.value)
