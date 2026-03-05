@@ -1,5 +1,6 @@
 import json
 import uuid
+import re
 from datetime import datetime
 from decimal import Decimal
 from urllib import error, request
@@ -23,6 +24,27 @@ from app.db.models import (
 from app.socket.server import sio
 
 settings = get_settings()
+
+
+def _extract_paystack_error(detail: str) -> tuple[str | None, str]:
+    fallback_message = (detail or "").strip()
+    try:
+        parsed = json.loads(detail)
+    except Exception:
+        if re.search(r"(^|\\D)1010(\\D|$)", fallback_message):
+            return "1010", fallback_message
+        return None, fallback_message
+
+    code = parsed.get("code")
+    message = parsed.get("message") or fallback_message
+    if not code and isinstance(parsed.get("data"), dict):
+        code = parsed["data"].get("code")
+        message = parsed["data"].get("message") or message
+    if code is not None:
+        code = str(code).strip()
+    if not code and re.search(r"(^|\\D)1010(\\D|$)", str(message)):
+        code = "1010"
+    return code, str(message).strip()
 
 
 def _to_money(value) -> float:
@@ -345,7 +367,14 @@ def initialize_alert_payment(
             data = json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise AppException(f"Paystack initialize failed: {detail}", status_code=502)
+        error_code, error_message = _extract_paystack_error(detail)
+        if error_code == "1010":
+            raise AppException(
+                "Paystack blocked initialization (1010). "
+                "Check live-mode restrictions: callback/domain allowlist and API IP allowlist.",
+                status_code=502,
+            )
+        raise AppException(f"Paystack initialize failed: {error_message or detail}", status_code=502)
     except Exception:
         raise AppException("Paystack initialize failed", status_code=502)
 

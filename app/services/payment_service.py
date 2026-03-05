@@ -1,6 +1,7 @@
 import json
 import hmac
 import uuid
+import re
 from datetime import datetime, timedelta
 from hashlib import sha512
 from urllib.parse import urlparse
@@ -141,6 +142,8 @@ def _extract_paystack_error(detail: str) -> tuple[str | None, str]:
         message = parsed["data"].get("message") or message
     if code is not None:
         code = str(code).strip()
+    if not code and re.search(r"(^|\\D)1010(\\D|$)", message):
+        code = "1010"
     return code, str(message).strip()
 
 
