@@ -324,6 +324,24 @@ def _ensure_homeowner_settings_schema() -> None:
 def _ensure_call_sessions_schema() -> None:
     # Keep call runtime available even when migrations were not executed in an environment.
     Base.metadata.tables["call_sessions"].create(bind=engine, checkfirst=True)
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "call_sessions" not in table_names:
+        return
+    columns = {col["name"] for col in inspector.get_columns("call_sessions")}
+    with engine.begin() as conn:
+        _add_column_if_missing(conn, columns, "call_sessions", "appointment_id", "VARCHAR(36)")
+        _add_column_if_missing(conn, columns, "call_sessions", "visitor_session_id", "VARCHAR(36)")
+        _add_column_if_missing(conn, columns, "call_sessions", "room_name", "VARCHAR(160)")
+        _add_column_if_missing(conn, columns, "call_sessions", "visitor_id", "VARCHAR(120)")
+        _add_column_if_missing(conn, columns, "call_sessions", "homeowner_id", "VARCHAR(36)")
+        _add_column_if_missing(conn, columns, "call_sessions", "status", "VARCHAR(20) DEFAULT 'pending'")
+        _add_column_if_missing(conn, columns, "call_sessions", "created_at", str(DateTime().compile(dialect=conn.dialect)))
+        _add_column_if_missing(conn, columns, "call_sessions", "ended_at", str(DateTime().compile(dialect=conn.dialect)))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_call_sessions_room_name ON call_sessions (room_name)"))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_call_sessions_visitor_session_id ON call_sessions (visitor_session_id)")
+        )
 
 
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
