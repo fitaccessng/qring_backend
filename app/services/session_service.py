@@ -16,6 +16,30 @@ def create_visitor_session(
     visitor_label: str = "Visitor",
     appointment_id: str | None = None,
 ) -> VisitorSession:
+    if appointment_id:
+        existing = (
+            db.query(VisitorSession)
+            .filter(
+                VisitorSession.appointment_id == appointment_id,
+                VisitorSession.status.in_({"pending", "active", "approved"}),
+            )
+            .order_by(VisitorSession.started_at.desc())
+            .first()
+        )
+        if existing:
+            updated = False
+            desired_label = (visitor_label or "Visitor").strip() or "Visitor"
+            if existing.visitor_label != desired_label:
+                existing.visitor_label = desired_label
+                updated = True
+            if existing.status in {"pending", "approved"} and existing.status != "pending":
+                existing.status = "pending"
+                updated = True
+            if updated:
+                db.commit()
+                db.refresh(existing)
+            return existing
+
     selected_door = select_door(doors, mode, requested_door)
     door = db.query(Door).filter(Door.id == selected_door).first()
     home = db.query(Home).filter(Home.id == (door.home_id if door else qr_home_id)).first()

@@ -116,6 +116,39 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             },
             namespace=settings.DASHBOARD_NAMESPACE,
         )
+        await sio.emit(
+            "incoming-call",
+            {
+                "sessionId": session.id,
+                "callSessionId": "",
+                "appointmentId": appointment.id if appointment else None,
+                "homeownerId": session.homeowner_id,
+                "visitorId": session.id,
+                "visitorName": effective_visitor_name,
+                "doorId": session.door_id,
+                "hasVideo": False,
+                "state": "ringing",
+                "message": f"{effective_visitor_name} arrived at your door.",
+            },
+            room=f"user:{session.homeowner_id}",
+            namespace=settings.DASHBOARD_NAMESPACE,
+        )
+        await sio.emit(
+            "incoming-call",
+            {
+                "sessionId": session.id,
+                "callSessionId": "",
+                "appointmentId": appointment.id if appointment else None,
+                "homeownerId": session.homeowner_id,
+                "visitorId": session.id,
+                "visitorName": effective_visitor_name,
+                "doorId": session.door_id,
+                "hasVideo": False,
+                "state": "ringing",
+            },
+            room=f"homeowner:{session.homeowner_id}",
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
 
         elapsed_ms = (perf_counter() - started) * 1000
         logger.info(
@@ -205,6 +238,40 @@ async def visitor_appointment_arrival(
             }
         },
         namespace=settings.DASHBOARD_NAMESPACE,
+    )
+    await sio.emit(
+        "incoming-call",
+        {
+            "sessionId": data.get("sessionId"),
+            "callSessionId": "",
+            "appointmentId": appointment_id,
+            "homeownerId": data.get("homeownerId"),
+            "visitorId": data.get("visitorId") or data.get("sessionId"),
+            "visitorName": data.get("visitorName") or "Visitor",
+            "doorId": data.get("doorId"),
+            "hasVideo": False,
+            "state": "ringing",
+            "message": f"{data.get('visitorName') or 'Visitor'} arrived for appointment.",
+        },
+        room=f"user:{data.get('homeownerId')}",
+        namespace=settings.DASHBOARD_NAMESPACE,
+    )
+    await sio.emit(
+        "incoming-call",
+        {
+            "sessionId": data.get("sessionId"),
+            "callSessionId": "",
+            "appointmentId": appointment_id,
+            "homeownerId": data.get("homeownerId"),
+            "visitorId": data.get("visitorId") or data.get("sessionId"),
+            "visitorName": data.get("visitorName") or "Visitor",
+            "doorId": data.get("doorId"),
+            "hasVideo": False,
+            "state": "ringing",
+            "message": f"{data.get('visitorName') or 'Visitor'} arrived for appointment.",
+        },
+        room=f"homeowner:{data.get('homeownerId')}",
+        namespace=settings.SIGNALING_NAMESPACE,
     )
     return {"data": data}
 

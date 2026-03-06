@@ -110,6 +110,7 @@ def register_socket_events(sio):
         user_id = _resolve_user_id(auth)
         if user_id:
             socket_state.bind(user_id, sid)
+            await sio.enter_room(sid, f"user:{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
         await sio.emit(
             "dashboard.snapshot",
             {"data": {"message": "connected"}},
@@ -132,6 +133,7 @@ def register_socket_events(sio):
         user_id = _resolve_user_id(auth)
         if user_id:
             socket_state.bind(user_id, sid)
+            await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def disconnect(sid):  # type: ignore[no-redef]
@@ -345,5 +347,38 @@ def register_socket_events(sio):
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
             room=f"session:{session_id}",
             skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
+    @sio.on("visitor-arrived", namespace=settings.SIGNALING_NAMESPACE)
+    async def visitor_arrived(sid, payload):
+        homeowner_id = (payload or {}).get("homeownerId")
+        if not homeowner_id:
+            return
+        raw = payload or {}
+        event_payload = {
+            "sessionId": str(raw.get("sessionId") or "").strip(),
+            "callSessionId": str(raw.get("callSessionId") or "").strip(),
+            "visitorId": str(raw.get("visitorId") or raw.get("sessionId") or "").strip(),
+            "appointmentId": str(raw.get("appointmentId") or "").strip() or None,
+            "homeownerId": homeowner_id,
+            "visitorName": raw.get("visitorName"),
+            "doorId": raw.get("doorId"),
+            "hasVideo": bool(raw.get("hasVideo", False)),
+            "state": raw.get("state") or "ringing",
+            "message": raw.get("message"),
+            "senderSid": sid,
+            "at": datetime.utcnow().isoformat(),
+        }
+        await sio.emit(
+            "incoming-call",
+            event_payload,
+            room=f"user:{homeowner_id}",
+            namespace=settings.DASHBOARD_NAMESPACE,
+        )
+        await sio.emit(
+            "incoming-call",
+            event_payload,
+            room=f"homeowner:{homeowner_id}",
             namespace=settings.SIGNALING_NAMESPACE,
         )

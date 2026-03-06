@@ -42,3 +42,16 @@ class Notification(Base):
     payload: Mapped[str] = mapped_column(Text, nullable=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CallSession(Base):
+    __tablename__ = "call_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    appointment_id: Mapped[str] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=False, index=True)
+    room_name: Mapped[str] = mapped_column(String(160), nullable=False, unique=True, index=True)
+    visitor_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import alert, admin, auth, dashboard, estate, health, homeowner, notifications, payment, qr, visitor, ws_gateway
+from app.api.routes import alert, calls, admin, auth, dashboard, estate, health, homeowner, livekit, notifications, payment, qr, visitor, ws_gateway
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
@@ -15,4 +15,6 @@ api_router.include_router(alert.router, prefix="/alert", tags=["alert"])
 api_router.include_router(payment.router, prefix="/payment", tags=["payment"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(ws_gateway.router, tags=["websocket"])
+api_router.include_router(calls.router, prefix="/calls", tags=["calls"])
+api_router.include_router(livekit.router, tags=["livekit"])
 

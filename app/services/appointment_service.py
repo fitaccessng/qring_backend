@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import Appointment, Door, Home
+from app.db.models import Appointment, Door, Home, VisitorSession
 from app.services.notification_service import create_notification
 from app.services.qr_token_service import (
     build_qr_token_payload,
@@ -72,6 +72,53 @@ def _serialize_appointment(row: Appointment) -> dict[str, Any]:
         "createdAt": row.created_at.isoformat() if row.created_at else None,
         "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+def ensure_appointment_visitor_session(
+    db: Session,
+    *,
+    appointment: Appointment,
+    visitor_label: str | None = None,
+    status: str = "pending",
+) -> VisitorSession:
+    open_statuses = {"pending", "active", "approved"}
+    existing = (
+        db.query(VisitorSession)
+        .filter(
+            VisitorSession.appointment_id == appointment.id,
+            VisitorSession.homeowner_id == appointment.homeowner_id,
+            VisitorSession.status.in_(open_statuses),
+        )
+        .order_by(VisitorSession.started_at.desc())
+        .first()
+    )
+    if existing:
+        updated = False
+        desired_label = (visitor_label or appointment.visitor_name or "Visitor").strip() or "Visitor"
+        if desired_label and existing.visitor_label != desired_label:
+            existing.visitor_label = desired_label
+            updated = True
+        if status and existing.status not in {"rejected", "closed", "completed"} and existing.status != status:
+            existing.status = status
+            updated = True
+        if updated:
+            db.commit()
+            db.refresh(existing)
+        return existing
+
+    session = VisitorSession(
+        qr_id=f"appointment:{appointment.id}",
+        home_id=appointment.home_id,
+        door_id=appointment.door_id,
+        homeowner_id=appointment.homeowner_id,
+        appointment_id=appointment.id,
+        visitor_label=(visitor_label or appointment.visitor_name or "Visitor").strip() or "Visitor",
+        status=status or "pending",
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
 
 
 def list_homeowner_appointments(db: Session, homeowner_id: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -234,6 +281,13 @@ def accept_appointment_share(
     db.commit()
     db.refresh(appt)
 
+    session = ensure_appointment_visitor_session(
+        db,
+        appointment=appt,
+        visitor_label=effective_name,
+        status="pending",
+    )
+
     create_notification(
         db=db,
         user_id=appt.homeowner_id,
@@ -249,6 +303,7 @@ def accept_appointment_share(
     share_base = (settings.APPOINTMENT_SHARE_BASE_URL or settings.FRONTEND_BASE_URL or "").rstrip("/")
     return {
         "appointment": _serialize_appointment(appt),
+        "sessionId": session.id,
         "scanQrToken": qr_token_data["token"],
         "scanUrl": f"{share_base}/scan/{qr_token_data['token']}",
         "geofence": {
@@ -352,6 +407,13 @@ def report_appointment_arrival(
     db.commit()
     db.refresh(appt)
 
+    session = ensure_appointment_visitor_session(
+        db,
+        appointment=appt,
+        visitor_label=appt.visitor_name,
+        status="pending",
+    )
+
     create_notification(
         db=db,
         user_id=appt.homeowner_id,
@@ -364,4 +426,7 @@ def report_appointment_arrival(
         },
     )
 
-    return _serialize_appointment(appt)
+    data = _serialize_appointment(appt)
+    data["sessionId"] = session.id
+    data["visitorId"] = session.id
+    return data
