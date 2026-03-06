@@ -1,4 +1,6 @@
 import uuid
+import hmac
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,6 +19,22 @@ from app.services.qr_token_service import (
 )
 
 settings = get_settings()
+
+
+def _share_signing_key() -> bytes:
+    secret = (settings.QR_TOKEN_SIGNING_KEY or "").strip() or settings.JWT_SECRET_KEY
+    return secret.encode("utf-8")
+
+
+def _build_short_share_token(appointment_id: str, share_token_hash: str) -> str:
+    raw = f"{appointment_id}:{share_token_hash}".encode("utf-8")
+    signature = hmac.new(_share_signing_key(), raw, hashlib.sha256).hexdigest()[:20]
+    return f"asl.{appointment_id}.{signature}"
+
+
+def _is_valid_short_share_token(token: str, appointment_id: str, share_token_hash: str) -> bool:
+    expected = _build_short_share_token(appointment_id, share_token_hash)
+    return hmac.compare_digest(str(token or ""), expected)
 
 
 def _to_dt(value: str) -> datetime:
@@ -222,16 +240,38 @@ def create_appointment_share(
     db.refresh(appt)
 
     base = (settings.APPOINTMENT_SHARE_BASE_URL or settings.FRONTEND_BASE_URL or "").rstrip("/")
-    share_url = f"{base}/appointment/{token_data['token']}"
+    short_share_token = _build_short_share_token(appt.id, token_data["tokenHash"])
+    share_url = f"{base}/appointment/{short_share_token}"
     return {
         "appointment": _serialize_appointment(appt),
-        "shareToken": token_data["token"],
+        "shareToken": short_share_token,
         "shareUrl": share_url,
         "expiresAt": token_data["expiresAt"],
     }
 
 
 def resolve_appointment_share_token(db: Session, share_token: str) -> Appointment:
+    token_value = str(share_token or "").strip()
+    if token_value.startswith("asl."):
+        parts = token_value.split(".")
+        if len(parts) != 3:
+            raise AppException("Invalid share token format.", status_code=400)
+        _, appointment_id, _ = parts
+        appt = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appt:
+            raise AppException("Appointment not found.", status_code=404)
+        if not appt.share_token_hash:
+            raise AppException("Share token is no longer valid.", status_code=400)
+        if not _is_valid_short_share_token(token_value, appt.id, appt.share_token_hash):
+            raise AppException("Share token is no longer valid.", status_code=400)
+        if appt.status in {"cancelled", "completed", "expired"}:
+            raise AppException("Appointment is not active.", status_code=400)
+        if appt.ends_at <= datetime.utcnow():
+            appt.status = "expired"
+            db.commit()
+            raise AppException("Appointment has expired.", status_code=400)
+        return appt
+
     payload = decode_secure_token(share_token, "as1")
     if payload.get("scope") != "appointment-share":
         raise AppException("Invalid share token scope.", status_code=400)
