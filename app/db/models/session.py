@@ -48,7 +48,12 @@ class CallSession(Base):
     __tablename__ = "call_sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    appointment_id: Mapped[str] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=False, index=True)
+    appointment_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("appointments.id"), nullable=True, index=True
+    )
+    visitor_session_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("visitor_sessions.id"), nullable=True, index=True
+    )
     room_name: Mapped[str] = mapped_column(String(160), nullable=False, unique=True, index=True)
     visitor_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)

@@ -35,46 +35,63 @@ async def start_call_session(
     visitor_name: str | None = None,
 ) -> CallSession:
     effective_appointment_id = str(appointment_id or "").strip()
+    effective_homeowner_id = str(homeowner_id or "").strip()
     visitor_session = None
-    if not effective_appointment_id:
-        session_id = str(visitor_session_id or "").strip()
-        if not session_id:
-            raise AppException("appointmentId or sessionId is required.", status_code=400)
+    session_id = str(visitor_session_id or "").strip()
+    if session_id:
         visitor_session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
         if not visitor_session:
             raise AppException("Visitor session not found.", status_code=404)
         if homeowner_id and visitor_session.homeowner_id != homeowner_id:
             raise AppException("You are not allowed to start this call.", status_code=403)
-        if not visitor_session.appointment_id:
-            raise AppException("This session has no appointment bound for call start.", status_code=409)
-        effective_appointment_id = visitor_session.appointment_id
+        if not effective_homeowner_id:
+            effective_homeowner_id = visitor_session.homeowner_id
+        if not effective_appointment_id and visitor_session.appointment_id:
+            effective_appointment_id = visitor_session.appointment_id
 
-    appointment = db.query(Appointment).filter(Appointment.id == effective_appointment_id).first()
-    if not appointment:
-        raise AppException("Appointment not found.", status_code=404)
-    if homeowner_id and appointment.homeowner_id != homeowner_id:
-        raise AppException("You are not allowed to start this call.", status_code=403)
-    _validate_appointment_for_call(appointment)
+    if not effective_appointment_id and not visitor_session:
+        raise AppException("appointmentId or sessionId is required.", status_code=400)
+
+    appointment = None
+    if effective_appointment_id:
+        appointment = db.query(Appointment).filter(Appointment.id == effective_appointment_id).first()
+        if not appointment:
+            raise AppException("Appointment not found.", status_code=404)
+        if homeowner_id and appointment.homeowner_id != homeowner_id:
+            raise AppException("You are not allowed to start this call.", status_code=403)
+        _validate_appointment_for_call(appointment)
+        effective_homeowner_id = appointment.homeowner_id
+
+    if not effective_homeowner_id:
+        raise AppException("Homeowner context is required to start call.", status_code=400)
 
     visitor_identity = str(visitor_id or "").strip()
     if not visitor_identity and visitor_session:
         visitor_identity = visitor_session.id
-    if not visitor_identity:
+    if not visitor_identity and appointment:
         visitor_identity = f"appointment:{appointment.id}"
+    if not visitor_identity and visitor_session:
+        visitor_identity = visitor_session.id
 
-    existing = (
-        db.query(CallSession)
-        .filter(CallSession.appointment_id == appointment.id, CallSession.status.in_(CALL_ACTIVE_STATUSES))
-        .order_by(CallSession.created_at.desc())
-        .first()
-    )
+    existing_query = db.query(CallSession).filter(CallSession.status.in_(CALL_ACTIVE_STATUSES))
+    if appointment:
+        existing_query = existing_query.filter(CallSession.appointment_id == appointment.id)
+    elif visitor_session:
+        existing_query = existing_query.filter(CallSession.visitor_session_id == visitor_session.id)
+    else:
+        existing_query = existing_query.filter(
+            CallSession.homeowner_id == effective_homeowner_id,
+            CallSession.visitor_id == visitor_identity,
+        )
+    existing = existing_query.order_by(CallSession.created_at.desc()).first()
     if existing:
         if existing.visitor_id != visitor_identity:
-            raise AppException("Call already in progress for this appointment.", status_code=409)
+            raise AppException("Call already in progress for this session.", status_code=409)
         logger.info(
-            "call.start.reused_existing call_session_id=%s appointment_id=%s homeowner_id=%s",
+            "call.start.reused_existing call_session_id=%s appointment_id=%s visitor_session_id=%s homeowner_id=%s",
             existing.id,
             existing.appointment_id,
+            existing.visitor_session_id,
             existing.homeowner_id,
         )
         return existing
@@ -85,24 +102,28 @@ async def start_call_session(
 
     row = CallSession(
         id=call_session_id,
-        appointment_id=appointment.id,
+        appointment_id=appointment.id if appointment else None,
+        visitor_session_id=visitor_session.id if visitor_session else None,
         room_name=room_name,
         visitor_id=visitor_identity,
-        homeowner_id=appointment.homeowner_id,
+        homeowner_id=effective_homeowner_id,
         status="ringing",
     )
     db.add(row)
     db.commit()
     db.refresh(row)
 
-    effective_visitor_name = (visitor_name or "").strip() or appointment.visitor_name or "Visitor"
+    effective_visitor_name = (visitor_name or "").strip() or (
+        appointment.visitor_name if appointment else (visitor_session.visitor_label if visitor_session else "Visitor")
+    )
     create_notification(
         db=db,
-        user_id=appointment.homeowner_id,
+        user_id=effective_homeowner_id,
         kind="call.request",
         payload={
             "callSessionId": row.id,
-            "appointmentId": appointment.id,
+            "appointmentId": appointment.id if appointment else None,
+            "sessionId": visitor_session.id if visitor_session else None,
             "roomName": row.room_name,
             "visitorId": row.visitor_id,
             "visitorName": effective_visitor_name,
@@ -110,9 +131,10 @@ async def start_call_session(
         },
     )
     logger.info(
-        "call.started call_session_id=%s appointment_id=%s homeowner_id=%s visitor_id=%s room_name=%s",
+        "call.started call_session_id=%s appointment_id=%s visitor_session_id=%s homeowner_id=%s visitor_id=%s room_name=%s",
         row.id,
         row.appointment_id,
+        row.visitor_session_id,
         row.homeowner_id,
         row.visitor_id,
         row.room_name,
@@ -126,8 +148,15 @@ def _get_homeowner_display_name(db: Session, homeowner_id: str) -> str:
 
 
 def _get_visitor_display_name(db: Session, call_session: CallSession) -> str:
-    appointment = db.query(Appointment).filter(Appointment.id == call_session.appointment_id).first()
-    return (appointment.visitor_name if appointment else "") or "Visitor"
+    if call_session.appointment_id:
+        appointment = db.query(Appointment).filter(Appointment.id == call_session.appointment_id).first()
+        if appointment and appointment.visitor_name:
+            return appointment.visitor_name
+    if call_session.visitor_session_id:
+        visit = db.query(VisitorSession).filter(VisitorSession.id == call_session.visitor_session_id).first()
+        if visit and visit.visitor_label:
+            return visit.visitor_label
+    return "Visitor"
 
 
 def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: str) -> dict:
@@ -207,9 +236,10 @@ async def end_call_session(db: Session, *, call_session_id: str) -> CallSession:
         db.commit()
         db.refresh(row)
     logger.info(
-        "call.ended call_session_id=%s appointment_id=%s room_name=%s",
+        "call.ended call_session_id=%s appointment_id=%s visitor_session_id=%s room_name=%s",
         row.id,
         row.appointment_id,
+        row.visitor_session_id,
         row.room_name,
     )
 

@@ -284,6 +284,7 @@ def _ensure_runtime_compatibility_schema() -> None:
         if "call_sessions" in table_names:
             columns = {col["name"] for col in inspector.get_columns("call_sessions")}
             _add_column_if_missing(conn, columns, "call_sessions", "appointment_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "call_sessions", "visitor_session_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "call_sessions", "room_name", "VARCHAR(160)")
             _add_column_if_missing(conn, columns, "call_sessions", "visitor_id", "VARCHAR(120)")
             _add_column_if_missing(conn, columns, "call_sessions", "homeowner_id", "VARCHAR(36)")

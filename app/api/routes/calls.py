@@ -115,6 +115,8 @@ async def start_call(
     linked_session = None
     if payload.sessionId:
         linked_session = payload.sessionId
+    elif row.visitor_session_id:
+        linked_session = row.visitor_session_id
     else:
         visit = (
             db.query(VisitorSession)
@@ -222,8 +224,12 @@ async def end_call(
         db.query(VisitorSession.id)
         .filter(VisitorSession.appointment_id == row.appointment_id)
         .all()
+        if row.appointment_id
+        else []
     )
     session_ids = [r[0] for r in session_rows if r and r[0]]
+    if row.visitor_session_id and row.visitor_session_id not in session_ids:
+        session_ids.append(row.visitor_session_id)
     if row.visitor_id and row.visitor_id not in session_ids:
         session_ids.append(row.visitor_id)
 
