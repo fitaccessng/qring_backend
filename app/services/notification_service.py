@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -53,12 +54,17 @@ def list_notifications(db: Session, user_id: str) -> list[dict]:
         for session in db.query(VisitorSession).filter(VisitorSession.id.in_(list(session_ids))).all():
             sessions_by_id[session.id] = session
 
-    def _should_hide(payload: dict) -> bool:
+    def _should_hide(payload: dict, kind: str) -> bool:
         appointment_id = str(payload.get("appointmentId") or "").strip()
         if appointment_id:
             appt = appointments_by_id.get(appointment_id)
-            if appt and appt.status in {"completed", "cancelled", "expired"}:
-                return True
+            if appt:
+                if appt.status in {"completed", "cancelled", "expired"}:
+                    return True
+                if kind == "appointment.accepted" and appt.status in {"arrived", "active"}:
+                    return True
+                if kind == "appointment.arrival" and appt.status in {"active"}:
+                    return True
         session_id = str(payload.get("sessionId") or "").strip()
         if session_id:
             session = sessions_by_id.get(session_id)
@@ -67,10 +73,15 @@ def list_notifications(db: Session, user_id: str) -> list[dict]:
         return False
 
     items = []
+    dedupe_seen: set[str] = set()
     for row in rows:
         payload = parsed_payloads.get(row.id) or {}
-        if _should_hide(payload):
+        if _should_hide(payload, row.kind):
             continue
+        dedupe_key = f"{row.kind}|{str(payload.get('sessionId') or '').strip()}|{str(payload.get('appointmentId') or '').strip()}|{str(payload.get('message') or '').strip()}"
+        if dedupe_key in dedupe_seen:
+            continue
+        dedupe_seen.add(dedupe_key)
         items.append(
             {
                 "id": row.id,

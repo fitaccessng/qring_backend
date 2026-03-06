@@ -513,6 +513,12 @@ def initialize_paystack_transaction_db(
                 status_code=502,
             )
         raise AppException(f"Paystack initialize failed: {error_message or detail}", status_code=502)
+    except error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        raise AppException(
+            f"Paystack initialize failed: upstream network error ({reason or 'unreachable'}).",
+            status_code=502,
+        )
     except Exception:
         raise AppException("Paystack initialize failed", status_code=502)
 
@@ -539,6 +545,12 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise AppException(f"Paystack verify failed: {detail}", status_code=502)
+    except error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        raise AppException(
+            f"Paystack verify failed: upstream network error ({reason or 'unreachable'}).",
+            status_code=502,
+        )
     except Exception:
         raise AppException("Paystack verify failed", status_code=502)
 
