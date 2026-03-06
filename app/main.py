@@ -338,6 +338,8 @@ def _ensure_call_sessions_schema() -> None:
         _add_column_if_missing(conn, columns, "call_sessions", "status", "VARCHAR(20) DEFAULT 'pending'")
         _add_column_if_missing(conn, columns, "call_sessions", "created_at", str(DateTime().compile(dialect=conn.dialect)))
         _add_column_if_missing(conn, columns, "call_sessions", "ended_at", str(DateTime().compile(dialect=conn.dialect)))
+        if conn.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE call_sessions ALTER COLUMN appointment_id DROP NOT NULL"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_call_sessions_room_name ON call_sessions (room_name)"))
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_call_sessions_visitor_session_id ON call_sessions (visitor_session_id)")
