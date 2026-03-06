@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Door, Home, Message, QRCode, VisitorSession
+from app.db.models import Appointment, Door, Home, Message, QRCode, VisitorSession
 from app.core.exceptions import AppException
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
@@ -91,6 +91,12 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     if not session_by_id:
         return []
 
+    appointment_ids = [session.appointment_id for session, _ in sessions if session.appointment_id]
+    appointment_by_id: dict[str, Appointment] = {}
+    if appointment_ids:
+        appointment_rows = db.query(Appointment).filter(Appointment.id.in_(appointment_ids)).all()
+        appointment_by_id = {row.id: row for row in appointment_rows}
+
     messages = (
         db.query(Message)
         .filter(Message.session_id.in_(list(session_by_id.keys())))
@@ -110,16 +116,31 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     threads: list[dict[str, Any]] = []
     for session_id, (session, door) in session_by_id.items():
         latest = latest_by_session.get(session_id)
-        if not latest:
+        linked_appointment = appointment_by_id.get(session.appointment_id) if session.appointment_id else None
+        is_accepted_session = bool(
+            linked_appointment and linked_appointment.status in {"accepted", "arrived", "active"}
+        )
+        if not latest and not is_accepted_session:
             continue
+
+        thread_time = (
+            latest.created_at
+            if latest
+            else (linked_appointment.accepted_at if linked_appointment and linked_appointment.accepted_at else session.started_at)
+        )
+        last_text = (
+            latest.body
+            if latest
+            else "Visitor accepted appointment. Start the conversation."
+        )
         threads.append(
             {
                 "id": session_id,
                 "name": session.visitor_label or "Visitor",
                 "door": door.name,
-                "last": latest.body,
+                "last": last_text,
                 "unread": unread_by_session.get(session_id, 0),
-                "time": latest.created_at.isoformat(),
+                "time": thread_time.isoformat() if thread_time else datetime.utcnow().isoformat(),
                 "sessionStatus": session.status,
             }
         )
