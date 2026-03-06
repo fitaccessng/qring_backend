@@ -120,12 +120,24 @@ def _normalize_url(value: str | None) -> str:
     return (value or "").strip().rstrip("/")
 
 
+def _normalize_secret(value: str | None) -> str:
+    return (value or "").strip()
+
+
 def _is_public_https_url(value: str | None) -> bool:
     if not isinstance(value, str):
         return False
     parsed = urlparse(value)
     host = (parsed.hostname or "").lower()
     return parsed.scheme == "https" and host not in {"", "localhost", "127.0.0.1"}
+
+
+def _compute_expected_amount_kobo(plan_amount: int | float, billing_cycle: str | None) -> int:
+    cycle = (billing_cycle or "monthly").strip().lower()
+    if cycle not in {"monthly", "yearly"}:
+        cycle = "monthly"
+    cycle_multiplier = 12 if cycle == "yearly" else 1
+    return int(plan_amount * cycle_multiplier * 100)
 
 
 def _extract_paystack_error(detail: str) -> tuple[str | None, str]:
@@ -458,11 +470,11 @@ def initialize_paystack_transaction_db(
     cycle = (billing_cycle or "monthly").strip().lower()
     if cycle not in {"monthly", "yearly"}:
         raise AppException("Invalid billing cycle", status_code=400)
-    cycle_multiplier = 12 if cycle == "yearly" else 1
-    if not settings.PAYSTACK_SECRET_KEY:
+    paystack_secret = _normalize_secret(settings.PAYSTACK_SECRET_KEY)
+    if not paystack_secret:
         raise AppException("Paystack is not configured", status_code=500)
     frontend_base_url = _normalize_url(settings.FRONTEND_BASE_URL)
-    if settings.PAYSTACK_SECRET_KEY.startswith("sk_live") and (
+    if paystack_secret.startswith("sk_live") and (
         "localhost" in frontend_base_url or "127.0.0.1" in frontend_base_url
     ):
         raise AppException(
@@ -473,7 +485,7 @@ def initialize_paystack_transaction_db(
     reference = f"qring-{uuid.uuid4().hex[:18]}"
     payload = {
         "email": email,
-        "amount": int(plan["amount"] * cycle_multiplier * 100),
+        "amount": _compute_expected_amount_kobo(plan["amount"], cycle),
         "currency": (plan.get("currency") or "NGN").upper(),
         "reference": reference,
         "metadata": {
@@ -487,6 +499,11 @@ def initialize_paystack_transaction_db(
     normalized_callback = _normalize_url(callback_url)
     resolved_callback = normalized_callback or f"{frontend_base_url}/billing/callback"
     callback_is_public_https = _is_public_https_url(resolved_callback)
+    if paystack_secret.startswith("sk_live") and not callback_is_public_https:
+        raise AppException(
+            "Live Paystack requires a public HTTPS callback URL. Set callbackUrl from frontend or FRONTEND_BASE_URL to your production HTTPS domain.",
+            status_code=400,
+        )
     if callback_is_public_https:
         payload["callback_url"] = resolved_callback
     body = json.dumps(payload).encode("utf-8")
@@ -495,8 +512,10 @@ def initialize_paystack_transaction_db(
         data=body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+            "Authorization": f"Bearer {paystack_secret}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "QringBackend/1.0",
         },
     )
     try:
@@ -528,15 +547,18 @@ def initialize_paystack_transaction_db(
 
 
 def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
-    if not settings.PAYSTACK_SECRET_KEY:
+    paystack_secret = _normalize_secret(settings.PAYSTACK_SECRET_KEY)
+    if not paystack_secret:
         raise AppException("Paystack is not configured", status_code=500)
 
     req = request.Request(
         f"https://api.paystack.co/transaction/verify/{reference}",
         method="GET",
         headers={
-            "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+            "Authorization": f"Bearer {paystack_secret}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "QringBackend/1.0",
         },
     )
     try:
@@ -564,9 +586,19 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
     metadata = payment.get("metadata") or {}
     payment_user_id = metadata.get("user_id")
     plan_id = metadata.get("plan")
+    billing_cycle = metadata.get("billing_cycle") or "monthly"
     if payment_user_id != user_id:
         raise AppException("Payment reference is not linked to this user", status_code=403)
     plan = get_plan_or_raise(db, plan_id)
+    expected_amount_kobo = _compute_expected_amount_kobo(plan["amount"], billing_cycle)
+    paid_amount_kobo = int(payment.get("amount") or 0)
+    paid_currency = str(payment.get("currency") or "").upper()
+    expected_currency = (plan.get("currency") or "NGN").upper()
+    if paid_amount_kobo != expected_amount_kobo or paid_currency != expected_currency:
+        raise AppException(
+            "Payment amount or currency does not match selected plan",
+            status_code=400,
+        )
 
     row = activate_subscription(db, user_id=user_id, plan=plan["id"])
     return {
@@ -583,13 +615,14 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
 
 
 def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None):
-    if not settings.PAYSTACK_SECRET_KEY:
+    paystack_secret = _normalize_secret(settings.PAYSTACK_SECRET_KEY)
+    if not paystack_secret:
         raise AppException("Paystack is not configured", status_code=500)
     if not signature:
         raise AppException("Missing Paystack signature", status_code=400)
 
     computed = hmac.new(
-        settings.PAYSTACK_SECRET_KEY.encode("utf-8"),
+        paystack_secret.encode("utf-8"),
         msg=raw_body,
         digestmod=sha512,
     ).hexdigest()
