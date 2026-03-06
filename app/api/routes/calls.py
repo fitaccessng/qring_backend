@@ -97,14 +97,20 @@ async def start_call(
         payload.sessionId,
         bool(user and user.role.value == "homeowner"),
     )
-    row = await start_call_session(
-        db,
-        appointment_id=payload.appointmentId,
-        visitor_session_id=payload.sessionId,
-        visitor_id=payload.visitorId,
-        homeowner_id=user.id if user and user.role.value == "homeowner" else None,
-        visitor_name=payload.visitorName,
-    )
+    try:
+        row = await start_call_session(
+            db,
+            appointment_id=payload.appointmentId,
+            visitor_session_id=payload.sessionId,
+            visitor_id=payload.visitorId,
+            homeowner_id=user.id if user and user.role.value == "homeowner" else None,
+            visitor_name=payload.visitorName,
+        )
+    except AppException:
+        raise
+    except Exception as exc:
+        logger.exception("api.call.start.unhandled_error session_id=%s appointment_id=%s", payload.sessionId, payload.appointmentId)
+        raise AppException(f"Unable to start call session: {exc}", status_code=500) from exc
 
     linked_session = None
     if payload.sessionId:
