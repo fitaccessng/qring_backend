@@ -27,6 +27,7 @@ class StartCallPayload(BaseModel):
     sessionId: str | None = None
     visitorId: str | None = None
     visitorName: str | None = None
+    hasVideo: bool | None = None
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -135,6 +136,7 @@ async def start_call(
             "roomName": row.room_name,
             "status": row.status,
             "visitorId": row.visitor_id,
+            "hasVideo": bool(payload.hasVideo),
         },
         room=f"homeowner:{row.homeowner_id}",
         namespace=settings.SIGNALING_NAMESPACE,
@@ -149,6 +151,7 @@ async def start_call(
                 "roomName": row.room_name,
                 "status": row.status,
                 "visitorId": row.visitor_id,
+                "hasVideo": bool(payload.hasVideo),
             },
             room=f"session:{linked_session}",
             namespace=settings.SIGNALING_NAMESPACE,
