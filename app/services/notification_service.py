@@ -3,7 +3,7 @@ import json
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Notification
+from app.db.models import Appointment, Notification, VisitorSession
 
 
 def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> Notification:
@@ -23,19 +23,66 @@ def list_notifications(db: Session, user_id: str) -> list[dict]:
         db.query(Notification)
         .filter(Notification.user_id == user_id)
         .order_by(Notification.created_at.desc())
-        .limit(50)
+        .limit(100)
         .all()
     )
-    return [
-        {
-            "id": row.id,
-            "kind": row.kind,
-            "payload": row.payload,
-            "readAt": row.read_at.isoformat() if row.read_at else None,
-            "createdAt": row.created_at.isoformat(),
-        }
-        for row in rows
-    ]
+    appointment_ids: set[str] = set()
+    session_ids: set[str] = set()
+    parsed_payloads: dict[str, dict] = {}
+    for row in rows:
+        payload_raw = row.payload or "{}"
+        try:
+            payload = json.loads(payload_raw)
+        except Exception:
+            payload = {}
+        parsed_payloads[row.id] = payload
+        appointment_id = str(payload.get("appointmentId") or "").strip()
+        session_id = str(payload.get("sessionId") or "").strip()
+        if appointment_id:
+            appointment_ids.add(appointment_id)
+        if session_id:
+            session_ids.add(session_id)
+
+    appointments_by_id: dict[str, Appointment] = {}
+    if appointment_ids:
+        for appt in db.query(Appointment).filter(Appointment.id.in_(list(appointment_ids))).all():
+            appointments_by_id[appt.id] = appt
+
+    sessions_by_id: dict[str, VisitorSession] = {}
+    if session_ids:
+        for session in db.query(VisitorSession).filter(VisitorSession.id.in_(list(session_ids))).all():
+            sessions_by_id[session.id] = session
+
+    def _should_hide(payload: dict) -> bool:
+        appointment_id = str(payload.get("appointmentId") or "").strip()
+        if appointment_id:
+            appt = appointments_by_id.get(appointment_id)
+            if appt and appt.status in {"completed", "cancelled", "expired"}:
+                return True
+        session_id = str(payload.get("sessionId") or "").strip()
+        if session_id:
+            session = sessions_by_id.get(session_id)
+            if session and session.status in {"closed", "completed", "rejected"}:
+                return True
+        return False
+
+    items = []
+    for row in rows:
+        payload = parsed_payloads.get(row.id) or {}
+        if _should_hide(payload):
+            continue
+        items.append(
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "payload": row.payload,
+                "readAt": row.read_at.isoformat() if row.read_at else None,
+                "createdAt": row.created_at.isoformat(),
+            }
+        )
+        if len(items) >= 50:
+            break
+    return items
 
 
 def mark_notification_read(db: Session, user_id: str, notification_id: str) -> dict | None:
