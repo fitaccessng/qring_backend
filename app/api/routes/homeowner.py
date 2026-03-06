@@ -293,7 +293,8 @@ async def homeowner_end_visit(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    from app.db.models import VisitorSession
+    from datetime import datetime
+    from app.db.models import Appointment, VisitorSession
 
     session = (
         db.query(VisitorSession)
@@ -306,6 +307,31 @@ async def homeowner_end_visit(
     updated = mark_session_status(db, session_id=session_id, status="closed")
     if not updated:
         raise AppException("Visit not found", status_code=404)
+
+    if session.appointment_id:
+        appointment = (
+            db.query(Appointment)
+            .filter(Appointment.id == session.appointment_id, Appointment.homeowner_id == user.id)
+            .first()
+        )
+        if appointment and appointment.status not in {"completed", "cancelled", "expired"}:
+            appointment.status = "completed"
+            appointment.qr_token_hash = None
+            appointment.qr_payload_encrypted = None
+            appointment.qr_signature = None
+            appointment.qr_expires_at = datetime.utcnow()
+            appointment.share_token_hash = None
+            db.query(VisitorSession).filter(
+                VisitorSession.appointment_id == appointment.id,
+                VisitorSession.status.in_(["pending", "approved", "active"]),
+            ).update(
+                {
+                    VisitorSession.status: "closed",
+                    VisitorSession.ended_at: datetime.utcnow(),
+                },
+                synchronize_session=False,
+            )
+            db.commit()
 
     await sio.emit(
         "session.control",

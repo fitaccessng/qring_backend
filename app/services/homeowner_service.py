@@ -117,21 +117,23 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     for session_id, (session, door) in session_by_id.items():
         latest = latest_by_session.get(session_id)
         linked_appointment = appointment_by_id.get(session.appointment_id) if session.appointment_id else None
-        is_accepted_session = bool(
-            linked_appointment and linked_appointment.status in {"accepted", "arrived", "active"}
-        )
-        if not latest and not is_accepted_session:
-            continue
-
         thread_time = (
             latest.created_at
             if latest
-            else (linked_appointment.accepted_at if linked_appointment and linked_appointment.accepted_at else session.started_at)
+            else (
+                linked_appointment.accepted_at
+                if linked_appointment and linked_appointment.accepted_at
+                else session.started_at
+            )
         )
         last_text = (
             latest.body
             if latest
-            else "Visitor accepted appointment. Start the conversation."
+            else (
+                "Visitor accepted appointment. Start the conversation."
+                if linked_appointment
+                else "Visitor scanned QR code. Start the conversation."
+            )
         )
         threads.append(
             {
