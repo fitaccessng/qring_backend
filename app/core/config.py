@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_AUTH_WINDOW_SECONDS: int = 60
     RATE_LIMIT_AUTH_MAX_REQUESTS: int = 20
 
+    _MANDATORY_CORS_ORIGINS = (
+        "https://qring.io",
+        "https://www.qring.io",
+        "https://useqring.online",
+        "https://www.useqring.online",
+    )
+
     @property
     def cors_origins(self) -> List[str]:
         origins: list[str] = []
@@ -88,6 +95,10 @@ class Settings(BaseSettings):
             if parsed.scheme and parsed.netloc:
                 value = f"{parsed.scheme}://{parsed.netloc}"
             origins.append(value.rstrip("/"))
+        for required in self._MANDATORY_CORS_ORIGINS:
+            canonical = required.rstrip("/")
+            if canonical not in origins:
+                origins.append(canonical)
         return origins
 
     @property

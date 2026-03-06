@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -21,7 +21,14 @@ settings = get_settings()
 
 def _to_dt(value: str) -> datetime:
     try:
-        return datetime.fromisoformat(str(value))
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is not None:
+            # Persist UTC datetimes as naive values for current DB schema compatibility.
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
     except ValueError as exc:
         raise AppException("Invalid datetime format. Use ISO format.", status_code=400) from exc
 
