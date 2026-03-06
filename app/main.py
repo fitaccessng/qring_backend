@@ -320,6 +320,11 @@ def _ensure_homeowner_settings_schema() -> None:
         Base.metadata.tables["homeowner_settings"].create(bind=engine, checkfirst=True)
 
 
+def _ensure_call_sessions_schema() -> None:
+    # Keep call runtime available even when migrations were not executed in an environment.
+    Base.metadata.tables["call_sessions"].create(bind=engine, checkfirst=True)
+
+
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
     missing: list[str] = []
     if not settings.LIVEKIT_URL.strip():
@@ -345,6 +350,7 @@ async def on_startup():
     # Keep automatic table creation only for local development convenience.
     if settings.ENVIRONMENT.lower() == "development":
         Base.metadata.create_all(bind=engine)
+    _ensure_call_sessions_schema()
     db = SessionLocal()
     try:
         if settings.ENVIRONMENT.lower() == "development":
