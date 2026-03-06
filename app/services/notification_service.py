@@ -77,3 +77,46 @@ def clear_all_notifications(db: Session, user_id: str) -> int:
     deleted = db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
     db.commit()
     return int(deleted or 0)
+
+
+def mark_session_notifications_read(
+    db: Session,
+    *,
+    user_id: str,
+    session_id: str | None = None,
+    appointment_id: str | None = None,
+) -> int:
+    target_session = str(session_id or "").strip()
+    target_appointment = str(appointment_id or "").strip()
+    if not target_session and not target_appointment:
+        return 0
+
+    rows = (
+        db.query(Notification)
+        .filter(Notification.user_id == user_id, Notification.read_at.is_(None))
+        .all()
+    )
+    if not rows:
+        return 0
+
+    now = datetime.utcnow()
+    updated = 0
+    for row in rows:
+        payload_raw = row.payload or "{}"
+        try:
+            payload = json.loads(payload_raw)
+        except Exception:
+            payload = {}
+        payload_session = str(payload.get("sessionId") or "").strip()
+        payload_appointment = str(payload.get("appointmentId") or "").strip()
+        matches_session = bool(target_session and payload_session and payload_session == target_session)
+        matches_appointment = bool(
+            target_appointment and payload_appointment and payload_appointment == target_appointment
+        )
+        if matches_session or matches_appointment:
+            row.read_at = now
+            updated += 1
+
+    if updated:
+        db.commit()
+    return updated

@@ -29,6 +29,7 @@ from app.services.appointment_service import (
 from app.services.session_service import mark_session_status
 from app.core.exceptions import AppException
 from app.services.livekit_service import issue_livekit_token
+from app.services.notification_service import mark_session_notifications_read
 from app.socket.server import sio
 from app.core.config import get_settings
 
@@ -332,6 +333,13 @@ async def homeowner_end_visit(
                 synchronize_session=False,
             )
             db.commit()
+
+    mark_session_notifications_read(
+        db,
+        user_id=user.id,
+        session_id=session_id,
+        appointment_id=session.appointment_id,
+    )
 
     await sio.emit(
         "session.control",
