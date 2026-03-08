@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     LIVEKIT_WEBHOOK_SECRET: str = ""
     LIVEKIT_ROOM_PREFIX: str = "qring-session-"
     APPOINTMENT_SHARE_BASE_URL: str = "https://www.useqring.online"
+    MEDIA_STORAGE_PATH: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "no-reply@useqring.online"
+    SMS_PROVIDER_API_KEY: str = ""
+    SMS_PROVIDER_BASE_URL: str = ""
+    SMS_PROVIDER_SENDER_ID: str = "Qring"
+    FACE_RECOGNITION_API_URL: str = ""
+    FACE_RECOGNITION_API_KEY: str = ""
     QR_TOKEN_SIGNING_KEY: str = ""
     QR_TOKEN_ENCRYPTION_KEY: str = ""
     APPOINTMENT_DEFAULT_GEOFENCE_RADIUS_METERS: int = 120

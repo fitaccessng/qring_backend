@@ -346,6 +346,24 @@ def _ensure_call_sessions_schema() -> None:
         )
 
 
+def _ensure_advanced_features_schema() -> None:
+    tables = [
+        "visitor_snapshot_audits",
+        "visitor_recognition_profiles",
+        "split_bills",
+        "split_contributions",
+        "digital_receipts",
+        "threat_alert_logs",
+        "emergency_signals",
+        "community_posts",
+        "community_post_reads",
+        "weekly_summary_logs",
+        "push_subscriptions",
+    ]
+    for table in tables:
+        Base.metadata.tables[table].create(bind=engine, checkfirst=True)
+
+
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
     missing: list[str] = []
     if not settings.LIVEKIT_URL.strip():
@@ -372,6 +390,7 @@ async def on_startup():
     if settings.ENVIRONMENT.lower() == "development":
         Base.metadata.create_all(bind=engine)
     _ensure_call_sessions_schema()
+    _ensure_advanced_features_schema()
     db = SessionLocal()
     try:
         if settings.ENVIRONMENT.lower() == "development":

@@ -12,13 +12,16 @@ from app.services.notification_service import (
     mark_all_notifications_read,
     mark_notification_read,
 )
+from app.services.provider_integrations import upsert_push_subscription
 
 router = APIRouter()
 
 
 class PushSubscriptionCreate(BaseModel):
+    provider: str = "fcm"
     endpoint: str
     keys: dict
+    token: str | None = None
 
 
 @router.get("/")
@@ -32,10 +35,21 @@ def notifications(
 @router.post("/push-subscriptions")
 def add_push_subscription(
     payload: PushSubscriptionCreate,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # Persist to DB/Redis in production. This is a stable API contract for PWA integration.
-    return {"data": {"userId": user.id, "endpoint": payload.endpoint, "status": "registered"}}
+    try:
+        data = upsert_push_subscription(
+            db,
+            user_id=user.id,
+            provider=payload.provider,
+            endpoint=payload.endpoint,
+            token=payload.token or payload.keys.get("token"),
+            keys=payload.keys,
+        )
+    except ValueError as exc:
+        raise AppException(str(exc), status_code=400) from exc
+    return {"data": {"userId": user.id, **data, "status": "registered"}}
 
 
 @router.post("/{notification_id}/read")

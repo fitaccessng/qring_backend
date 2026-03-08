@@ -1,3 +1,16 @@
+from app.db.models.advanced import (
+    CommunityPost,
+    CommunityPostRead,
+    DigitalReceipt,
+    EmergencySignal,
+    PushSubscription,
+    SplitBill,
+    SplitContribution,
+    ThreatAlertLog,
+    VisitorRecognitionProfile,
+    VisitorSnapshotAudit,
+    WeeklySummaryLog,
+)
 from app.db.models.appointment import Appointment
 from app.db.models.device_session import DeviceSession
 from app.db.models.estate_alert import EstateAlert, EstateAlertType, HomeownerPayment, HomeownerPaymentStatus
@@ -21,8 +34,13 @@ __all__ = [
     "HomeownerPayment",
     "HomeownerPaymentStatus",
     "AuditLog",
+    "CommunityPost",
+    "CommunityPostRead",
     "Appointment",
     "CallSession",
+    "DigitalReceipt",
+    "EmergencySignal",
+    "PushSubscription",
     "Message",
     "Notification",
     "PaymentPurpose",
@@ -30,7 +48,13 @@ __all__ = [
     "QRCode",
     "Subscription",
     "SubscriptionPlan",
+    "SplitBill",
+    "SplitContribution",
+    "ThreatAlertLog",
     "User",
     "UserRole",
+    "VisitorRecognitionProfile",
+    "VisitorSnapshotAudit",
     "VisitorSession",
+    "WeeklySummaryLog",
 ]

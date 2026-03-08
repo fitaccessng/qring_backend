@@ -21,6 +21,22 @@ from app.services.qr_token_service import (
 settings = get_settings()
 
 
+def _distance_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    import math
+
+    def _to_rad(value: float) -> float:
+        return (value * math.pi) / 180.0
+
+    earth_radius_m = 6_371_000
+    d_lat = _to_rad(lat2 - lat1)
+    d_lng = _to_rad(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(_to_rad(lat1)) * math.cos(_to_rad(lat2)) * math.sin(d_lng / 2) ** 2
+    )
+    return 2 * earth_radius_m * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
 def _share_signing_key() -> bytes:
     secret = (settings.QR_TOKEN_SIGNING_KEY or "").strip() or settings.JWT_SECRET_KEY
     return secret.encode("utf-8")
@@ -445,6 +461,18 @@ def report_appointment_arrival(
         raise AppException("Share token does not match appointment.", status_code=400)
     if appt.accepted_device_id and appt.accepted_device_id != str(device_id or "").strip():
         raise AppException("Arrival signal device mismatch.", status_code=403)
+    if appt.geofence_lat is None or appt.geofence_lng is None:
+        raise AppException("Appointment geofence is not configured.", status_code=400)
+    if lat is None or lng is None:
+        raise AppException("Arrival coordinates are required.", status_code=400)
+    radius_m = int(appt.geofence_radius_m or settings.APPOINTMENT_DEFAULT_GEOFENCE_RADIUS_METERS)
+    radius_m = max(30, min(radius_m, 2000))
+    distance_m = _distance_meters(float(lat), float(lng), float(appt.geofence_lat), float(appt.geofence_lng))
+    if distance_m > radius_m:
+        raise AppException(
+            f"Visitor is outside geofence ({int(distance_m)}m > {radius_m}m).",
+            status_code=400,
+        )
     appt.arrived_at = datetime.utcnow()
     appt.arrival_lat = lat
     appt.arrival_lng = lng

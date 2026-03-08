@@ -601,6 +601,25 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
         )
 
     row = activate_subscription(db, user_id=user_id, plan=plan["id"])
+    try:
+        from app.services.advanced_service import create_digital_receipt
+
+        create_digital_receipt(
+            db,
+            owner_user_id=user_id,
+            reference=reference,
+            amount_kobo=paid_amount_kobo,
+            currency=paid_currency,
+            purpose="subscription",
+            payload={
+                "planId": plan["id"],
+                "billingCycle": billing_cycle,
+                "source": "paystack_verify",
+            },
+        )
+    except Exception:
+        # Keep subscription activation resilient even if receipt persistence fails.
+        pass
     return {
         "id": row.id,
         "plan": row.plan,
@@ -661,4 +680,18 @@ def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None)
         return {"status": "ignored"}
 
     activate_subscription(db=db, user_id=user_id, plan=plan_id)
+    try:
+        from app.services.advanced_service import create_digital_receipt
+
+        create_digital_receipt(
+            db,
+            owner_user_id=user_id,
+            reference=str(data.get("reference") or f"webhook-{uuid.uuid4().hex[:10]}"),
+            amount_kobo=int(data.get("amount") or 0),
+            currency=str(data.get("currency") or "NGN").upper(),
+            purpose="subscription",
+            payload={"planId": plan_id, "source": "paystack_webhook"},
+        )
+    except Exception:
+        pass
     return {"status": "processed", "plan": plan_id}
