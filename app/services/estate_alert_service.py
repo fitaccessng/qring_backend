@@ -22,6 +22,7 @@ from app.db.models import (
     UserRole,
 )
 from app.socket.server import sio
+from app.services.provider_integrations import send_push_fcm
 
 settings = get_settings()
 
@@ -149,22 +150,36 @@ def create_estate_alert(
 
     homeowner_ids = _homeowner_ids_for_estate(db, estate_id=estate_id)
     for homeowner_id in homeowner_ids:
+        push_payload = {
+            "message": clean_title,
+            "alertId": alert.id,
+            "estateId": estate_id,
+            "alertType": alert_type_enum.value,
+            "amountDue": normalized_amount,
+            "dueDate": due_date.isoformat() if due_date else None,
+        }
         db.add(
             Notification(
                 user_id=homeowner_id,
                 kind="estate.alert",
-                payload=json.dumps(
-                    {
-                        "message": clean_title,
-                        "alertId": alert.id,
-                        "estateId": estate_id,
-                        "alertType": alert_type_enum.value,
-                        "amountDue": normalized_amount,
-                        "dueDate": due_date.isoformat() if due_date else None,
-                    }
-                ),
+                payload=json.dumps(push_payload),
             )
         )
+        try:
+            send_push_fcm(
+                db,
+                user_id=homeowner_id,
+                title="Estate Alert",
+                body=clean_title,
+                data={
+                    "kind": "estate.alert",
+                    "alertId": alert.id,
+                    "estateId": estate_id,
+                    "alertType": alert_type_enum.value,
+                },
+            )
+        except Exception:
+            pass
     db.commit()
     db.refresh(alert)
 

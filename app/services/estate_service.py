@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.models import Door, Estate, Home, Notification, QRCode, User, UserRole, VisitorSession
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
+from app.services.provider_integrations import send_email_smtp, send_push_fcm
 settings = get_settings()
 FREE_ESTATE_LIMIT = 5
 
@@ -169,6 +170,18 @@ def create_estate_homeowner(
         is_active=True,
     )
     db.add(user)
+    db.flush()
+
+    # Ensure each created homeowner is persisted under the estate scope immediately.
+    # This guarantees they appear in estate listings even before door assignment.
+    base_home_name = f"{full_name_clean} Home"
+    home_name = base_home_name
+    suffix = 2
+    while db.query(Home).filter(Home.estate_id == estate_id, Home.name == home_name).first():
+        home_name = f"{base_home_name} {suffix}"
+        suffix += 1
+    db.add(Home(name=home_name, estate_id=estate_id, homeowner_id=user.id))
+
     db.commit()
     db.refresh(user)
     return user
@@ -339,6 +352,7 @@ def invite_homeowner(db: Session, owner_id: str, homeowner_id: str) -> dict[str,
         raise AppException("Homeowner is not linked to your estate", status_code=403)
 
     token = f"invite-{uuid.uuid4().hex[:10]}"
+    login_link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/login"
     db.add(
         Notification(
             user_id=homeowner_id,
@@ -347,7 +361,34 @@ def invite_homeowner(db: Session, owner_id: str, homeowner_id: str) -> dict[str,
         )
     )
     db.commit()
-    return {"inviteToken": token, "sentAt": datetime.utcnow().isoformat()}
+    try:
+        send_push_fcm(
+            db,
+            user_id=homeowner_id,
+            title="Estate Invitation",
+            body="Estate access invitation received.",
+            data={"kind": "estate.invite", "inviteToken": token},
+        )
+    except Exception:
+        pass
+
+    email_result = send_email_smtp(
+        to_email=homeowner.email,
+        subject="Qring Estate Access Invitation",
+        body=(
+            "You have been invited to access your estate dashboard on Qring.\n\n"
+            f"Invite Token: {token}\n"
+            f"Login URL: {login_link}\n\n"
+            "Use your assigned account credentials to sign in."
+        ),
+    )
+    return {
+        "inviteToken": token,
+        "sentAt": datetime.utcnow().isoformat(),
+        "emailStatus": email_result.get("status", "unknown"),
+        "emailReason": email_result.get("reason"),
+        "loginLink": login_link,
+    }
 
 
 def list_estate_mappings(db: Session, owner_id: str) -> list[dict[str, Any]]:

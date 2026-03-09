@@ -173,12 +173,22 @@ def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
     message["To"] = to_email.strip()
     message.set_content(body)
 
+    port = int(settings.SMTP_PORT or 587)
+
     try:
-        with smtplib.SMTP(host=host, port=int(settings.SMTP_PORT or 587), timeout=20) as server:
-            server.starttls()
-            if username and password:
-                server.login(username, password)
-            server.send_message(message)
+        if port == 465:
+            # Port 465 uses implicit TLS.
+            with smtplib.SMTP_SSL(host=host, port=port, timeout=20) as server:
+                if username and password:
+                    server.login(username, password)
+                server.send_message(message)
+        else:
+            # Port 587 (and similar) use STARTTLS after plain connection.
+            with smtplib.SMTP(host=host, port=port, timeout=20) as server:
+                server.starttls()
+                if username and password:
+                    server.login(username, password)
+                server.send_message(message)
         return {"status": "sent"}
     except Exception as exc:
         logger.exception("SMTP send failed to %s", to_email)

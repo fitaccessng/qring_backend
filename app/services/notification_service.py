@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.db.models import Appointment, Notification, VisitorSession
+from app.services.provider_integrations import send_push_fcm
 
 
 def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> Notification:
@@ -16,6 +17,30 @@ def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> 
     db.add(notification)
     db.commit()
     db.refresh(notification)
+    try:
+        message = str((payload or {}).get("message") or "You have a new alert.")
+        title_map = {
+            "visitor.request": "New Visitor Request",
+            "estate.alert": "Estate Alert",
+            "estate.invite": "Estate Invitation",
+            "estate.assignment": "Door Assignment",
+            "estate.payment.status": "Payment Status",
+        }
+        send_push_fcm(
+            db,
+            user_id=user_id,
+            title=title_map.get(kind, "Qring Alert"),
+            body=message,
+            data={
+                "kind": kind,
+                "notificationId": notification.id,
+                "sessionId": str((payload or {}).get("sessionId") or ""),
+                "alertId": str((payload or {}).get("alertId") or ""),
+            },
+        )
+    except Exception:
+        # Push failures must not block notification creation.
+        pass
     return notification
 
 
