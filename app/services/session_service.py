@@ -32,9 +32,6 @@ def create_visitor_session(
             if existing.visitor_label != desired_label:
                 existing.visitor_label = desired_label
                 updated = True
-            if existing.status in {"pending", "approved"} and existing.status != "pending":
-                existing.status = "pending"
-                updated = True
             if updated:
                 db.commit()
                 db.refresh(existing)

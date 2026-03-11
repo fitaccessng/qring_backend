@@ -266,7 +266,7 @@ def homeowner_update_settings(
 
 
 @router.post("/visits/{session_id}/decision")
-def homeowner_visit_decision(
+async def homeowner_visit_decision(
     session_id: str,
     payload: VisitDecisionPayload,
     db: Session = Depends(get_db),
@@ -285,6 +285,34 @@ def homeowner_visit_decision(
     updated = mark_session_status(db, session_id=session_id, status="approved" if action == "approve" else "rejected")
     if not updated:
         raise AppException("Visit not found", status_code=404)
+    await sio.emit(
+        "dashboard.patch",
+        {
+            "data": {
+                "activity": [
+                    {
+                        "id": session.id,
+                        "event": f"Visitor request {updated.status}",
+                        "time": session.started_at.isoformat() if session.started_at else "",
+                        "state": updated.status,
+                    }
+                ]
+            }
+        },
+        namespace=settings.DASHBOARD_NAMESPACE,
+    )
+    await sio.emit(
+        "session.status",
+        {
+            "sessionId": session.id,
+            "status": updated.status,
+            "homeownerId": session.homeowner_id,
+            "doorId": session.door_id,
+            "visitorName": session.visitor_label or "Visitor",
+        },
+        room=f"session:{session.id}",
+        namespace=settings.SIGNALING_NAMESPACE,
+    )
     return {"data": {"id": updated.id, "status": updated.status}}
 
 
