@@ -526,6 +526,10 @@ def delete_estate_alert(
     db.query(HomeownerPayment).filter(HomeownerPayment.estate_alert_id == alert_id).delete(synchronize_session=False)
     db.query(EstateMeetingResponse).filter(EstateMeetingResponse.estate_alert_id == alert_id).delete(synchronize_session=False)
     db.query(EstatePollVote).filter(EstatePollVote.estate_alert_id == alert_id).delete(synchronize_session=False)
+    db.query(Notification).filter(
+        Notification.kind == "estate.alert",
+        Notification.payload.like(f"%{alert_id}%"),
+    ).delete(synchronize_session=False)
     db.delete(alert)
     db.commit()
     return {"deleted": True, "alertId": alert_id}
