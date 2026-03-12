@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from urllib import error, request
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -90,6 +90,68 @@ def _serialize_alert(row: EstateAlert) -> dict:
         "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
     }
 
+
+def _ensure_estate_alert_columns(db: Session) -> None:
+    try:
+        inspector = inspect(db.get_bind())
+        table_names = set(inspector.get_table_names())
+        if "estate_alerts" not in table_names:
+            Base.metadata.tables["estate_alerts"].create(bind=db.get_bind(), checkfirst=True)
+            inspector = inspect(db.get_bind())
+        columns = {col["name"] for col in inspector.get_columns("estate_alerts")}
+        with db.get_bind().begin() as conn:
+            if "id" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN id VARCHAR(36)"))
+            if "estate_id" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN estate_id VARCHAR(36)"))
+            if "title" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN title VARCHAR(180) DEFAULT ''"))
+            if "description" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN description TEXT DEFAULT ''"))
+            if "alert_type" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN alert_type VARCHAR(40) DEFAULT 'notice'"))
+            if "amount_due" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN amount_due NUMERIC(12,2)"))
+            if "due_date" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN due_date TIMESTAMP"))
+            if "poll_options" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN poll_options TEXT DEFAULT ''"))
+            if "target_homeowner_ids" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN target_homeowner_ids TEXT DEFAULT ''"))
+            if "maintenance_status" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN maintenance_status VARCHAR(20) DEFAULT 'pending'"))
+            if "created_at" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN created_at TIMESTAMP"))
+            if "updated_at" not in columns:
+                conn.execute(text("ALTER TABLE estate_alerts ADD COLUMN updated_at TIMESTAMP"))
+            if conn.dialect.name == "postgresql":
+                enum_values = ["notice", "payment_request", "meeting", "maintenance_request", "poll"]
+                for enum_name in ["estatealerttype", "estate_alert_type"]:
+                    try:
+                        conn.execute(
+                            text(
+                                "DO $$ BEGIN "
+                                f"CREATE TYPE {enum_name} AS ENUM ('notice','payment_request','meeting','maintenance_request','poll'); "
+                                "EXCEPTION WHEN duplicate_object THEN END $$;"
+                            )
+                        )
+                    except Exception:
+                        pass
+                for enum_name in ["estatealerttype", "estate_alert_type"]:
+                    for enum_value in enum_values:
+                        try:
+                            conn.execute(
+                                text(
+                                    "DO $$ BEGIN "
+                                    f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{enum_value}'; "
+                                    "EXCEPTION WHEN undefined_object THEN END $$;"
+                                )
+                            )
+                        except Exception:
+                            pass
+    except Exception:
+        # Best-effort only; avoid raising during alert creation.
+        return
 
 def _emit_alert_event(*, event: str, payload: dict, estate_id: str, homeowner_ids: list[str]) -> None:
     sio.start_background_task(
@@ -239,8 +301,20 @@ def create_estate_alert(
             )
         except Exception:
             pass
-    db.commit()
-    db.refresh(alert)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        _ensure_estate_alert_columns(db)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise AppException("Unable to create alert. Please retry in a moment.", status_code=500)
+    try:
+        db.refresh(alert)
+    except Exception:
+        pass
 
     payload = _serialize_alert(alert)
     payload["status"] = "created"
