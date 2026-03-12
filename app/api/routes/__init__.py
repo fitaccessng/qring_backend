@@ -11,6 +11,7 @@ from app.api.routes import (
     health,
     homeowner,
     livekit,
+    media,
     notifications,
     payment,
     qr,
@@ -34,4 +35,5 @@ api_router.include_router(ws_gateway.router, tags=["websocket"])
 api_router.include_router(calls.router, prefix="/calls", tags=["calls"])
 api_router.include_router(livekit.router, tags=["livekit"])
 api_router.include_router(advanced.router, prefix="/advanced", tags=["advanced"])
+api_router.include_router(media.router, tags=["media"])
 

@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     FIREBASE_PROJECT_ID: str = ""
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
     FIREBASE_SERVICE_ACCOUNT_BASE64: str = ""
+    FIREBASE_STORAGE_BUCKET: str = ""
     ADMIN_SIGNUP_KEY: str = ""
     LIVEKIT_URL: str = ""
     LIVEKIT_API_KEY: str = ""

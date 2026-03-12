@@ -1,7 +1,7 @@
 import logging
 from time import perf_counter
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import create_notification
 from app.services.qr_service import resolve_qr
 from app.services.session_service import create_visitor_session
+from app.services.voice_note_service import save_voice_note
 from app.socket.server import sio
 
 router = APIRouter()
@@ -344,3 +345,25 @@ def visitor_livekit_token(
         can_subscribe=True,
     )
     return {"data": data}
+
+
+@router.post("/sessions/{session_id}/voice-notes")
+async def visitor_upload_voice_note(
+    session_id: str,
+    media: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    from app.db.models import VisitorSession
+
+    session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+    if not session:
+        raise AppException("Session not found", status_code=404)
+
+    data = await media.read()
+    payload = save_voice_note(
+        media_bytes=data,
+        filename_hint=media.filename or "voice-note.webm",
+        content_type=media.content_type,
+        session_id=session_id,
+    )
+    return {"data": {"url": payload["url"], "contentType": payload["contentType"]}}

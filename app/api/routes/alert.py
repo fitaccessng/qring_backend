@@ -3,16 +3,16 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
-from app.core.exceptions import AppException
 from app.db.models import User
 from app.db.session import get_db
-from app.services.estate_alert_service import initialize_alert_payment
+from app.services.estate_alert_service import delete_estate_alert, initialize_alert_payment
 
 router = APIRouter()
 
 
 class AlertPayPayload(BaseModel):
     paymentMethod: str = "paystack"
+    reference: str | None = None
     callbackUrl: str | None = None
 
 
@@ -23,12 +23,22 @@ def alert_pay(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    if (payload.paymentMethod or "paystack").strip().lower() != "paystack":
-        raise AppException("Only paystack payment method is supported", status_code=400)
     data = initialize_alert_payment(
         db=db,
         alert_id=alert_id,
         homeowner_id=user.id,
+        payment_method=payload.paymentMethod,
+        reference=payload.reference,
         callback_url=payload.callbackUrl,
     )
+    return {"data": data}
+
+
+@router.delete("/{alert_id}")
+def alert_delete(
+    alert_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    data = delete_estate_alert(db=db, alert_id=alert_id, estate_admin_id=user.id)
     return {"data": data}

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -30,8 +30,10 @@ from app.services.session_service import mark_session_status
 from app.core.exceptions import AppException
 from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import mark_session_notifications_read
+from app.services.voice_note_service import save_voice_note
 from app.socket.server import sio
 from app.core.config import get_settings
+from app.services.estate_alert_service import create_homeowner_maintenance_request, attach_alert_payment_proof
 
 router = APIRouter()
 settings = get_settings()
@@ -66,6 +68,11 @@ class HomeownerMessagePayload(BaseModel):
 
 class LiveKitTokenPayload(BaseModel):
     displayName: Optional[str] = None
+
+
+class MaintenanceRequestPayload(BaseModel):
+    title: str
+    description: str = ""
 
 
 class AppointmentCreatePayload(BaseModel):
@@ -181,6 +188,52 @@ async def homeowner_send_message(
     return {"data": data}
 
 
+@router.post("/messages/{session_id}/voice-notes")
+async def homeowner_upload_voice_note(
+    session_id: str,
+    media: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    from app.db.models import VisitorSession
+
+    session = (
+        db.query(VisitorSession)
+        .filter(VisitorSession.id == session_id, VisitorSession.homeowner_id == user.id)
+        .first()
+    )
+    if not session:
+        raise AppException("Session not found", status_code=404)
+
+    data = await media.read()
+    payload = save_voice_note(
+        media_bytes=data,
+        filename_hint=media.filename or "voice-note.webm",
+        content_type=media.content_type,
+        session_id=session_id,
+    )
+    return {"data": {"url": payload["url"], "contentType": payload["contentType"]}}
+
+
+@router.post("/alerts/{alert_id}/payment-proof")
+async def homeowner_upload_payment_proof(
+    alert_id: str,
+    media: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = await media.read()
+    payload = attach_alert_payment_proof(
+        db,
+        alert_id=alert_id,
+        homeowner_id=user.id,
+        media_bytes=data,
+        filename_hint=media.filename or "payment-proof.jpg",
+        content_type=media.content_type,
+    )
+    return {"data": payload}
+
+
 @router.delete("/messages/{session_id}/{message_id}")
 def homeowner_delete_message(
     session_id: str,
@@ -237,6 +290,21 @@ def homeowner_generate_door_qr(
         door_id=door_id,
         mode=payload.mode,
         plan=payload.plan,
+    )
+    return {"data": data}
+
+
+@router.post("/maintenance-requests")
+def homeowner_maintenance_request(
+    payload: MaintenanceRequestPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = create_homeowner_maintenance_request(
+        db=db,
+        homeowner_id=user.id,
+        title=payload.title,
+        description=payload.description,
     )
     return {"data": data}
 

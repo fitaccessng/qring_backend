@@ -80,7 +80,15 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
         max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
 
     return {
-        "estates": [{"id": row.id, "name": row.name, "createdAt": row.created_at.isoformat()} for row in estates],
+        "estates": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "createdAt": row.created_at.isoformat(),
+                "reminderFrequencyDays": int(row.reminder_frequency_days or 1),
+            }
+            for row in estates
+        ],
         "homes": [
             {
                 "id": row.id,
@@ -139,6 +147,37 @@ def create_estate(db: Session, name: str, owner_id: str) -> Estate:
     db.commit()
     db.refresh(estate)
     return estate
+
+
+def get_estate_settings(db: Session, *, estate_id: str, owner_id: str) -> dict[str, int | str]:
+    estate = _require_estate_owner(db, estate_id, owner_id)
+    return {
+        "estateId": estate.id,
+        "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
+    }
+
+
+def update_estate_settings(
+    db: Session,
+    *,
+    estate_id: str,
+    owner_id: str,
+    reminder_frequency_days: int,
+) -> dict[str, int | str]:
+    estate = _require_estate_owner(db, estate_id, owner_id)
+    try:
+        frequency_days = int(reminder_frequency_days)
+    except (TypeError, ValueError):
+        raise AppException("reminderFrequencyDays must be a number", status_code=400)
+    if frequency_days < 1 or frequency_days > 365:
+        raise AppException("reminderFrequencyDays must be between 1 and 365", status_code=400)
+    estate.reminder_frequency_days = frequency_days
+    db.commit()
+    db.refresh(estate)
+    return {
+        "estateId": estate.id,
+        "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
+    }
 
 
 def create_estate_homeowner(

@@ -1,5 +1,6 @@
 import logging
 import uuid
+import asyncio
 
 import socketio
 from fastapi import FastAPI
@@ -21,6 +22,7 @@ from app.middleware.access_control import AccessControlMiddleware
 from app.middleware.input_sanitization import InputSanitizationMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.socket.server import sio
+from app.services.estate_alert_service import run_scheduled_payment_reminders
 
 settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
@@ -250,6 +252,10 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "homeowner_settings", "created_at", datetime_sql)
             _add_column_if_missing(conn, columns, "homeowner_settings", "updated_at", datetime_sql)
 
+        if "estates" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("estates")}
+            _add_column_if_missing(conn, columns, "estates", "reminder_frequency_days", "INTEGER DEFAULT 1")
+
         if "appointments" in table_names:
             columns = {col["name"] for col in inspector.get_columns("appointments")}
             _add_column_if_missing(conn, columns, "appointments", "homeowner_id", "VARCHAR(36)")
@@ -280,6 +286,15 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "appointments", "arrival_battery_pct", "INTEGER")
             _add_column_if_missing(conn, columns, "appointments", "created_at", datetime_sql)
             _add_column_if_missing(conn, columns, "appointments", "updated_at", datetime_sql)
+
+        if "estate_alerts" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("estate_alerts")}
+            _add_column_if_missing(conn, columns, "estate_alerts", "poll_options", "TEXT DEFAULT ''")
+            _add_column_if_missing(conn, columns, "estate_alerts", "target_homeowner_ids", "TEXT DEFAULT ''")
+
+        if "homeowner_payments" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("homeowner_payments")}
+            _add_column_if_missing(conn, columns, "homeowner_payments", "reminder_sent_at", datetime_sql)
 
         if "call_sessions" in table_names:
             columns = {col["name"] for col in inspector.get_columns("call_sessions")}
@@ -359,9 +374,75 @@ def _ensure_advanced_features_schema() -> None:
         "community_post_reads",
         "weekly_summary_logs",
         "push_subscriptions",
+        "estate_meeting_responses",
+        "estate_poll_votes",
     ]
     for table in tables:
         Base.metadata.tables[table].create(bind=engine, checkfirst=True)
+
+
+def _ensure_estate_alert_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "estate_alerts" not in table_names:
+        Base.metadata.tables["estate_alerts"].create(bind=engine, checkfirst=True)
+        inspector = inspect(engine)
+    columns = {col["name"] for col in inspector.get_columns("estate_alerts")}
+    with engine.begin() as conn:
+        _add_column_if_missing(conn, columns, "estate_alerts", "poll_options", "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, columns, "estate_alerts", "target_homeowner_ids", "TEXT DEFAULT ''")
+        if conn.dialect.name == "postgresql":
+            # Ensure enum values exist for older deployments.
+            enum_names = ["estatealerttype", "estate_alert_type"]
+            enum_values = ["notice", "payment_request", "meeting", "maintenance_request", "poll"]
+            for enum_name in enum_names:
+                for enum_value in enum_values:
+                    try:
+                        conn.execute(
+                            text(
+                                "DO $$ BEGIN "
+                                f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{enum_value}'; "
+                                "EXCEPTION WHEN undefined_object THEN END $$;"
+                            )
+                        )
+                    except Exception:
+                        pass
+
+
+def _ensure_homeowner_payment_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "homeowner_payments" not in table_names:
+        return
+    columns = {col["name"] for col in inspector.get_columns("homeowner_payments")}
+    with engine.begin() as conn:
+        datetime_sql = str(DateTime().compile(dialect=conn.dialect))
+        _add_column_if_missing(conn, columns, "homeowner_payments", "payment_method", "VARCHAR(40)")
+        _add_column_if_missing(conn, columns, "homeowner_payments", "payment_note", "TEXT")
+        _add_column_if_missing(conn, columns, "homeowner_payments", "payment_proof_url", "TEXT")
+        _add_column_if_missing(conn, columns, "homeowner_payments", "reminder_sent_at", datetime_sql)
+
+
+def _ensure_wallet_schema() -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "homeowner_wallets" in table_names and "homeowner_wallet_transactions" in table_names:
+        return
+    Base.metadata.tables["homeowner_wallets"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["homeowner_wallet_transactions"].create(bind=engine, checkfirst=True)
+
+
+async def _payment_reminder_loop() -> None:
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                run_scheduled_payment_reminders(db)
+            finally:
+                db.close()
+        except Exception:
+            logging.exception("Automatic payment reminder cycle failed.")
+        await asyncio.sleep(6 * 60 * 60)
 
 
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
@@ -391,12 +472,17 @@ async def on_startup():
         Base.metadata.create_all(bind=engine)
     _ensure_call_sessions_schema()
     _ensure_advanced_features_schema()
+    _ensure_estate_alert_schema()
+    _ensure_homeowner_payment_schema()
+    _ensure_wallet_schema()
+    _ensure_runtime_compatibility_schema()
     db = SessionLocal()
     try:
         if settings.ENVIRONMENT.lower() == "development":
             _seed_dev_data(db)
     finally:
         db.close()
+    asyncio.create_task(_payment_reminder_loop())
 
 
 app = socketio.ASGIApp(

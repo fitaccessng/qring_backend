@@ -13,6 +13,7 @@ class EstateAlertType(str, Enum):
     payment_request = "payment_request"
     meeting = "meeting"
     maintenance_request = "maintenance_request"
+    poll = "poll"
 
 
 class HomeownerPaymentStatus(str, Enum):
@@ -35,6 +36,8 @@ class EstateAlert(Base):
     )
     amount_due: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    poll_options: Mapped[str | None] = mapped_column(Text, default="")
+    target_homeowner_ids: Mapped[str | None] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -56,8 +59,12 @@ class HomeownerPayment(Base):
         default=HomeownerPaymentStatus.pending,
     )
     amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    payment_method: Mapped[str | None] = mapped_column(String(40), nullable=True)
     payment_provider_reference: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    payment_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payment_proof_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     receipt_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

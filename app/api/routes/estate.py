@@ -12,6 +12,12 @@ from app.services.estate_alert_service import (
     list_estate_alert_payment_overview,
     list_estate_alerts,
     list_homeowner_alerts,
+    record_meeting_response,
+    record_poll_vote,
+    send_payment_reminders,
+    verify_estate_alert_payment,
+    update_estate_alert,
+    delete_estate_alert,
 )
 from app.services.estate_service import (
     add_estate_door,
@@ -20,6 +26,7 @@ from app.services.estate_service import (
     create_estate,
     create_estate_homeowner,
     create_estate_shared_selector_qr,
+    get_estate_settings,
     get_estate_plan_restrictions,
     invite_homeowner,
     list_estate_access_logs,
@@ -28,6 +35,7 @@ from app.services.estate_service import (
     list_estate_overview,
     provision_estate_door_with_homeowner,
     update_estate_door_admin_profile,
+    update_estate_settings,
 )
 
 router = APIRouter()
@@ -90,6 +98,33 @@ class EstateAlertCreatePayload(BaseModel):
     alertType: str
     amountDue: float | None = None
     dueDate: str | None = None
+    pollOptions: list[str] | None = None
+    targetHomeownerIds: list[str] | None = None
+
+
+class MeetingResponsePayload(BaseModel):
+    response: str
+
+
+class PollVotePayload(BaseModel):
+    optionIndex: int
+
+
+class EstateSettingsPayload(BaseModel):
+    reminderFrequencyDays: int
+
+
+class EstatePaymentVerifyPayload(BaseModel):
+    homeownerId: str
+    paymentMethod: str | None = None
+    reference: str | None = None
+    receiptUrl: str | None = None
+
+
+class EstateAlertUpdatePayload(BaseModel):
+    title: str
+    description: str = ""
+    targetHomeownerIds: list[str] | None = None
 
 
 @router.post("/")
@@ -118,6 +153,32 @@ def estate_overview(
     user: User = Depends(require_roles("estate", "admin")),
 ):
     return {"data": list_estate_overview(db, owner_id=user.id)}
+
+
+@router.get("/{estate_id}/settings")
+def estate_get_settings(
+    estate_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    data = get_estate_settings(db=db, estate_id=estate_id, owner_id=user.id)
+    return {"data": data}
+
+
+@router.put("/{estate_id}/settings")
+def estate_update_settings(
+    estate_id: str,
+    payload: EstateSettingsPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    data = update_estate_settings(
+        db=db,
+        estate_id=estate_id,
+        owner_id=user.id,
+        reminder_frequency_days=payload.reminderFrequencyDays,
+    )
+    return {"data": data}
 
 
 @router.post("/homeowners")
@@ -296,6 +357,8 @@ def estate_create_alert(
         alert_type=payload.alertType,
         amount_due=payload.amountDue,
         due_date=due_date,
+        poll_options=payload.pollOptions,
+        target_homeowner_ids=payload.targetHomeownerIds,
     )
     return {"data": data}
 
@@ -323,6 +386,85 @@ def estate_alerts_me(
     user: User = Depends(require_roles("homeowner")),
 ):
     return {"data": list_homeowner_alerts(db, homeowner_id=user.id)}
+
+
+@router.put("/alerts/{alert_id}")
+def estate_alert_update(
+    alert_id: str,
+    payload: EstateAlertUpdatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    data = update_estate_alert(
+        db=db,
+        alert_id=alert_id,
+        estate_admin_id=user.id,
+        title=payload.title,
+        description=payload.description,
+        target_homeowner_ids=payload.targetHomeownerIds,
+    )
+    return {"data": data}
+
+
+@router.delete("/alerts/{alert_id}")
+def estate_alert_delete(
+    alert_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    data = delete_estate_alert(db=db, alert_id=alert_id, estate_admin_id=user.id)
+    return {"data": data}
+
+
+@router.post("/alerts/{alert_id}/meeting-response")
+def estate_meeting_response(
+    alert_id: str,
+    payload: MeetingResponsePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = record_meeting_response(db=db, alert_id=alert_id, homeowner_id=user.id, response=payload.response)
+    return {"data": data}
+
+
+@router.post("/alerts/{alert_id}/poll-vote")
+def estate_poll_vote(
+    alert_id: str,
+    payload: PollVotePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = record_poll_vote(db=db, alert_id=alert_id, homeowner_id=user.id, option_index=payload.optionIndex)
+    return {"data": data}
+
+
+@router.post("/alerts/{alert_id}/remind")
+def estate_alert_remind(
+    alert_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate")),
+):
+    data = send_payment_reminders(db=db, alert_id=alert_id, estate_admin_id=user.id)
+    return {"data": data}
+
+
+@router.post("/alerts/{alert_id}/payments/verify")
+def estate_alert_verify_payment(
+    alert_id: str,
+    payload: EstatePaymentVerifyPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate")),
+):
+    data = verify_estate_alert_payment(
+        db=db,
+        alert_id=alert_id,
+        estate_admin_id=user.id,
+        homeowner_id=payload.homeownerId,
+        payment_method=payload.paymentMethod,
+        reference=payload.reference,
+        receipt_url=payload.receiptUrl,
+    )
+    return {"data": data}
 
 
 @router.get("/{estate_id}/alerts/payments")

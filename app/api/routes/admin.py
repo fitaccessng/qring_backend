@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
 from app.core.config import get_settings
+from app.core.exceptions import AppException
 from app.db.models import Door, Estate, Home, Message, Notification, QRCode, Subscription, SubscriptionPlan, User, UserRole, VisitorSession
 from app.db.session import get_db
-from app.services.admin_service import create_door, create_qr_code, get_admin_overview
+from app.services.admin_service import create_door, create_qr_code, fund_wallet, get_admin_overview, list_wallet_balances, list_wallet_transactions
 from app.services.payment_service import list_subscription_plans, upsert_plan
 from app.services.audit_service import list_audit_logs, write_audit_log
 
@@ -45,6 +46,12 @@ class UserPatch(BaseModel):
 class SubscriptionActivate(BaseModel):
     userId: str
     plan: str
+
+
+class WalletFundPayload(BaseModel):
+    userId: str
+    amount: float
+    note: str | None = None
 
 
 @router.post("/doors")
@@ -313,6 +320,44 @@ def admin_payments_summary(
     # Payments are derived from subscription rows in this app.
     subs = db.query(Subscription).all()
     return {"data": {"count": len(subs)}}
+
+
+@router.get("/wallets")
+def admin_list_wallets(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    return {"data": list_wallet_balances(db)}
+
+
+@router.get("/wallets/transactions")
+def admin_list_wallet_transactions(
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    return {"data": list_wallet_transactions(db, limit=limit)}
+
+
+@router.post("/wallets/fund")
+def admin_fund_wallet(
+    payload: WalletFundPayload,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles("admin")),
+):
+    try:
+        data = fund_wallet(db, user_id=payload.userId, amount=payload.amount, note=payload.note)
+    except ValueError as exc:
+        raise AppException(str(exc), status_code=400)
+    write_audit_log(
+        db,
+        actor_user_id=actor.id,
+        action="wallet.fund",
+        resource_type="wallet",
+        resource_id=payload.userId,
+        meta={"amount": payload.amount, "note": payload.note},
+    )
+    return {"data": data}
 
 
 @router.get("/messages")

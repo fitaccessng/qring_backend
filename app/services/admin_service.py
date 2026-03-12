@@ -1,6 +1,8 @@
+import json
+
 from sqlalchemy.orm import Session
 
-from app.db.models import Door, Estate, Home, QRCode, Subscription, User, UserRole, VisitorSession
+from app.db.models import Door, Estate, Home, HomeownerWallet, HomeownerWalletTransaction, Notification, QRCode, Subscription, User, UserRole, VisitorSession
 from app.services.payment_service import list_subscription_plans
 
 
@@ -268,4 +270,92 @@ def get_admin_overview(db: Session) -> dict:
             "total": len(sessions),
             "rows": visit_rows,
         },
+    }
+
+
+def list_wallet_balances(db: Session) -> list[dict]:
+    wallets = db.query(HomeownerWallet).all()
+    user_ids = [row.user_id for row in wallets]
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_by_id = {row.id: row for row in users}
+    return [
+        {
+            "userId": row.user_id,
+            "userEmail": user_by_id.get(row.user_id).email if user_by_id.get(row.user_id) else "",
+            "userName": user_by_id.get(row.user_id).full_name if user_by_id.get(row.user_id) else "",
+            "balance": float(row.balance or 0),
+            "currency": row.currency or "NGN",
+        }
+        for row in wallets
+    ]
+
+
+def list_wallet_transactions(db: Session, *, limit: int = 200) -> list[dict]:
+    rows = (
+        db.query(HomeownerWalletTransaction)
+        .order_by(HomeownerWalletTransaction.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    user_ids = [row.user_id for row in rows]
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_by_id = {row.id: row for row in users}
+    return [
+        {
+            "id": row.id,
+            "userId": row.user_id,
+            "userEmail": user_by_id.get(row.user_id).email if user_by_id.get(row.user_id) else "",
+            "userName": user_by_id.get(row.user_id).full_name if user_by_id.get(row.user_id) else "",
+            "amount": float(row.amount or 0),
+            "balanceAfter": float(row.balance_after or 0),
+            "currency": row.currency or "NGN",
+            "type": row.type,
+            "note": row.note or "",
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
+
+
+def fund_wallet(db: Session, *, user_id: str, amount: float, note: str | None = None) -> dict:
+    if amount <= 0:
+        raise ValueError("amount must be greater than 0")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise ValueError("User not found")
+    wallet = db.query(HomeownerWallet).filter(HomeownerWallet.user_id == user_id).first()
+    if not wallet:
+        wallet = HomeownerWallet(user_id=user_id, balance=0, currency="NGN")
+        db.add(wallet)
+        db.flush()
+    wallet.balance = round(float(wallet.balance or 0) + float(amount), 2)
+    db.add(
+        HomeownerWalletTransaction(
+            user_id=user_id,
+            amount=float(amount),
+            balance_after=float(wallet.balance or 0),
+            currency=wallet.currency or "NGN",
+            type="fund",
+            note=note or "",
+        )
+    )
+    db.add(
+        Notification(
+            user_id=user_id,
+            kind="wallet.fund",
+            payload=json.dumps(
+                {
+                    "message": note or f"Wallet funded with NGN {amount:.2f}",
+                    "amount": float(amount),
+                    "currency": wallet.currency or "NGN",
+                }
+            ),
+        )
+    )
+    db.commit()
+    db.refresh(wallet)
+    return {
+        "userId": wallet.user_id,
+        "balance": float(wallet.balance or 0),
+        "currency": wallet.currency or "NGN",
     }
