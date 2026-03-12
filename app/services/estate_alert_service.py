@@ -20,6 +20,7 @@ from app.db.models import (
     HomeownerPayment,
     HomeownerPaymentStatus,
     HomeownerWallet,
+    MaintenanceStatusAudit,
     MeetingResponseType,
     Notification,
     User,
@@ -84,9 +85,28 @@ def _serialize_alert(row: EstateAlert) -> dict:
         "dueDate": row.due_date.isoformat() if row.due_date else None,
         "pollOptions": poll_options,
         "targetHomeownerIds": target_ids,
+        "maintenanceStatus": row.maintenance_status or "pending",
         "createdAt": row.created_at.isoformat() if row.created_at else None,
         "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+def _emit_alert_event(*, event: str, payload: dict, estate_id: str, homeowner_ids: list[str]) -> None:
+    sio.start_background_task(
+        sio.emit,
+        event,
+        payload,
+        room=f"estate:{estate_id}:alerts",
+        namespace=settings.DASHBOARD_NAMESPACE,
+    )
+    for homeowner_id in homeowner_ids:
+        sio.start_background_task(
+            sio.emit,
+            event,
+            payload,
+            room=f"user:{homeowner_id}",
+            namespace=settings.DASHBOARD_NAMESPACE,
+        )
 
 
 def _resolve_estate_or_404(db: Session, estate_id: str) -> Estate:
@@ -182,6 +202,7 @@ def create_estate_alert(
         due_date=due_date,
         poll_options=json.dumps(normalized_poll_options) if normalized_poll_options else "",
         target_homeowner_ids=json.dumps(target_ids) if target_ids else "",
+        maintenance_status="pending" if alert_type_enum == EstateAlertType.maintenance_request else "pending",
     )
     db.add(alert)
     db.flush()
@@ -224,12 +245,11 @@ def create_estate_alert(
     payload = _serialize_alert(alert)
     payload["status"] = "created"
     payload["paymentSummary"] = {"paid": 0, "pending": len(homeowner_ids), "failed": 0}
-    sio.start_background_task(
-        sio.emit,
-        "ALERT_CREATED",
-        payload,
-        room=f"estate:{estate_id}:alerts",
-        namespace=settings.DASHBOARD_NAMESPACE,
+    _emit_alert_event(
+        event="ALERT_CREATED",
+        payload=payload,
+        estate_id=estate_id,
+        homeowner_ids=homeowner_ids,
     )
     return payload
 
@@ -480,18 +500,48 @@ def update_estate_alert(
     title: str,
     description: str,
     target_homeowner_ids: list[str] | None = None,
+    amount_due: float | None = None,
+    due_date: datetime | None = None,
+    poll_options: list[str] | None = None,
+    maintenance_status: str | None = None,
 ) -> dict:
     alert = db.query(EstateAlert).filter(EstateAlert.id == alert_id).first()
     if not alert:
         raise AppException("Alert not found", status_code=404)
     _require_estate_admin_access(db, estate_id=alert.estate_id, user_id=estate_admin_id)
-    if alert.alert_type != EstateAlertType.notice:
-        raise AppException("Only broadcast alerts can be edited", status_code=400)
 
     clean_title = (title or "").strip()
     if not clean_title:
         raise AppException("title is required", status_code=400)
     clean_description = (description or "").strip()
+
+    previous_status = (alert.maintenance_status or "pending").strip().lower()
+    next_status = previous_status
+    if alert.alert_type == EstateAlertType.maintenance_request and maintenance_status:
+        normalized_status = maintenance_status.strip().lower()
+        if normalized_status not in {"pending", "solved"}:
+            raise AppException("Invalid maintenance status", status_code=400)
+        next_status = normalized_status
+        alert.maintenance_status = normalized_status
+
+    if alert.alert_type == EstateAlertType.payment_request:
+        if amount_due is None:
+            raise AppException("amount_due is required for payment_request alerts", status_code=400)
+        normalized_amount = round(float(amount_due), 2)
+        if normalized_amount <= 0:
+            raise AppException("amount_due must be greater than 0", status_code=400)
+        alert.amount_due = normalized_amount
+        alert.due_date = due_date
+
+    if alert.alert_type == EstateAlertType.meeting:
+        alert.due_date = due_date
+
+    if alert.alert_type == EstateAlertType.poll:
+        if not poll_options or len([opt for opt in poll_options if str(opt).strip()]) < 2:
+            raise AppException("poll_options must include at least 2 options", status_code=400)
+        normalized_poll_options = [str(opt).strip() for opt in poll_options if str(opt).strip()]
+        alert.poll_options = json.dumps(normalized_poll_options)
+        db.query(EstatePollVote).filter(EstatePollVote.estate_alert_id == alert_id).delete(synchronize_session=False)
 
     target_ids = []
     if target_homeowner_ids:
@@ -505,9 +555,27 @@ def update_estate_alert(
     alert.title = clean_title
     alert.description = clean_description
     alert.target_homeowner_ids = json.dumps(target_ids) if target_ids else ""
+    if alert.alert_type == EstateAlertType.maintenance_request and next_status != previous_status:
+        db.add(
+            MaintenanceStatusAudit(
+                estate_alert_id=alert.id,
+                estate_id=alert.estate_id,
+                changed_by_user_id=estate_admin_id,
+                from_status=previous_status,
+                to_status=next_status,
+            )
+        )
     db.commit()
     db.refresh(alert)
-    return _serialize_alert(alert)
+    payload = _serialize_alert(alert)
+    homeowner_ids = _homeowner_ids_for_estate(db, estate_id=alert.estate_id)
+    _emit_alert_event(
+        event="ALERT_UPDATED",
+        payload=payload,
+        estate_id=alert.estate_id,
+        homeowner_ids=homeowner_ids,
+    )
+    return payload
 
 
 def delete_estate_alert(
@@ -520,8 +588,9 @@ def delete_estate_alert(
     if not alert:
         raise AppException("Alert not found", status_code=404)
     _require_estate_admin_access(db, estate_id=alert.estate_id, user_id=estate_admin_id)
-    if alert.alert_type != EstateAlertType.notice:
-        raise AppException("Only broadcast alerts can be deleted", status_code=400)
+
+    alert_payload = _serialize_alert(alert)
+    estate_id = alert.estate_id
 
     db.query(HomeownerPayment).filter(HomeownerPayment.estate_alert_id == alert_id).delete(synchronize_session=False)
     db.query(EstateMeetingResponse).filter(EstateMeetingResponse.estate_alert_id == alert_id).delete(synchronize_session=False)
@@ -532,7 +601,48 @@ def delete_estate_alert(
     ).delete(synchronize_session=False)
     db.delete(alert)
     db.commit()
+    homeowner_ids = _homeowner_ids_for_estate(db, estate_id=estate_id)
+    _emit_alert_event(
+        event="ALERT_DELETED",
+        payload={"alertId": alert_id, "estateId": estate_id, "alertType": alert_payload.get("alertType")},
+        estate_id=estate_id,
+        homeowner_ids=homeowner_ids,
+    )
     return {"deleted": True, "alertId": alert_id}
+
+
+def list_maintenance_status_audits(
+    db: Session,
+    *,
+    estate_id: str,
+    estate_admin_id: str,
+) -> list[dict]:
+    _require_estate_admin_access(db, estate_id=estate_id, user_id=estate_admin_id)
+    rows = (
+        db.query(MaintenanceStatusAudit, User)
+        .join(User, MaintenanceStatusAudit.changed_by_user_id == User.id)
+        .filter(MaintenanceStatusAudit.estate_id == estate_id)
+        .order_by(MaintenanceStatusAudit.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    result = []
+    for audit, user in rows:
+        result.append(
+            {
+                "id": audit.id,
+                "alertId": audit.estate_alert_id,
+                "estateId": audit.estate_id,
+                "fromStatus": audit.from_status,
+                "toStatus": audit.to_status,
+                "changedAt": audit.created_at.isoformat() if audit.created_at else None,
+                "changedById": audit.changed_by_user_id,
+                "changedByName": user.full_name or user.email or "Estate Admin",
+                "changedByEmail": user.email or "",
+                "note": audit.note,
+            }
+        )
+    return result
 
 
 def create_homeowner_maintenance_request(
@@ -561,6 +671,7 @@ def create_homeowner_maintenance_request(
         title=clean_title,
         description=clean_description,
         alert_type=EstateAlertType.maintenance_request,
+        maintenance_status="pending",
     )
     db.add(alert)
     db.flush()

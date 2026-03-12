@@ -38,6 +38,7 @@ class EstateAlert(Base):
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     poll_options: Mapped[str | None] = mapped_column(Text, default="")
     target_homeowner_ids: Mapped[str | None] = mapped_column(Text, default="")
+    maintenance_status: Mapped[str | None] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

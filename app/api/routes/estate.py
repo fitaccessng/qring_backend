@@ -12,6 +12,7 @@ from app.services.estate_alert_service import (
     list_estate_alert_payment_overview,
     list_estate_alerts,
     list_homeowner_alerts,
+    list_maintenance_status_audits,
     record_meeting_response,
     record_poll_vote,
     send_payment_reminders,
@@ -125,6 +126,10 @@ class EstateAlertUpdatePayload(BaseModel):
     title: str
     description: str = ""
     targetHomeownerIds: list[str] | None = None
+    amountDue: float | None = None
+    dueDate: str | None = None
+    pollOptions: list[str] | None = None
+    maintenanceStatus: str | None = None
 
 
 @router.post("/")
@@ -395,6 +400,13 @@ def estate_alert_update(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
+    due_date = None
+    if payload.dueDate:
+        try:
+            due_date = datetime.fromisoformat(payload.dueDate.replace("Z", "+00:00"))
+        except Exception:
+            due_date = None
+
     data = update_estate_alert(
         db=db,
         alert_id=alert_id,
@@ -402,6 +414,10 @@ def estate_alert_update(
         title=payload.title,
         description=payload.description,
         target_homeowner_ids=payload.targetHomeownerIds,
+        amount_due=payload.amountDue,
+        due_date=due_date,
+        poll_options=payload.pollOptions,
+        maintenance_status=payload.maintenanceStatus,
     )
     return {"data": data}
 
@@ -474,3 +490,12 @@ def estate_alerts_payment_overview(
     user: User = Depends(require_roles("estate")),
 ):
     return {"data": list_estate_alert_payment_overview(db, estate_id=estate_id, estate_admin_id=user.id)}
+
+
+@router.get("/{estate_id}/maintenance/audits")
+def estate_maintenance_audits(
+    estate_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {"data": list_maintenance_status_audits(db=db, estate_id=estate_id, estate_admin_id=user.id)}

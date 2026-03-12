@@ -376,6 +376,7 @@ def _ensure_advanced_features_schema() -> None:
         "push_subscriptions",
         "estate_meeting_responses",
         "estate_poll_votes",
+        "maintenance_status_audits",
     ]
     for table in tables:
         Base.metadata.tables[table].create(bind=engine, checkfirst=True)
@@ -391,6 +392,7 @@ def _ensure_estate_alert_schema() -> None:
     with engine.begin() as conn:
         _add_column_if_missing(conn, columns, "estate_alerts", "poll_options", "TEXT DEFAULT ''")
         _add_column_if_missing(conn, columns, "estate_alerts", "target_homeowner_ids", "TEXT DEFAULT ''")
+        _add_column_if_missing(conn, columns, "estate_alerts", "maintenance_status", "VARCHAR(20) DEFAULT 'pending'")
         if conn.dialect.name == "postgresql":
             # Ensure enum values exist for older deployments.
             enum_names = ["estatealerttype", "estate_alert_type"]
