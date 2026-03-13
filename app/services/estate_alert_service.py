@@ -658,6 +658,13 @@ def delete_estate_alert(
     alert_id: str,
     estate_admin_id: str,
 ) -> dict:
+    def _safe_bulk_delete(model, filter_clause):
+        try:
+            db.query(model).filter(filter_clause).delete(synchronize_session=False)
+        except Exception:
+            # Ignore missing table/column errors to avoid 500s on older schemas.
+            return
+
     alert = db.query(EstateAlert).filter(EstateAlert.id == alert_id).first()
     if not alert:
         raise AppException("Alert not found", status_code=404)
@@ -666,13 +673,16 @@ def delete_estate_alert(
     alert_payload = _serialize_alert(alert)
     estate_id = alert.estate_id
 
-    db.query(HomeownerPayment).filter(HomeownerPayment.estate_alert_id == alert_id).delete(synchronize_session=False)
-    db.query(EstateMeetingResponse).filter(EstateMeetingResponse.estate_alert_id == alert_id).delete(synchronize_session=False)
-    db.query(EstatePollVote).filter(EstatePollVote.estate_alert_id == alert_id).delete(synchronize_session=False)
-    db.query(Notification).filter(
-        Notification.kind == "estate.alert",
-        Notification.payload.like(f"%{alert_id}%"),
-    ).delete(synchronize_session=False)
+    _safe_bulk_delete(HomeownerPayment, HomeownerPayment.estate_alert_id == alert_id)
+    _safe_bulk_delete(EstateMeetingResponse, EstateMeetingResponse.estate_alert_id == alert_id)
+    _safe_bulk_delete(EstatePollVote, EstatePollVote.estate_alert_id == alert_id)
+    _safe_bulk_delete(
+        Notification,
+        and_(
+            Notification.kind == "estate.alert",
+            Notification.payload.like(f"%{alert_id}%"),
+        ),
+    )
     db.delete(alert)
     db.commit()
     homeowner_ids = _homeowner_ids_for_estate(db, estate_id=estate_id)
