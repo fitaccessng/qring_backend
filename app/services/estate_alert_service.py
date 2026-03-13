@@ -1,12 +1,14 @@
 import json
 import uuid
 import re
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 from urllib import error, request
 
 from sqlalchemy import and_, func, inspect, text
 from sqlalchemy.orm import Session
+from anyio import from_thread
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
@@ -206,20 +208,29 @@ def cleanup_broken_alerts(db: Session) -> dict:
     return {"deleted": deleted}
 
 def _emit_alert_event(*, event: str, payload: dict, estate_id: str, homeowner_ids: list[str]) -> None:
-    sio.start_background_task(
-        sio.emit,
-        event,
-        payload,
-        room=f"estate:{estate_id}:alerts",
-        namespace=settings.DASHBOARD_NAMESPACE,
-    )
-    for homeowner_id in homeowner_ids:
+    namespace = settings.DASHBOARD_NAMESPACE
+    rooms = [f"estate:{estate_id}:alerts"]
+    rooms.extend(f"user:{homeowner_id}" for homeowner_id in homeowner_ids)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Running inside AnyIO worker thread (sync endpoint). Bridge to ASGI loop.
+        for room in rooms:
+            try:
+                from_thread.run(sio.emit, event, payload, room=room, namespace=namespace)
+            except Exception:
+                # Best-effort; avoid failing the main request if realtime emit cannot run.
+                return
+        return
+
+    for room in rooms:
         sio.start_background_task(
             sio.emit,
             event,
             payload,
-            room=f"user:{homeowner_id}",
-            namespace=settings.DASHBOARD_NAMESPACE,
+            room=room,
+            namespace=namespace,
         )
 
 
