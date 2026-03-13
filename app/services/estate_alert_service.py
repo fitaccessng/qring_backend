@@ -153,6 +153,58 @@ def _ensure_estate_alert_columns(db: Session) -> None:
         # Best-effort only; avoid raising during alert creation.
         return
 
+
+def repair_estate_alert_schema(db: Session) -> None:
+    _ensure_estate_alert_columns(db)
+
+
+def cleanup_broken_alerts(db: Session) -> dict:
+    deleted = 0
+    try:
+        db.execute(
+            text(
+                "DELETE FROM homeowner_payments "
+                "WHERE estate_alert_id NOT IN (SELECT id FROM estate_alerts)"
+            )
+        )
+        db.execute(
+            text(
+                "DELETE FROM estate_meeting_responses "
+                "WHERE estate_alert_id NOT IN (SELECT id FROM estate_alerts)"
+            )
+        )
+        db.execute(
+            text(
+                "DELETE FROM estate_poll_votes "
+                "WHERE estate_alert_id NOT IN (SELECT id FROM estate_alerts)"
+            )
+        )
+        result = db.execute(
+            text(
+                "DELETE FROM estate_alerts "
+                "WHERE estate_id NOT IN (SELECT id FROM estates)"
+            )
+        )
+        deleted += result.rowcount or 0
+        result = db.execute(
+            text(
+                "DELETE FROM estate_alerts "
+                "WHERE title IS NULL OR TRIM(title) = ''"
+            )
+        )
+        deleted += result.rowcount or 0
+        db.execute(
+            text(
+                "UPDATE estate_alerts "
+                "SET alert_type = 'notice' "
+                "WHERE alert_type IS NULL OR TRIM(alert_type) = ''"
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    return {"deleted": deleted}
+
 def _emit_alert_event(*, event: str, payload: dict, estate_id: str, homeowner_ids: list[str]) -> None:
     sio.start_background_task(
         sio.emit,
@@ -683,8 +735,18 @@ def delete_estate_alert(
             Notification.payload.like(f"%{alert_id}%"),
         ),
     )
-    db.delete(alert)
-    db.commit()
+    try:
+        db.delete(alert)
+        db.commit()
+    except Exception:
+        db.rollback()
+        _ensure_estate_alert_columns(db)
+        try:
+            db.execute(text("DELETE FROM estate_alerts WHERE id = :alert_id"), {"alert_id": alert_id})
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise AppException("Unable to delete alert. Please retry in a moment.", status_code=500)
     homeowner_ids = _homeowner_ids_for_estate(db, estate_id=estate_id)
     _emit_alert_event(
         event="ALERT_DELETED",

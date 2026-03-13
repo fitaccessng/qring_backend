@@ -22,7 +22,11 @@ from app.middleware.access_control import AccessControlMiddleware
 from app.middleware.input_sanitization import InputSanitizationMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.socket.server import sio
-from app.services.estate_alert_service import run_scheduled_payment_reminders
+from app.services.estate_alert_service import (
+    cleanup_broken_alerts,
+    repair_estate_alert_schema,
+    run_scheduled_payment_reminders,
+)
 
 settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
@@ -482,6 +486,11 @@ async def on_startup():
     try:
         if settings.ENVIRONMENT.lower() == "development":
             _seed_dev_data(db)
+        try:
+            repair_estate_alert_schema(db)
+            cleanup_broken_alerts(db)
+        except Exception:
+            logging.exception("Startup alert repair/cleanup failed.")
     finally:
         db.close()
     asyncio.create_task(_payment_reminder_loop())
