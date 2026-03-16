@@ -226,6 +226,7 @@ def _ensure_runtime_compatibility_schema() -> None:
 
         if "visitor_sessions" in table_names:
             columns = {col["name"] for col in inspector.get_columns("visitor_sessions")}
+            _add_column_if_missing(conn, columns, "visitor_sessions", "request_id", "VARCHAR(64)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "home_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "door_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "homeowner_id", "VARCHAR(36)")
@@ -234,6 +235,11 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "visitor_sessions", "status", "VARCHAR(40) DEFAULT 'pending'")
             _add_column_if_missing(conn, columns, "visitor_sessions", "started_at", datetime_sql)
             _add_column_if_missing(conn, columns, "visitor_sessions", "ended_at", datetime_sql)
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_visitor_sessions_request_id ON visitor_sessions (request_id)"
+                )
+            )
 
         if "messages" in table_names:
             columns = {col["name"] for col in inspector.get_columns("messages")}

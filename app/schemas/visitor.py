@@ -2,6 +2,7 @@ from pydantic import BaseModel
 
 
 class VisitorRequestCreate(BaseModel):
+    requestId: str | None = None
     qrId: str
     doorId: str | None = None
     name: str | None = None

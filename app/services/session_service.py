@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import Door, Home, VisitorSession
 from app.services.door_routing_service import select_door
@@ -15,7 +16,23 @@ def create_visitor_session(
     requested_door: str | None,
     visitor_label: str = "Visitor",
     appointment_id: str | None = None,
+    request_id: str | None = None,
 ) -> VisitorSession:
+    if request_id:
+        existing = (
+            db.query(VisitorSession)
+            .filter(VisitorSession.request_id == request_id, VisitorSession.qr_id == qr_id)
+            .order_by(VisitorSession.started_at.desc())
+            .first()
+        )
+        if existing:
+            desired_label = (visitor_label or "Visitor").strip() or "Visitor"
+            if existing.visitor_label != desired_label:
+                existing.visitor_label = desired_label
+                db.commit()
+                db.refresh(existing)
+            return existing
+
     if appointment_id:
         existing = (
             db.query(VisitorSession)
@@ -43,6 +60,7 @@ def create_visitor_session(
 
     homeowner_id = home.homeowner_id if home else ""
     session = VisitorSession(
+        request_id=request_id,
         qr_id=qr_id,
         home_id=home.id if home else qr_home_id,
         door_id=door.id if door else selected_door,
@@ -52,7 +70,20 @@ def create_visitor_session(
         status="pending",
     )
     db.add(session)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if request_id:
+            existing = (
+                db.query(VisitorSession)
+                .filter(VisitorSession.request_id == request_id, VisitorSession.qr_id == qr_id)
+                .order_by(VisitorSession.started_at.desc())
+                .first()
+            )
+            if existing:
+                return existing
+        raise
     db.refresh(session)
     return session
 

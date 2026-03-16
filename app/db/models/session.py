@@ -11,6 +11,7 @@ class VisitorSession(Base):
     __tablename__ = "visitor_sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     qr_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     home_id: Mapped[str] = mapped_column(String(36), ForeignKey("homes.id"), nullable=False, index=True)
     door_id: Mapped[str] = mapped_column(String(36), ForeignKey("doors.id"), nullable=False, index=True)

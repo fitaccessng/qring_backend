@@ -54,6 +54,26 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
     phase = "resolve_qr"
     session = None
     try:
+        request_id = str(payload.requestId or "").strip() or None
+        if request_id:
+            from app.db.models import VisitorSession
+
+            existing = (
+                db.query(VisitorSession)
+                .filter(VisitorSession.request_id == request_id, VisitorSession.qr_id == payload.qrId)
+                .order_by(VisitorSession.started_at.desc())
+                .first()
+            )
+            if existing:
+                logger.info(
+                    "visitor.request idempotent replay qr_id=%s request_id=%s session_id=%s status=%s",
+                    payload.qrId,
+                    request_id,
+                    existing.id,
+                    existing.status,
+                )
+                return {"data": {"sessionId": existing.id, "status": existing.status}}
+
         appointment = None
         if str(payload.qrId or "").startswith("qt1."):
             resolved_appointment_qr = resolve_qr_appointment_token_for_request(
@@ -84,6 +104,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             requested_door=payload.doorId,
             visitor_label=effective_visitor_name,
             appointment_id=appointment.id if appointment else None,
+            request_id=request_id,
         )
         if appointment:
             mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
