@@ -177,6 +177,22 @@ def advanced_download_snapshot(
     }
 
 
+@router.get("/visitor/snapshots/{snapshot_id}/file")
+def advanced_download_snapshot_file(
+    snapshot_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    blob, logical_type = load_snapshot_bytes(
+        db,
+        snapshot_id=snapshot_id,
+        requester_user_id=user.id,
+        is_admin=user.role == UserRole.admin,
+    )
+    content_type = "image/jpeg" if logical_type == "photo" else "application/octet-stream"
+    return Response(content=blob, media_type=content_type, headers={"Cache-Control": "no-store"})
+
+
 @router.post("/visitor/recognition")
 def advanced_visitor_recognition(
     payload: RecognitionPayload,

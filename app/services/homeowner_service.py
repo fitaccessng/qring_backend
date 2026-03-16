@@ -1,11 +1,12 @@
 from collections import defaultdict
 from datetime import datetime
+import json
 import uuid
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Appointment, Door, Home, Message, QRCode, VisitorSession
+from app.db.models import Appointment, Door, Home, Message, Notification, QRCode, VisitorSession
 from app.core.exceptions import AppException
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
@@ -63,6 +64,25 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
         .all()
     )
 
+    session_ids = [session.id for session, _ in rows]
+    request_payload_by_session: dict[str, dict[str, Any]] = {}
+    if session_ids:
+        notifications = (
+            db.query(Notification)
+            .filter(Notification.user_id == homeowner_id, Notification.kind == "visitor.request")
+            .order_by(Notification.created_at.desc())
+            .limit(300)
+            .all()
+        )
+        for row in notifications:
+            try:
+                payload = json.loads(row.payload or "{}")
+            except Exception:
+                continue
+            session_id = str(payload.get("sessionId") or "").strip()
+            if session_id and session_id in session_ids and session_id not in request_payload_by_session:
+                request_payload_by_session[session_id] = payload
+
     return [
         {
             "id": session.id,
@@ -71,6 +91,9 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "status": STATUS_LABELS.get(session.status, session.status.title()),
             "sessionStatus": session.status,
             "canDecide": session.status == "pending",
+            "purpose": (request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
+            "phoneNumber": (request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
+            "snapshotAuditId": request_payload_by_session.get(session.id, {}).get("snapshotAuditId"),
             "time": session.started_at.isoformat(),
         }
         for session, door in rows

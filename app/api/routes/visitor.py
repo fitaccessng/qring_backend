@@ -1,4 +1,5 @@
 import logging
+import base64
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, File, UploadFile
@@ -21,6 +22,7 @@ from app.services.notification_service import create_notification
 from app.services.qr_service import resolve_qr
 from app.services.session_service import create_visitor_session
 from app.services.voice_note_service import save_voice_note
+from app.services.advanced_service import create_snapshot_audit
 from app.socket.server import sio
 
 router = APIRouter()
@@ -86,6 +88,41 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         if appointment:
             mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
 
+        phase = "capture_snapshot"
+        snapshot_audit = None
+        snapshot_b64 = (payload.snapshotBase64 or "").strip()
+        if snapshot_b64:
+            try:
+                media_bytes = base64.b64decode(snapshot_b64, validate=True)
+            except Exception:
+                media_bytes = b""
+            if media_bytes:
+                mime = (payload.snapshotMime or "image/jpeg").strip().lower()
+                ext = ".jpg"
+                if "png" in mime:
+                    ext = ".png"
+                elif "webp" in mime:
+                    ext = ".webp"
+                snapshot_audit = create_snapshot_audit(
+                    db,
+                    homeowner_id=session.homeowner_id,
+                    media_bytes=media_bytes,
+                    filename_hint=f"visitor-snapshot{ext}",
+                    media_type="photo",
+                    visitor_session_id=session.id,
+                    appointment_id=appointment.id if appointment else None,
+                    source="visitor_qr_scan",
+                )
+                try:
+                    await sio.emit(
+                        "visitor.snapshot",
+                        {"data": snapshot_audit},
+                        room=f"user:{session.homeowner_id}",
+                        namespace=settings.DASHBOARD_NAMESPACE,
+                    )
+                except Exception:
+                    logger.exception("Failed to emit visitor.snapshot realtime event")
+
         phase = "create_notification"
         create_notification(
             db=db,
@@ -95,7 +132,9 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "sessionId": session.id,
                 "doorId": session.door_id,
                 "visitorName": (payload.name or "Visitor").strip() or "Visitor",
+                "phoneNumber": (payload.phoneNumber or "").strip(),
                 "purpose": (payload.purpose or "").strip(),
+                "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
                 "message": f"New visitor request from {(payload.name or 'Visitor').strip() or 'Visitor'}",
             },
         )
