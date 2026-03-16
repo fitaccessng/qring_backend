@@ -128,13 +128,23 @@ def save_voice_note(
     if len(media_bytes) > MAX_BYTES:
         raise AppException("Voice note is too large.", status_code=400)
 
-    bucket = _get_storage_bucket()
-    if bucket is None:
-        raise AppException("Firebase Storage is not configured.", status_code=503)
-
     ext = _resolve_extension(filename_hint, content_type)
     note_id = str(uuid.uuid4())
     filename = f"{session_id}-{note_id}{ext}"
+
+    bucket = _get_storage_bucket()
+    if bucket is None:
+        base = _voice_note_base_dir()
+        path = base / filename
+        path.write_bytes(media_bytes)
+        return {
+            "id": note_id,
+            "filename": filename,
+            "path": str(path),
+            "contentType": content_type or "application/octet-stream",
+            "url": f"/media/voice-notes/{filename}",
+        }
+
     storage_path = f"voice-notes/{session_id}/{filename}"
     blob = bucket.blob(storage_path)
     blob.cache_control = "private, max-age=0, no-transform"

@@ -502,3 +502,14 @@ app = socketio.ASGIApp(
     socketio_path=settings.SOCKET_PATH.lstrip("/"),
 )
 
+# Apply CORS at the top-level ASGI app so CORS headers are present even when
+# requests are handled by the socket.io wrapper (or fail before reaching FastAPI).
+app = CORSMiddleware(
+    app,
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
