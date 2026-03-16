@@ -161,7 +161,7 @@ def advanced_download_snapshot(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    blob, media_type = load_snapshot_bytes(
+    blob, media_type, _content_type = load_snapshot_bytes(
         db,
         snapshot_id=snapshot_id,
         requester_user_id=user.id,
@@ -183,13 +183,12 @@ def advanced_download_snapshot_file(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    blob, logical_type = load_snapshot_bytes(
+    blob, logical_type, content_type = load_snapshot_bytes(
         db,
         snapshot_id=snapshot_id,
         requester_user_id=user.id,
         is_admin=user.role == UserRole.admin,
     )
-    content_type = "image/jpeg" if logical_type == "photo" else "application/octet-stream"
     return Response(content=blob, media_type=content_type, headers={"Cache-Control": "no-store"})
 
 

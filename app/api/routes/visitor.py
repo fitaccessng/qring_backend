@@ -97,31 +97,42 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             except Exception:
                 media_bytes = b""
             if media_bytes:
-                mime = (payload.snapshotMime or "image/jpeg").strip().lower()
-                ext = ".jpg"
-                if "png" in mime:
-                    ext = ".png"
-                elif "webp" in mime:
-                    ext = ".webp"
-                snapshot_audit = create_snapshot_audit(
-                    db,
-                    homeowner_id=session.homeowner_id,
-                    media_bytes=media_bytes,
-                    filename_hint=f"visitor-snapshot{ext}",
-                    media_type="photo",
-                    visitor_session_id=session.id,
-                    appointment_id=appointment.id if appointment else None,
-                    source="visitor_qr_scan",
-                )
                 try:
-                    await sio.emit(
-                        "visitor.snapshot",
-                        {"data": snapshot_audit},
-                        room=f"user:{session.homeowner_id}",
-                        namespace=settings.DASHBOARD_NAMESPACE,
+                    if len(media_bytes) > 2 * 1024 * 1024:
+                        raise AppException("Snapshot is too large. Please retake the photo.", status_code=400)
+
+                    mime = (payload.snapshotMime or "image/jpeg").strip().lower()
+                    ext = ".jpg"
+                    if "png" in mime:
+                        ext = ".png"
+                    elif "webp" in mime:
+                        ext = ".webp"
+
+                    snapshot_audit = create_snapshot_audit(
+                        db,
+                        homeowner_id=session.homeowner_id,
+                        media_bytes=media_bytes,
+                        filename_hint=f"visitor-snapshot{ext}",
+                        media_type="photo",
+                        visitor_session_id=session.id,
+                        appointment_id=appointment.id if appointment else None,
+                        source="visitor_qr_scan",
                     )
+                    try:
+                        await sio.emit(
+                            "visitor.snapshot",
+                            {"data": snapshot_audit},
+                            room=f"user:{session.homeowner_id}",
+                            namespace=settings.DASHBOARD_NAMESPACE,
+                        )
+                    except Exception:
+                        logger.exception("Failed to emit visitor.snapshot realtime event")
+                except AppException:
+                    raise
                 except Exception:
-                    logger.exception("Failed to emit visitor.snapshot realtime event")
+                    # Never block a visitor request just because snapshot storage failed.
+                    logger.exception("Snapshot capture failed. Continuing without snapshot.")
+                    snapshot_audit = None
 
         phase = "create_notification"
         create_notification(

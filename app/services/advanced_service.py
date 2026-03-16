@@ -194,25 +194,31 @@ def create_snapshot_audit(
         ext = ".bin"
     media_id = str(uuid.uuid4())
     storage_bucket = _get_storage_bucket()
-    if storage_bucket is None:
+    media_path = ""
+    if storage_bucket is not None:
+        storage_path = f"visitor-media/{homeowner_id}/{media_id}{ext}"
+        try:
+            blob = storage_bucket.blob(storage_path)
+            blob.cache_control = "private, max-age=0, no-transform"
+            blob.metadata = {
+                "homeownerId": homeowner_id,
+                "mediaId": media_id,
+                "visitorSessionId": visitor_session_id or "",
+                "appointmentId": appointment_id or "",
+                "mediaType": (media_type or "photo").strip().lower(),
+            }
+            blob.upload_from_string(media_bytes, content_type="application/octet-stream")
+            media_path = f"firebase:{storage_path}"
+        except Exception:
+            # Fall back to local storage if cloud upload fails.
+            media_path = ""
+
+    if not media_path:
         relative_path = Path(homeowner_id) / f"{media_id}{ext}"
         absolute_path = _media_base_dir() / relative_path
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
         absolute_path.write_bytes(media_bytes)
         media_path = str(relative_path).replace("\\", "/")
-    else:
-        storage_path = f"visitor-media/{homeowner_id}/{media_id}{ext}"
-        blob = storage_bucket.blob(storage_path)
-        blob.cache_control = "private, max-age=0, no-transform"
-        blob.metadata = {
-            "homeownerId": homeowner_id,
-            "mediaId": media_id,
-            "visitorSessionId": visitor_session_id or "",
-            "appointmentId": appointment_id or "",
-            "mediaType": (media_type or "photo").strip().lower(),
-        }
-        blob.upload_from_string(media_bytes, content_type="application/octet-stream")
-        media_path = f"firebase:{storage_path}"
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
@@ -240,7 +246,32 @@ def create_snapshot_audit(
     }
 
 
-def load_snapshot_bytes(db: Session, *, snapshot_id: str, requester_user_id: str, is_admin: bool) -> tuple[bytes, str]:
+def _snapshot_content_type_from_path(path: str, logical_type: str) -> str:
+    ext = Path(path or "").suffix.lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".gif":
+        return "image/gif"
+    if ext in {".mp4"}:
+        return "video/mp4"
+    if ext in {".webm"}:
+        return "video/webm"
+    if ext in {".mov"}:
+        return "video/quicktime"
+    if logical_type == "photo":
+        return "image/jpeg"
+    if logical_type == "video":
+        return "video/mp4"
+    return "application/octet-stream"
+
+
+def load_snapshot_bytes(
+    db: Session, *, snapshot_id: str, requester_user_id: str, is_admin: bool
+) -> tuple[bytes, str, str]:
     row = db.query(VisitorSnapshotAudit).filter(VisitorSnapshotAudit.id == snapshot_id).first()
     if not row:
         raise AppException("Snapshot not found.", status_code=404)
@@ -248,6 +279,8 @@ def load_snapshot_bytes(db: Session, *, snapshot_id: str, requester_user_id: str
         raise AppException("Not authorized to access this snapshot.", status_code=403)
 
     media_path = str(row.media_path or "")
+    logical_type = row.media_type if row.media_type in {"photo", "video"} else "binary"
+    content_type = _snapshot_content_type_from_path(media_path, logical_type)
     if media_path.startswith("firebase:"):
         storage_path = media_path.split("firebase:", 1)[1]
         bucket = _get_storage_bucket()
@@ -262,14 +295,13 @@ def load_snapshot_bytes(db: Session, *, snapshot_id: str, requester_user_id: str
             data = blob.download_as_bytes()
         except Exception as exc:
             raise AppException("Snapshot file is unavailable.", status_code=404) from exc
-        media_type = row.media_type if row.media_type in {"photo", "video"} else "binary"
-        return data, media_type
+        content_type = _snapshot_content_type_from_path(storage_path, logical_type)
+        return data, logical_type, content_type
 
     path = _media_base_dir() / media_path
     if not path.exists():
         raise AppException("Snapshot file is unavailable.", status_code=404)
-    media_type = row.media_type if row.media_type in {"photo", "video"} else "binary"
-    return path.read_bytes(), media_type
+    return path.read_bytes(), logical_type, content_type
 
 
 def list_live_queue(db: Session, *, homeowner_id: str, limit: int = 100) -> list[dict[str, Any]]:
