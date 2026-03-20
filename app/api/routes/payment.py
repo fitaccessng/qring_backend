@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_roles
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import User
+from app.db.models import Subscription, User
 from app.db.session import get_db
 from app.services.payment_service import (
     activate_subscription,
@@ -142,11 +142,27 @@ def payment_request_subscription(
     user: User = Depends(require_roles("homeowner", "estate")),
 ):
     plan = get_plan_or_raise(db, payload.plan)
+    if plan.get("audience") not in {"legacy", user.role.value}:
+        raise AppException("Selected plan is not available for this account type", status_code=400)
     if not plan.get("selfServe", True):
         raise AppException("This plan requires manual sales onboarding", status_code=400)
     if int(plan.get("amount") or 0) > 0:
         raise AppException("Use Paystack checkout for paid plans", status_code=400)
-    sub = activate_subscription(db, user_id=user.id, plan=payload.plan)
+    if payload.plan == "estate_starter":
+        prior_trial = (
+            db.query(Subscription)
+            .filter(Subscription.user_id == user.id, Subscription.plan == payload.plan)
+            .first()
+        )
+        if prior_trial:
+            raise AppException("Starter Estate trial has already been used. Upgrade to continue.", status_code=402)
+    sub = activate_subscription(
+        db,
+        user_id=user.id,
+        plan=payload.plan,
+        billing_cycle="monthly",
+        payment_status="trialing" if payload.plan == "estate_starter" else "free",
+    )
     return {"data": {"id": sub.id, "plan": sub.plan, "status": sub.status}}
 
 

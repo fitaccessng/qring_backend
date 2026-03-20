@@ -14,8 +14,17 @@ class SubscriptionPlan(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     amount: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
+    audience: Mapped[str] = mapped_column(String(30), default="homeowner")
     max_doors: Mapped[int] = mapped_column(Integer, default=1)
     max_qr_codes: Mapped[int] = mapped_column(Integer, default=1)
+    max_admins: Mapped[int] = mapped_column(Integer, default=1)
+    duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trial_days: Mapped[int] = mapped_column(Integer, default=0)
+    self_serve: Mapped[bool] = mapped_column(Boolean, default=True)
+    manual_activation_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled_features: Mapped[str] = mapped_column(Text, default="[]")
+    restrictions: Mapped[str] = mapped_column(Text, default="[]")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -42,8 +51,12 @@ class Subscription(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     plan: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="inactive")
+    payment_status: Mapped[str] = mapped_column(String(30), default="unpaid")
+    billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly")
     starts_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    trial_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class HomeownerWallet(Base):

@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import uuid
 from typing import Any
@@ -55,10 +55,14 @@ def _resolve_subscription_owner_id(db: Session, homeowner_id: str) -> str:
 
 
 def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    effective_sub = get_effective_subscription(db, homeowner_id, user_role="homeowner")
+    retention_days = int(((effective_sub or {}).get("limits") or {}).get("logRetentionDays") or 0)
+    cutoff = datetime.utcnow() - timedelta(days=retention_days) if retention_days > 0 else None
     rows = (
         db.query(VisitorSession, Door)
         .join(Door, Door.id == VisitorSession.door_id)
         .filter(VisitorSession.homeowner_id == homeowner_id)
+        .filter(VisitorSession.started_at >= cutoff if cutoff else True)
         .order_by(VisitorSession.started_at.desc())
         .limit(limit)
         .all()

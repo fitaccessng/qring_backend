@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.db.models import Appointment, Door, Home, VisitorSession
+from app.services.payment_service import require_subscription_feature
 from app.services.notification_service import create_notification
 from app.services.qr_token_service import (
     build_qr_token_payload,
@@ -187,6 +188,7 @@ def create_appointment(
     geofence_lng: float | None,
     geofence_radius_meters: int | None,
 ) -> dict[str, Any]:
+    require_subscription_feature(db, homeowner_id, "visitor_scheduling", user_role="homeowner")
     row = (
         db.query(Door, Home)
         .join(Home, Home.id == Door.home_id)
@@ -232,6 +234,7 @@ def create_appointment_share(
     homeowner_id: str,
     appointment_id: str,
 ) -> dict[str, Any]:
+    require_subscription_feature(db, homeowner_id, "visitor_scheduling", user_role="homeowner")
     appt = (
         db.query(Appointment)
         .filter(Appointment.id == appointment_id, Appointment.homeowner_id == homeowner_id)

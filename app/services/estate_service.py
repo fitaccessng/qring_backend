@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -8,7 +9,7 @@ from app.core.exceptions import AppException
 from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.models import Door, Estate, Home, Notification, QRCode, User, UserRole, VisitorSession
-from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
+from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired, require_subscription_feature
 from app.services.provider_integrations import send_email_smtp, send_push_fcm
 settings = get_settings()
 FREE_ESTATE_LIMIT = 5
@@ -40,6 +41,60 @@ def _usage_for_owner(db: Session, owner_id: str) -> dict[str, int]:
         "doors": len(door_ids),
         "qr_codes": qr_count,
     }
+
+
+def _limited_log_cutoff(subscription: dict[str, Any]) -> datetime | None:
+    retention_days = int(((subscription or {}).get("limits") or {}).get("logRetentionDays") or 0)
+    if retention_days <= 0:
+        return None
+    return datetime.utcnow() - timedelta(days=retention_days)
+
+
+def _notify_usage_threshold(
+    db: Session,
+    *,
+    user_id: str,
+    subscription: dict[str, Any],
+    metric: str,
+    used: int,
+    limit: int,
+) -> None:
+    if limit <= 0:
+        return
+    if used < max(int(limit * 0.8), limit - 1):
+        return
+    unique_key = f"usage:{subscription.get('plan')}:{metric}:{used}:{limit}"
+    recent = (
+        db.query(Notification)
+        .filter(Notification.user_id == user_id, Notification.kind == "subscription.usage.warning")
+        .order_by(Notification.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    for row in recent:
+        try:
+            payload = json.loads(row.payload or "{}")
+        except Exception:
+            payload = {}
+        if str(payload.get("uniqueKey") or "") == unique_key:
+            return
+    db.add(
+        Notification(
+            user_id=user_id,
+            kind="subscription.usage.warning",
+            payload=json.dumps(
+                {
+                    "uniqueKey": unique_key,
+                    "metric": metric,
+                    "used": used,
+                    "limit": limit,
+                    "plan": subscription.get("plan"),
+                    "message": f"You are close to your {metric.replace('_', ' ')} limit ({used}/{limit}). Upgrade soon to avoid interruption.",
+                }
+            ),
+        )
+    )
+    db.commit()
 
 
 def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
@@ -78,6 +133,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
     if effective_sub.get("plan") == "free":
         max_doors = max(max_doors, FREE_ESTATE_LIMIT)
         max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
+    _notify_usage_threshold(db, user_id=owner_id, subscription=effective_sub, metric="doors", used=usage["doors"], limit=max_doors)
 
     return {
         "estates": [
@@ -135,6 +191,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             "remainingDoors": max(max_doors - usage["doors"], 0),
             "remainingQrCodes": max(max_qr_codes - usage["qr_codes"], 0),
         },
+        "subscription": effective_sub,
     }
 
 
@@ -258,6 +315,7 @@ def add_estate_door(
     mode: str = "direct",
     plan: str = "single",
 ) -> dict[str, Any]:
+    require_subscription_feature(db, owner_id, "manual_visitor_logging", user_role="estate")
     _require_estate_owner(db, estate_id, owner_id)
     home = db.query(Home).filter(Home.id == home_id, Home.estate_id == estate_id).first()
     if not home:
@@ -470,12 +528,15 @@ def list_estate_mappings(db: Session, owner_id: str) -> list[dict[str, Any]]:
 
 
 def list_estate_access_logs(db: Session, owner_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    subscription = get_effective_subscription(db, owner_id, user_role="estate")
+    cutoff = _limited_log_cutoff(subscription)
     rows = (
         db.query(VisitorSession, Door, Home)
         .join(Door, Door.id == VisitorSession.door_id)
         .join(Home, Home.id == Door.home_id)
         .join(Estate, Estate.id == Home.estate_id)
         .filter(Estate.owner_id == owner_id)
+        .filter(VisitorSession.started_at >= cutoff if cutoff else True)
         .order_by(VisitorSession.started_at.desc())
         .limit(limit)
         .all()
@@ -496,7 +557,7 @@ def list_estate_access_logs(db: Session, owner_id: str, limit: int = 100) -> lis
 
 def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
     usage = _usage_for_owner(db, owner_id)
-    effective_sub = get_effective_subscription(db, owner_id)
+    effective_sub = get_effective_subscription(db, owner_id, user_role="estate")
     limits = effective_sub.get("limits", {})
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
@@ -506,13 +567,43 @@ def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
 
     return {
         "plan": effective_sub.get("plan", "free"),
+        "planName": effective_sub.get("planName"),
         "status": effective_sub.get("status", "active"),
+        "paymentStatus": effective_sub.get("paymentStatus", "unpaid"),
+        "features": effective_sub.get("features", []),
+        "featureFlags": effective_sub.get("featureFlags", {}),
+        "restrictions": effective_sub.get("restrictions", []),
+        "expiresAt": effective_sub.get("expiresAt"),
+        "expiresSoon": bool(effective_sub.get("expiresSoon")),
+        "trialDaysRemaining": int(effective_sub.get("trialDaysRemaining") or 0),
+        "maxAdmins": int(limits.get("maxAdmins", 1) or 1),
         "maxDoors": max_doors,
         "maxQrCodes": max_qr_codes,
         "usedDoors": usage["doors"],
         "usedQrCodes": usage["qr_codes"],
         "remainingDoors": max(max_doors - usage["doors"], 0),
         "remainingQrCodes": max(max_qr_codes - usage["qr_codes"], 0),
+    }
+
+
+def get_estate_stats_summary(db: Session, owner_id: str) -> dict[str, Any]:
+    subscription = require_subscription_feature(db, owner_id, "analytics", user_role="estate")
+    overview = list_estate_overview(db, owner_id)
+    logs = list_estate_access_logs(db, owner_id, limit=300)
+    total_visits = len(logs)
+    approved = len([row for row in logs if "approved" in str(row.get("status") or "").lower()])
+    rejected = len([row for row in logs if "rejected" in str(row.get("status") or "").lower()])
+    return {
+        "subscription": subscription,
+        "summary": {
+            "totalVisits": total_visits,
+            "approved": approved,
+            "rejected": rejected,
+            "activeHomes": len(overview.get("homes") or []),
+            "activeDoors": len(overview.get("doors") or []),
+            "residents": len(overview.get("homeowners") or []),
+        },
+        "recentActivity": logs[:12],
     }
 
 

@@ -444,6 +444,36 @@ def _ensure_wallet_schema() -> None:
     Base.metadata.tables["homeowner_wallet_transactions"].create(bind=engine, checkfirst=True)
 
 
+def _ensure_subscription_schema() -> None:
+    Base.metadata.tables["subscription_plans"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["subscriptions"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["payment_purposes"].create(bind=engine, checkfirst=True)
+
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    datetime_sql = str(DateTime().compile(dialect=engine.dialect))
+
+    with engine.begin() as conn:
+        if "subscription_plans" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("subscription_plans")}
+            _add_column_if_missing(conn, columns, "subscription_plans", "audience", "VARCHAR(30) DEFAULT 'homeowner'")
+            _add_column_if_missing(conn, columns, "subscription_plans", "max_admins", "INTEGER DEFAULT 1")
+            _add_column_if_missing(conn, columns, "subscription_plans", "duration_days", "INTEGER")
+            _add_column_if_missing(conn, columns, "subscription_plans", "trial_days", "INTEGER DEFAULT 0")
+            _add_column_if_missing(conn, columns, "subscription_plans", "self_serve", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, "subscription_plans", "manual_activation_required", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, "subscription_plans", "hidden", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, "subscription_plans", "enabled_features", "TEXT DEFAULT '[]'")
+            _add_column_if_missing(conn, columns, "subscription_plans", "restrictions", "TEXT DEFAULT '[]'")
+
+        if "subscriptions" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("subscriptions")}
+            _add_column_if_missing(conn, columns, "subscriptions", "payment_status", "VARCHAR(30) DEFAULT 'unpaid'")
+            _add_column_if_missing(conn, columns, "subscriptions", "billing_cycle", "VARCHAR(20) DEFAULT 'monthly'")
+            _add_column_if_missing(conn, columns, "subscriptions", "trial_started_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "subscriptions", "trial_ends_at", datetime_sql)
+
+
 async def _payment_reminder_loop() -> None:
     while True:
         try:
@@ -482,6 +512,7 @@ async def on_startup():
     # Keep automatic table creation only for local development convenience.
     if settings.ENVIRONMENT.lower() == "development":
         Base.metadata.create_all(bind=engine)
+    _ensure_subscription_schema()
     _ensure_call_sessions_schema()
     _ensure_advanced_features_schema()
     _ensure_estate_alert_schema()
@@ -518,4 +549,3 @@ app = CORSMiddleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-

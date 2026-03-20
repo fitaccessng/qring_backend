@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.db.models import Appointment, CallSession, User, VisitorSession
+from app.services.payment_service import require_subscription_feature
 from app.services.livekit_service import (
     build_call_room_name,
     create_livekit_room,
@@ -64,6 +65,7 @@ async def start_call_session(
 
     if not effective_homeowner_id:
         raise AppException("Homeowner context is required to start call.", status_code=400)
+    require_subscription_feature(db, effective_homeowner_id, "chat_call_verification", user_role="homeowner")
 
     visitor_identity = str(visitor_id or "").strip()
     if not visitor_identity and visitor_session:
@@ -160,6 +162,7 @@ def _get_visitor_display_name(db: Session, call_session: CallSession) -> str:
 
 
 def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: str) -> dict:
+    require_subscription_feature(db, homeowner_id, "chat_call_verification", user_role="homeowner")
     row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
     if not row:
         raise AppException("Call session not found.", status_code=404)
@@ -198,6 +201,7 @@ def join_call_as_visitor(db: Session, *, call_session_id: str, visitor_id: str) 
     row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
     if not row:
         raise AppException("Call session not found.", status_code=404)
+    require_subscription_feature(db, row.homeowner_id, "chat_call_verification", user_role="homeowner")
     if row.visitor_id != visitor_identity:
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status == "ended":

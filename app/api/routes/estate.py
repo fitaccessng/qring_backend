@@ -29,6 +29,7 @@ from app.services.estate_service import (
     create_estate_shared_selector_qr,
     get_estate_settings,
     get_estate_plan_restrictions,
+    get_estate_stats_summary,
     invite_homeowner,
     list_estate_access_logs,
     list_estate_shared_selector_qrs,
@@ -338,6 +339,14 @@ def estate_plan_restrictions(
     user: User = Depends(require_roles("estate", "admin")),
 ):
     return {"data": get_estate_plan_restrictions(db=db, owner_id=user.id)}
+
+
+@router.get("/stats-summary")
+def estate_stats_summary(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {"data": get_estate_stats_summary(db=db, owner_id=user.id)}
 
 
 @router.post("/alerts")

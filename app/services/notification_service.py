@@ -1,11 +1,50 @@
-from datetime import datetime
 import json
+import asyncio
 from datetime import datetime
+
+from anyio import from_thread
 
 from sqlalchemy.orm import Session
 
 from app.db.models import Appointment, Notification, VisitorSession
+from app.core.config import get_settings
+from app.socket.server import sio
 from app.services.provider_integrations import send_push_fcm
+
+settings = get_settings()
+
+
+def _emit_notification_event(*, event: str, user_id: str, payload: dict) -> None:
+    rooms = [
+        "notifications",
+        f"user:{user_id}",
+        f"user:{user_id}:notifications",
+    ]
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        for room in rooms:
+            try:
+                from_thread.run(
+                    sio.emit,
+                    event,
+                    payload,
+                    room=room,
+                    namespace=settings.DASHBOARD_NAMESPACE,
+                )
+            except Exception:
+                return
+        return
+
+    for room in rooms:
+        sio.start_background_task(
+            sio.emit,
+            event,
+            payload,
+            room=room,
+            namespace=settings.DASHBOARD_NAMESPACE,
+        )
 
 
 def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> Notification:
@@ -41,6 +80,17 @@ def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> 
     except Exception:
         # Push failures must not block notification creation.
         pass
+    _emit_notification_event(
+        event="notification.created",
+        user_id=user_id,
+        payload={
+            "id": notification.id,
+            "kind": notification.kind,
+            "payload": notification.payload,
+            "readAt": None,
+            "createdAt": notification.created_at.isoformat(),
+        },
+    )
     return notification
 
 
@@ -132,13 +182,15 @@ def mark_notification_read(db: Session, user_id: str, notification_id: str) -> d
     row.read_at = row.read_at or datetime.utcnow()
     db.commit()
     db.refresh(row)
-    return {
+    payload = {
         "id": row.id,
         "kind": row.kind,
         "payload": row.payload,
         "readAt": row.read_at.isoformat() if row.read_at else None,
         "createdAt": row.created_at.isoformat(),
     }
+    _emit_notification_event(event="notification.updated", user_id=user_id, payload=payload)
+    return payload
 
 
 def mark_all_notifications_read(db: Session, user_id: str) -> int:
@@ -153,12 +205,22 @@ def mark_all_notifications_read(db: Session, user_id: str) -> int:
     for row in rows:
         row.read_at = now
     db.commit()
+    _emit_notification_event(
+        event="notifications.updated",
+        user_id=user_id,
+        payload={"action": "read_all", "updated": len(rows), "readAt": now.isoformat()},
+    )
     return len(rows)
 
 
 def clear_all_notifications(db: Session, user_id: str) -> int:
     deleted = db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
     db.commit()
+    _emit_notification_event(
+        event="notifications.updated",
+        user_id=user_id,
+        payload={"action": "clear_all", "deleted": int(deleted or 0)},
+    )
     return int(deleted or 0)
 
 
