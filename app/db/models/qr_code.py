@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,6 +19,6 @@ class QRCode(Base):
     home_id: Mapped[str] = mapped_column(String(36), ForeignKey("homes.id"), nullable=False)
     doors_csv: Mapped[str] = mapped_column(Text, default="")
     mode: Mapped[str] = mapped_column(String(20), default="direct")
-    estate_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True)
+    estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

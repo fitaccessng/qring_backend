@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 import uuid
 
@@ -5,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import CallSession
+from app.db.models import CallSession, DeviceSession, Door, Estate, Home, User, UserRole
 from app.services.livekit_monitor_service import handle_livekit_webhook_event
 
 
@@ -15,6 +17,50 @@ class LivekitMonitorServiceTests(unittest.TestCase):
         Base.metadata.create_all(bind=self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, class_=Session, autoflush=False, autocommit=False)
         self.db = self.SessionLocal()
+
+        self.owner = User(
+            id=str(uuid.uuid4()),
+            full_name="Owner",
+            email="owner@example.com",
+            password_hash="hashed",
+            role=UserRole.homeowner,
+            email_verified=True,
+        )
+        self.homeowner = User(
+            id=str(uuid.uuid4()),
+            full_name="Homeowner",
+            email="homeowner@example.com",
+            password_hash="hashed",
+            role=UserRole.homeowner,
+            email_verified=True,
+        )
+        self.db.add_all([self.owner, self.homeowner])
+        self.db.flush()
+
+        self.estate = Estate(
+            id=str(uuid.uuid4()),
+            name="Estate A",
+            owner_id=self.owner.id,
+        )
+        self.db.add(self.estate)
+        self.db.flush()
+
+        self.home = Home(
+            id=str(uuid.uuid4()),
+            name="Home A",
+            homeowner_id=self.homeowner.id,
+            estate_id=self.estate.id,
+        )
+        self.db.add(self.home)
+        self.db.flush()
+
+        self.door = Door(
+            id=str(uuid.uuid4()),
+            name="Door A",
+            home_id=self.home.id,
+        )
+        self.db.add(self.door)
+        self.db.flush()
 
         self.call = CallSession(
             id=str(uuid.uuid4()),
@@ -40,7 +86,7 @@ class LivekitMonitorServiceTests(unittest.TestCase):
         data = handle_livekit_webhook_event(self.db, payload)
         self.assertTrue(data["handled"])
         refreshed = self.db.query(CallSession).filter(CallSession.id == self.call.id).first()
-        self.assertEqual(refreshed.status, "active")
+        self.assertEqual(refreshed.status, "ongoing")
 
     def test_room_finished_marks_call_ended(self):
         payload = {
@@ -50,7 +96,7 @@ class LivekitMonitorServiceTests(unittest.TestCase):
         data = handle_livekit_webhook_event(self.db, payload)
         self.assertTrue(data["handled"])
         refreshed = self.db.query(CallSession).filter(CallSession.id == self.call.id).first()
-        self.assertEqual(refreshed.status, "ended")
+        self.assertEqual(refreshed.status, "missed")
         self.assertIsNotNone(refreshed.ended_at)
 
 

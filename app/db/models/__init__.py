@@ -1,68 +1,59 @@
-from app.db.models.advanced import (
-    CommunityPost,
-    CommunityPostRead,
-    DigitalReceipt,
-    EmergencySignal,
-    PushSubscription,
-    SplitBill,
-    SplitContribution,
-    ThreatAlertLog,
-    VisitorRecognitionProfile,
-    VisitorSnapshotAudit,
-    WeeklySummaryLog,
-)
-from app.db.models.appointment import Appointment
-from app.db.models.device_session import DeviceSession
-from app.db.models.estate_alert import EstateAlert, EstateAlertType, HomeownerPayment, HomeownerPaymentStatus
-from app.db.models.maintenance_audit import MaintenanceStatusAudit
-from app.db.models.estate_engagement import EstateMeetingResponse, EstatePollVote, MeetingResponseType
-from app.db.models.estate import Door, Estate, Home
-from app.db.models.homeowner_setting import HomeownerSetting
-from app.db.models.audit import AuditLog
-from app.db.models.payment import HomeownerWallet, HomeownerWalletTransaction, PaymentPurpose, Subscription, SubscriptionPlan
-from app.db.models.referral_reward import ReferralReward
-from app.db.models.qr_code import QRCode
-from app.db.models.session import CallSession, Message, Notification, VisitorSession
-from app.db.models.user import User, UserRole
+from __future__ import annotations
 
-__all__ = [
-    "DeviceSession",
-    "Door",
-    "Estate",
-    "EstateAlert",
-    "EstateAlertType",
-    "EstateMeetingResponse",
-    "EstatePollVote",
-    "MeetingResponseType",
-    "Home",
-    "HomeownerSetting",
-    "HomeownerPayment",
-    "HomeownerPaymentStatus",
-    "MaintenanceStatusAudit",
-    "AuditLog",
-    "CommunityPost",
-    "CommunityPostRead",
-    "Appointment",
-    "CallSession",
-    "DigitalReceipt",
-    "EmergencySignal",
-    "PushSubscription",
-    "Message",
-    "Notification",
-    "PaymentPurpose",
-    "HomeownerWallet",
-    "HomeownerWalletTransaction",
-    "ReferralReward",
-    "QRCode",
-    "Subscription",
-    "SubscriptionPlan",
-    "SplitBill",
-    "SplitContribution",
-    "ThreatAlertLog",
-    "User",
-    "UserRole",
-    "VisitorRecognitionProfile",
-    "VisitorSnapshotAudit",
-    "VisitorSession",
-    "WeeklySummaryLog",
-]
+from importlib import import_module
+
+_EXPORT_MAP = {
+    "CommunityPost": "app.db.models.advanced",
+    "CommunityPostRead": "app.db.models.advanced",
+    "DigitalReceipt": "app.db.models.advanced",
+    "EmergencySignal": "app.db.models.advanced",
+    "PushSubscription": "app.db.models.advanced",
+    "SplitBill": "app.db.models.advanced",
+    "SplitContribution": "app.db.models.advanced",
+    "ThreatAlertLog": "app.db.models.advanced",
+    "VisitorRecognitionProfile": "app.db.models.advanced",
+    "VisitorSnapshotAudit": "app.db.models.advanced",
+    "WeeklySummaryLog": "app.db.models.advanced",
+    "Appointment": "app.db.models.appointment",
+    "DigitalAccessPass": "app.db.models.access_pass",
+    "DeviceSession": "app.db.models.device_session",
+    "EstateAlert": "app.db.models.estate_alert",
+    "EstateAlertType": "app.db.models.estate_alert",
+    "HomeownerPayment": "app.db.models.estate_alert",
+    "HomeownerPaymentStatus": "app.db.models.estate_alert",
+    "MaintenanceStatusAudit": "app.db.models.maintenance_audit",
+    "EstateMeetingResponse": "app.db.models.estate_engagement",
+    "EstatePollVote": "app.db.models.estate_engagement",
+    "MeetingResponseType": "app.db.models.estate_engagement",
+    "Door": "app.db.models.estate",
+    "Estate": "app.db.models.estate",
+    "Home": "app.db.models.estate",
+    "HomeownerSetting": "app.db.models.homeowner_setting",
+    "AuditLog": "app.db.models.audit",
+    "GateLog": "app.db.models.audit",
+    "HomeownerWallet": "app.db.models.payment",
+    "HomeownerWalletTransaction": "app.db.models.payment",
+    "PaymentPurpose": "app.db.models.payment",
+    "Subscription": "app.db.models.payment",
+    "SubscriptionPlan": "app.db.models.payment",
+    "ReferralReward": "app.db.models.referral_reward",
+    "QRCode": "app.db.models.qr_code",
+    "CallSession": "app.db.models.session",
+    "Message": "app.db.models.session",
+    "Notification": "app.db.models.session",
+    "VisitorSession": "app.db.models.session",
+    "User": "app.db.models.user",
+    "UserRole": "app.db.models.user",
+}
+
+__all__ = list(_EXPORT_MAP.keys())
+
+
+def __getattr__(name: str):
+    module_name = _EXPORT_MAP.get(name)
+    if not module_name:
+        raise AttributeError(name)
+    module = import_module(module_name)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

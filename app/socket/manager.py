@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 class SocketState:
     def __init__(self):
         self.user_sid: dict[str, str] = {}

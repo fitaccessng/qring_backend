@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from app.db.models import Door, Home, VisitorSession
+from app.db.models import Door, Estate, Home, HomeownerSetting, VisitorSession
+from app.services.security_service import evaluate_session_intelligence
 from app.services.door_routing_service import select_door
 
 
@@ -17,6 +20,13 @@ def create_visitor_session(
     visitor_label: str = "Visitor",
     appointment_id: str | None = None,
     request_id: str | None = None,
+    visitor_phone: str | None = None,
+    purpose: str | None = None,
+    photo_url: str | None = None,
+    visitor_type: str | None = None,
+    delivery_option: str | None = None,
+    request_source: str | None = None,
+    creator_role: str | None = None,
 ) -> VisitorSession:
     if request_id:
         existing = (
@@ -59,6 +69,12 @@ def create_visitor_session(
     home = db.query(Home).filter(Home.id == (door.home_id if door else qr_home_id)).first()
 
     homeowner_id = home.homeowner_id if home else ""
+    estate_id = home.estate_id if home else None
+    gate_id = (door.gate_label if door else None) or "main-gate"
+    clean_visitor_type = (visitor_type or "guest").strip().lower() or "guest"
+    clean_delivery_option = (delivery_option or "").strip().lower() or None
+    clean_request_source = (request_source or "visitor_qr").strip().lower() or "visitor_qr"
+    clean_creator_role = (creator_role or "visitor").strip().lower() or "visitor"
     session = VisitorSession(
         request_id=request_id,
         qr_id=qr_id,
@@ -67,7 +83,19 @@ def create_visitor_session(
         homeowner_id=homeowner_id,
         appointment_id=appointment_id,
         visitor_label=visitor_label,
-        status="pending",
+        visitor_phone=(visitor_phone or "").strip() or None,
+        purpose=(purpose or "").strip() or None,
+        photo_url=(photo_url or "").strip() or None,
+        visitor_type=clean_visitor_type if clean_visitor_type in {"guest", "delivery"} else "guest",
+        request_source=clean_request_source if clean_request_source in {"visitor_qr", "gateman_assisted"} else "visitor_qr",
+        creator_role=clean_creator_role if clean_creator_role in {"visitor", "security"} else "visitor",
+        estate_id=estate_id,
+        gate_id=gate_id,
+        status="submitted",
+        communication_status="none",
+        gate_status="waiting",
+        delivery_option=clean_delivery_option,
+        state_updated_at=datetime.utcnow(),
     )
     db.add(session)
     try:
@@ -84,6 +112,17 @@ def create_visitor_session(
             if existing:
                 return existing
         raise
+    estate = db.query(Estate).filter(Estate.id == estate_id).first() if estate_id else None
+    homeowner_settings = (
+        db.query(HomeownerSetting).filter(HomeownerSetting.user_id == homeowner_id).first() if homeowner_id else None
+    )
+    evaluate_session_intelligence(db, session, estate=estate, homeowner_settings=homeowner_settings)
+    if session.auto_approved:
+        session.status = "approved"
+        session.homeowner_decision_at = datetime.utcnow()
+        session.pre_approved = True
+        session.pre_approved_reason = session.pre_approved_reason or "Auto-approved by trust rule"
+    db.commit()
     db.refresh(session)
     return session
 
@@ -93,8 +132,14 @@ def mark_session_status(db: Session, session_id: str, status: str) -> VisitorSes
     if not session:
         return None
     session.status = status
+    session.state_updated_at = datetime.utcnow()
     if status in {"rejected", "closed", "completed"}:
         session.ended_at = session.ended_at or datetime.utcnow()
+    if status == "approved":
+        session.homeowner_decision_at = session.homeowner_decision_at or datetime.utcnow()
+    if status == "rejected":
+        session.homeowner_decision_at = session.homeowner_decision_at or datetime.utcnow()
+        session.gate_status = session.gate_status or "denied_at_gate"
     db.commit()
     db.refresh(session)
     return session

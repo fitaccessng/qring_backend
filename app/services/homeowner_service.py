@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 import json
@@ -15,9 +17,15 @@ FREE_ESTATE_MANAGED_LIMIT = 5
 
 STATUS_LABELS = {
     "pending": "Pending",
+    "submitted": "Submitted",
+    "handled_by_security": "With Security",
+    "received_by_security": "With Security",
+    "forwarded": "Awaiting Decision",
+    "forwarded_to_homeowner": "Awaiting Decision",
     "active": "Active",
     "approved": "Approved",
     "rejected": "Rejected",
+    "gate_confirmed": "At Gate",
     "closed": "Completed",
     "completed": "Completed",
 }
@@ -94,7 +102,11 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "door": door.name,
             "status": STATUS_LABELS.get(session.status, session.status.title()),
             "sessionStatus": session.status,
-            "canDecide": session.status == "pending",
+            "canDecide": session.status in {"pending", "forwarded", "handled_by_security", "received_by_security", "forwarded_to_homeowner"},
+            "creatorRole": (session.creator_role or "visitor") if (session.creator_role or "").strip() else ("security" if str(session.qr_id or "").startswith("security-manual:") else "visitor"),
+            "requestSource": (session.request_source or "visitor_qr") if (session.request_source or "").strip() else ("gateman_assisted" if str(session.qr_id or "").startswith("security-manual:") else "visitor_qr"),
+            "preferredCommunicationChannel": session.preferred_communication_channel,
+            "preferredCommunicationTarget": session.preferred_communication_target,
             "purpose": (request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
             "phoneNumber": (request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
             "snapshotAuditId": request_payload_by_session.get(session.id, {}).get("snapshotAuditId"),

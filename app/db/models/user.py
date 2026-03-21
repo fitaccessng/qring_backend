@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 from enum import Enum
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -12,6 +15,7 @@ class UserRole(str, Enum):
     homeowner = "homeowner"
     estate = "estate"
     admin = "admin"
+    security = "security"
 
 
 class User(Base):
@@ -24,8 +28,11 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), nullable=False, default=UserRole.homeowner)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True, index=True)
+    gate_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     referral_code: Mapped[str] = mapped_column(String(24), unique=True, nullable=False, index=True, default=lambda: f"QR{uuid.uuid4().hex[:8].upper()}")
-    referred_by_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    referred_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     referral_earnings: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

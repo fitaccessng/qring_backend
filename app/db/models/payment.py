@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -18,7 +21,7 @@ class SubscriptionPlan(Base):
     max_doors: Mapped[int] = mapped_column(Integer, default=1)
     max_qr_codes: Mapped[int] = mapped_column(Integer, default=1)
     max_admins: Mapped[int] = mapped_column(Integer, default=1)
-    duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     trial_days: Mapped[int] = mapped_column(Integer, default=0)
     self_serve: Mapped[bool] = mapped_column(Boolean, default=True)
     manual_activation_required: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -53,10 +56,10 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(30), default="inactive")
     payment_status: Mapped[str] = mapped_column(String(30), default="unpaid")
     billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly")
-    starts_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    trial_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    starts_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    trial_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class HomeownerWallet(Base):
@@ -83,5 +86,5 @@ class HomeownerWalletTransaction(Base):
     balance_after: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
     type: Mapped[str] = mapped_column(String(40), default="fund")
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

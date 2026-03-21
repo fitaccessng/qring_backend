@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
@@ -26,7 +29,7 @@ class QRCreate(BaseModel):
     homeId: str
     doors: list[str]
     mode: str
-    estateId: str | None = None
+    estateId: Optional[str] = None
 
 
 class PlanUpsert(BaseModel):
@@ -40,7 +43,7 @@ class PlanUpsert(BaseModel):
 
 
 class UserPatch(BaseModel):
-    isActive: bool | None = None
+    isActive: Optional[bool] = None
 
 
 class SubscriptionActivate(BaseModel):
@@ -51,7 +54,7 @@ class SubscriptionActivate(BaseModel):
 class WalletFundPayload(BaseModel):
     userId: str
     amount: float
-    note: str | None = None
+    note: Optional[str] = None
 
 
 @router.post("/doors")
@@ -131,8 +134,8 @@ def admin_update_plan(
 
 @router.get("/users")
 def admin_list_users(
-    role: str | None = Query(default=None),
-    q: str | None = Query(default=None),
+    role: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
@@ -362,7 +365,7 @@ def admin_fund_wallet(
 
 @router.get("/messages")
 def admin_list_messages(
-    sessionId: str | None = Query(default=None),
+    sessionId: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin")),
@@ -424,7 +427,7 @@ def admin_list_notifications(
 
 @router.get("/sessions")
 def admin_list_sessions(
-    status: str | None = Query(default=None),
+    status: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin")),

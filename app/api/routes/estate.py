@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -26,6 +29,8 @@ from app.services.estate_service import (
     assign_door_to_homeowner,
     create_estate,
     create_estate_homeowner,
+    create_estate_security_user,
+    delete_estate_security_user,
     create_estate_shared_selector_qr,
     get_estate_settings,
     get_estate_plan_restrictions,
@@ -33,8 +38,11 @@ from app.services.estate_service import (
     invite_homeowner,
     list_estate_access_logs,
     list_estate_shared_selector_qrs,
+    list_estate_security_users,
     list_estate_mappings,
     list_estate_overview,
+    set_estate_security_user_active_state,
+    update_estate_security_user,
     provision_estate_door_with_homeowner,
     update_estate_door_admin_profile,
     update_estate_settings,
@@ -49,14 +57,14 @@ class EstateCreate(BaseModel):
 
 class HomeCreate(BaseModel):
     name: str
-    estateId: str | None = None
+    estateId: Optional[str] = None
     homeownerId: str
 
 
 class EstateHomeownerCreate(BaseModel):
     estateId: str
     fullName: str
-    username: str
+    email: str
     password: str
 
 
@@ -87,10 +95,10 @@ class EstateSharedQrCreatePayload(BaseModel):
 
 
 class DoorAdminProfileUpdatePayload(BaseModel):
-    doorName: str | None = None
-    homeownerName: str | None = None
-    homeownerEmail: str | None = None
-    newPassword: str | None = None
+    doorName: Optional[str] = None
+    homeownerName: Optional[str] = None
+    homeownerEmail: Optional[str] = None
+    newPassword: Optional[str] = None
 
 
 class EstateAlertCreatePayload(BaseModel):
@@ -98,10 +106,10 @@ class EstateAlertCreatePayload(BaseModel):
     title: str
     description: str = ""
     alertType: str
-    amountDue: float | None = None
-    dueDate: str | None = None
-    pollOptions: list[str] | None = None
-    targetHomeownerIds: list[str] | None = None
+    amountDue: Optional[float] = None
+    dueDate: Optional[str] = None
+    pollOptions: Optional[list[str]] = None
+    targetHomeownerIds: Optional[list[str]] = None
 
 
 class MeetingResponsePayload(BaseModel):
@@ -114,23 +122,48 @@ class PollVotePayload(BaseModel):
 
 class EstateSettingsPayload(BaseModel):
     reminderFrequencyDays: int
+    canApproveWithoutHomeowner: bool = False
+    mustNotifyHomeowner: bool = True
+    requirePhotoVerification: bool = False
+    requireCallBeforeApproval: bool = False
+    autoApproveTrustedVisitors: bool = False
+    suspiciousVisitWindowMinutes: int = 20
+    suspiciousHouseThreshold: int = 3
+    suspiciousRejectionThreshold: int = 2
+
+
+class EstateSecurityCreatePayload(BaseModel):
+    estateId: str
+    fullName: str
+    email: str
+    password: str
+    phone: Optional[str] = None
+    gateId: Optional[str] = None
+
+
+class EstateSecurityUpdatePayload(BaseModel):
+    fullName: str
+    email: str
+    phone: Optional[str] = None
+    gateId: Optional[str] = None
+    password: Optional[str] = None
 
 
 class EstatePaymentVerifyPayload(BaseModel):
     homeownerId: str
-    paymentMethod: str | None = None
-    reference: str | None = None
-    receiptUrl: str | None = None
+    paymentMethod: Optional[str] = None
+    reference: Optional[str] = None
+    receiptUrl: Optional[str] = None
 
 
 class EstateAlertUpdatePayload(BaseModel):
     title: str
     description: str = ""
-    targetHomeownerIds: list[str] | None = None
-    amountDue: float | None = None
-    dueDate: str | None = None
-    pollOptions: list[str] | None = None
-    maintenanceStatus: str | None = None
+    targetHomeownerIds: Optional[list[str]] = None
+    amountDue: Optional[float] = None
+    dueDate: Optional[str] = None
+    pollOptions: Optional[list[str]] = None
+    maintenanceStatus: Optional[str] = None
 
 
 @router.post("/")
@@ -183,6 +216,14 @@ def estate_update_settings(
         estate_id=estate_id,
         owner_id=user.id,
         reminder_frequency_days=payload.reminderFrequencyDays,
+        can_approve_without_homeowner=payload.canApproveWithoutHomeowner,
+        must_notify_homeowner=payload.mustNotifyHomeowner,
+        require_photo_verification=payload.requirePhotoVerification,
+        require_call_before_approval=payload.requireCallBeforeApproval,
+        auto_approve_trusted_visitors=payload.autoApproveTrustedVisitors,
+        suspicious_visit_window_minutes=payload.suspiciousVisitWindowMinutes,
+        suspicious_house_threshold=payload.suspiciousHouseThreshold,
+        suspicious_rejection_threshold=payload.suspiciousRejectionThreshold,
     )
     return {"data": data}
 
@@ -198,7 +239,7 @@ def estate_create_homeowner(
         owner_id=user.id,
         estate_id=payload.estateId,
         full_name=payload.fullName,
-        username=payload.username,
+        email=payload.email,
         password=payload.password,
     )
     return {
@@ -206,8 +247,140 @@ def estate_create_homeowner(
             "id": homeowner.id,
             "fullName": homeowner.full_name,
             "email": homeowner.email,
-            "username": payload.username,
         }
+    }
+
+
+@router.get("/{estate_id}/security-users")
+def estate_security_users(
+    estate_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {"data": list_estate_security_users(db=db, owner_id=user.id, estate_id=estate_id)}
+
+
+@router.post("/security-users")
+def estate_create_security_account(
+    payload: EstateSecurityCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    security_user = create_estate_security_user(
+        db=db,
+        owner_id=user.id,
+        estate_id=payload.estateId,
+        full_name=payload.fullName,
+        email=payload.email,
+        password=payload.password,
+        phone=payload.phone,
+        gate_id=payload.gateId,
+    )
+    return {
+        "data": {
+            "id": security_user.id,
+            "fullName": security_user.full_name,
+            "email": security_user.email,
+            "phone": security_user.phone,
+            "gateId": security_user.gate_id,
+            "estateId": security_user.estate_id,
+        }
+    }
+
+
+@router.put("/{estate_id}/security-users/{security_user_id}")
+def estate_update_security_account(
+    estate_id: str,
+    security_user_id: str,
+    payload: EstateSecurityUpdatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    security_user = update_estate_security_user(
+        db=db,
+        owner_id=user.id,
+        estate_id=estate_id,
+        security_user_id=security_user_id,
+        full_name=payload.fullName,
+        email=payload.email,
+        phone=payload.phone,
+        gate_id=payload.gateId,
+        password=payload.password,
+    )
+    return {
+        "data": {
+            "id": security_user.id,
+            "fullName": security_user.full_name,
+            "email": security_user.email,
+            "phone": security_user.phone,
+            "gateId": security_user.gate_id,
+            "estateId": security_user.estate_id,
+            "active": bool(security_user.is_active),
+            "status": "active" if security_user.is_active else "suspended",
+        }
+    }
+
+
+@router.post("/{estate_id}/security-users/{security_user_id}/suspend")
+def estate_suspend_security_account(
+    estate_id: str,
+    security_user_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    security_user = set_estate_security_user_active_state(
+        db=db,
+        owner_id=user.id,
+        estate_id=estate_id,
+        security_user_id=security_user_id,
+        is_active=False,
+    )
+    return {
+        "data": {
+            "id": security_user.id,
+            "active": bool(security_user.is_active),
+            "status": "active" if security_user.is_active else "suspended",
+        }
+    }
+
+
+@router.post("/{estate_id}/security-users/{security_user_id}/unsuspend")
+def estate_unsuspend_security_account(
+    estate_id: str,
+    security_user_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    security_user = set_estate_security_user_active_state(
+        db=db,
+        owner_id=user.id,
+        estate_id=estate_id,
+        security_user_id=security_user_id,
+        is_active=True,
+    )
+    return {
+        "data": {
+            "id": security_user.id,
+            "active": bool(security_user.is_active),
+            "status": "active" if security_user.is_active else "suspended",
+        }
+    }
+
+
+@router.delete("/{estate_id}/security-users/{security_user_id}")
+def estate_delete_security_account(
+    estate_id: str,
+    security_user_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {
+        "data": delete_estate_security_user(
+            db=db,
+            owner_id=user.id,
+            estate_id=estate_id,
+            security_user_id=security_user_id,
+        )
     }
 
 
@@ -380,7 +553,7 @@ def estate_create_alert(
 @router.get("/{estate_id}/alerts")
 def estate_alerts_list(
     estate_id: str,
-    alert_type: str | None = Query(default=None, alias="alertType"),
+    alert_type: Optional[str] = Query(default=None, alias="alertType"),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "homeowner")),
 ):

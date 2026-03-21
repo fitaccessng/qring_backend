@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def build_offer_payload(sdp: str, session_id: str, sender_id: str) -> dict:
     return {
         "type": "offer",

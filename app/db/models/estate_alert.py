@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 from enum import Enum
+from typing import Optional
 
 from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,11 +37,11 @@ class EstateAlert(Base):
         nullable=False,
         default=EstateAlertType.notice,
     )
-    amount_due: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
-    due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    poll_options: Mapped[str | None] = mapped_column(Text, default="")
-    target_homeowner_ids: Mapped[str | None] = mapped_column(Text, default="")
-    maintenance_status: Mapped[str | None] = mapped_column(String(20), default="pending")
+    amount_due: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    poll_options: Mapped[Optional[str]] = mapped_column(Text, default="")
+    target_homeowner_ids: Mapped[Optional[str]] = mapped_column(Text, default="")
+    maintenance_status: Mapped[Optional[str]] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -60,12 +63,12 @@ class HomeownerPayment(Base):
         default=HomeownerPaymentStatus.pending,
     )
     amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
-    payment_method: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    payment_provider_reference: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
-    payment_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payment_proof_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    receipt_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    payment_method: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    payment_provider_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
+    payment_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payment_proof_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    receipt_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

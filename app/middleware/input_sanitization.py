@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from urllib.parse import parse_qsl, urlencode
 
 from starlette.middleware.base import BaseHTTPMiddleware

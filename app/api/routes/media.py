@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Response
 
 from app.services.voice_note_service import load_voice_note

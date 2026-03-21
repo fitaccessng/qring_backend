@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 import json
 from datetime import datetime, timedelta
@@ -8,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppException
 from app.core.config import get_settings
 from app.core.security import hash_password
-from app.db.models import Door, Estate, Home, Notification, QRCode, User, UserRole, VisitorSession
+from app.db.models import Door, Estate, GateLog, Home, Notification, QRCode, User, UserRole, VisitorSession
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired, require_subscription_feature
 from app.services.provider_integrations import send_email_smtp, send_push_fcm
 settings = get_settings()
@@ -118,6 +120,15 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
     )
     homeowner_by_id = {user.id: user for user in homeowners}
     home_by_id = {home.id: home for home in homes}
+    estate_ids = [estate.id for estate in estates]
+    security_users = (
+        db.query(User)
+        .filter(User.estate_id.in_(estate_ids), User.role == UserRole.security)
+        .order_by(User.full_name.asc())
+        .all()
+        if estate_ids
+        else []
+    )
 
     qr_rows = db.query(QRCode).filter(QRCode.home_id.in_(home_ids), QRCode.active.is_(True)).all() if home_ids else []
     qr_by_door: dict[str, list[str]] = {}
@@ -134,6 +145,47 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
         max_doors = max(max_doors, FREE_ESTATE_LIMIT)
         max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
     _notify_usage_threshold(db, user_id=owner_id, subscription=effective_sub, metric="doors", used=usage["doors"], limit=max_doors)
+    session_rows = (
+        db.query(VisitorSession)
+        .filter(VisitorSession.estate_id.in_(estate_ids))
+        .order_by(VisitorSession.started_at.desc())
+        .limit(400)
+        .all()
+        if estate_ids
+        else []
+    )
+    gate_logs = (
+        db.query(GateLog)
+        .filter(GateLog.estate_id.in_(estate_ids))
+        .order_by(GateLog.created_at.desc())
+        .limit(60)
+        .all()
+        if estate_ids
+        else []
+    )
+    hour_counts: dict[int, int] = {}
+    home_visit_counts: dict[str, int] = {}
+    approval_minutes: list[float] = []
+    for row in session_rows:
+        if row.started_at:
+            hour_counts[row.started_at.hour] = hour_counts.get(row.started_at.hour, 0) + 1
+        if row.home_id:
+            home_visit_counts[row.home_id] = home_visit_counts.get(row.home_id, 0) + 1
+        if row.started_at and row.homeowner_decision_at:
+            approval_minutes.append(max(0.0, (row.homeowner_decision_at - row.started_at).total_seconds() / 60))
+    peak_hours = [
+        {"hour": hour, "count": count}
+        for hour, count in sorted(hour_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+    most_visited_houses = [
+        {
+            "homeId": home_id,
+            "homeName": home_by_id[home_id].name if home_id in home_by_id else "Home",
+            "visits": count,
+        }
+        for home_id, count in sorted(home_visit_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+    avg_approval_time_minutes = round(sum(approval_minutes) / len(approval_minutes), 1) if approval_minutes else 0.0
 
     return {
         "estates": [
@@ -183,6 +235,47 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             {"id": row.id, "fullName": row.full_name, "email": row.email, "active": row.is_active}
             for row in homeowners
         ],
+        "securityUsers": [
+            {
+                "id": row.id,
+                "fullName": row.full_name,
+                "email": row.email,
+                "phone": row.phone,
+                "gateId": row.gate_id,
+                "estateId": row.estate_id,
+                "active": row.is_active,
+            }
+            for row in security_users
+        ],
+        "securityRules": [
+            {
+                "estateId": row.id,
+                "estateName": row.name,
+                "canApproveWithoutHomeowner": bool(row.security_can_approve_without_homeowner),
+                "mustNotifyHomeowner": bool(row.security_must_notify_homeowner),
+                "requirePhotoVerification": bool(row.security_require_photo_verification),
+                "requireCallBeforeApproval": bool(row.security_require_call_before_approval),
+                "autoApproveTrustedVisitors": bool(row.auto_approve_trusted_visitors),
+            }
+            for row in estates
+        ],
+        "analytics": {
+            "peakEntryTimes": peak_hours,
+            "mostVisitedHouses": most_visited_houses,
+            "averageApprovalTimeMinutes": avg_approval_time_minutes,
+            "totalDailyVisitors": len([row for row in session_rows if row.started_at and row.started_at.date() == datetime.utcnow().date()]),
+            "securityActivityLogs": [
+                {
+                    "id": row.id,
+                    "action": row.action,
+                    "gateId": row.gate_id,
+                    "actorRole": row.actor_role,
+                    "createdAt": row.created_at.isoformat() if row.created_at else None,
+                    "resultingStatus": row.resulting_status,
+                }
+                for row in gate_logs
+            ],
+        },
         "planRestrictions": {
             "maxDoors": max_doors,
             "maxQrCodes": max_qr_codes,
@@ -211,6 +304,14 @@ def get_estate_settings(db: Session, *, estate_id: str, owner_id: str) -> dict[s
     return {
         "estateId": estate.id,
         "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
+        "canApproveWithoutHomeowner": bool(estate.security_can_approve_without_homeowner),
+        "mustNotifyHomeowner": bool(estate.security_must_notify_homeowner),
+        "requirePhotoVerification": bool(estate.security_require_photo_verification),
+        "requireCallBeforeApproval": bool(estate.security_require_call_before_approval),
+        "autoApproveTrustedVisitors": bool(estate.auto_approve_trusted_visitors),
+        "suspiciousVisitWindowMinutes": int(estate.suspicious_visit_window_minutes or 20),
+        "suspiciousHouseThreshold": int(estate.suspicious_house_threshold or 3),
+        "suspiciousRejectionThreshold": int(estate.suspicious_rejection_threshold or 2),
     }
 
 
@@ -220,6 +321,14 @@ def update_estate_settings(
     estate_id: str,
     owner_id: str,
     reminder_frequency_days: int,
+    can_approve_without_homeowner: bool | None = None,
+    must_notify_homeowner: bool | None = None,
+    require_photo_verification: bool | None = None,
+    require_call_before_approval: bool | None = None,
+    auto_approve_trusted_visitors: bool | None = None,
+    suspicious_visit_window_minutes: int | None = None,
+    suspicious_house_threshold: int | None = None,
+    suspicious_rejection_threshold: int | None = None,
 ) -> dict[str, int | str]:
     estate = _require_estate_owner(db, estate_id, owner_id)
     try:
@@ -229,11 +338,35 @@ def update_estate_settings(
     if frequency_days < 1 or frequency_days > 365:
         raise AppException("reminderFrequencyDays must be between 1 and 365", status_code=400)
     estate.reminder_frequency_days = frequency_days
+    if can_approve_without_homeowner is not None:
+        estate.security_can_approve_without_homeowner = bool(can_approve_without_homeowner)
+    if must_notify_homeowner is not None:
+        estate.security_must_notify_homeowner = bool(must_notify_homeowner)
+    if require_photo_verification is not None:
+        estate.security_require_photo_verification = bool(require_photo_verification)
+    if require_call_before_approval is not None:
+        estate.security_require_call_before_approval = bool(require_call_before_approval)
+    if auto_approve_trusted_visitors is not None:
+        estate.auto_approve_trusted_visitors = bool(auto_approve_trusted_visitors)
+    if suspicious_visit_window_minutes is not None:
+        estate.suspicious_visit_window_minutes = max(5, int(suspicious_visit_window_minutes))
+    if suspicious_house_threshold is not None:
+        estate.suspicious_house_threshold = max(2, int(suspicious_house_threshold))
+    if suspicious_rejection_threshold is not None:
+        estate.suspicious_rejection_threshold = max(1, int(suspicious_rejection_threshold))
     db.commit()
     db.refresh(estate)
     return {
         "estateId": estate.id,
         "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
+        "canApproveWithoutHomeowner": bool(estate.security_can_approve_without_homeowner),
+        "mustNotifyHomeowner": bool(estate.security_must_notify_homeowner),
+        "requirePhotoVerification": bool(estate.security_require_photo_verification),
+        "requireCallBeforeApproval": bool(estate.security_require_call_before_approval),
+        "autoApproveTrustedVisitors": bool(estate.auto_approve_trusted_visitors),
+        "suspiciousVisitWindowMinutes": int(estate.suspicious_visit_window_minutes or 20),
+        "suspiciousHouseThreshold": int(estate.suspicious_house_threshold or 3),
+        "suspiciousRejectionThreshold": int(estate.suspicious_rejection_threshold or 2),
     }
 
 
@@ -242,24 +375,23 @@ def create_estate_homeowner(
     owner_id: str,
     estate_id: str,
     full_name: str,
-    username: str,
+    email: str,
     password: str,
 ) -> User:
     _require_estate_owner(db, estate_id, owner_id)
 
-    username_clean = (username or "").strip().lower()
+    email_clean = (email or "").strip().lower()
     full_name_clean = (full_name or "").strip()
-    if not username_clean or not password or not full_name_clean:
-        raise AppException("fullName, username and password are required", status_code=400)
+    if not email_clean or not password or not full_name_clean:
+        raise AppException("fullName, email and password are required", status_code=400)
 
-    email = username_clean if "@" in username_clean else f"{username_clean}@estate.useqring.online"
-    exists = db.query(User).filter(User.email == email).first()
+    exists = db.query(User).filter(User.email == email_clean).first()
     if exists:
-        raise AppException("Username already exists", status_code=409)
+        raise AppException("Email already exists", status_code=409)
 
     user = User(
         full_name=full_name_clean,
-        email=email,
+        email=email_clean,
         password_hash=hash_password(password),
         role=UserRole.homeowner,
         email_verified=True,
@@ -281,6 +413,154 @@ def create_estate_homeowner(
     db.commit()
     db.refresh(user)
     return user
+
+
+def create_estate_security_user(
+    db: Session,
+    *,
+    owner_id: str,
+    estate_id: str,
+    full_name: str,
+    email: str,
+    password: str,
+    phone: str | None = None,
+    gate_id: str | None = None,
+) -> User:
+    _require_estate_owner(db, estate_id, owner_id)
+
+    clean_name = (full_name or "").strip()
+    clean_email = (email or "").strip().lower()
+    clean_phone = (phone or "").strip() or None
+    clean_gate_id = (gate_id or "").strip() or None
+    if not clean_name or not clean_email or not password:
+        raise AppException("fullName, email and password are required", status_code=400)
+    existing = db.query(User).filter(User.email == clean_email).first()
+    if existing:
+        raise AppException("Email already exists", status_code=409)
+
+    user = User(
+        full_name=clean_name,
+        email=clean_email,
+        password_hash=hash_password(password),
+        role=UserRole.security,
+        email_verified=True,
+        is_active=True,
+        phone=clean_phone,
+        estate_id=estate_id,
+        gate_id=clean_gate_id,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def list_estate_security_users(db: Session, *, owner_id: str, estate_id: str) -> list[dict[str, Any]]:
+    _require_estate_owner(db, estate_id, owner_id)
+    rows = (
+        db.query(User)
+        .filter(User.estate_id == estate_id, User.role == UserRole.security)
+        .order_by(User.full_name.asc())
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "fullName": row.full_name,
+            "email": row.email,
+            "phone": row.phone,
+            "gateId": row.gate_id,
+            "estateId": row.estate_id,
+            "active": bool(row.is_active),
+            "status": "active" if row.is_active else "suspended",
+        }
+        for row in rows
+    ]
+
+
+def update_estate_security_user(
+    db: Session,
+    *,
+    owner_id: str,
+    estate_id: str,
+    security_user_id: str,
+    full_name: str,
+    email: str,
+    phone: str | None = None,
+    gate_id: str | None = None,
+    password: str | None = None,
+) -> User:
+    _require_estate_owner(db, estate_id, owner_id)
+    row = (
+        db.query(User)
+        .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
+        .first()
+    )
+    if not row:
+        raise AppException("Security account not found", status_code=404)
+
+    clean_name = (full_name or "").strip()
+    clean_email = (email or "").strip().lower()
+    clean_phone = (phone or "").strip() or None
+    clean_gate_id = (gate_id or "").strip() or None
+    if not clean_name or not clean_email:
+        raise AppException("fullName and email are required", status_code=400)
+    existing = db.query(User).filter(User.email == clean_email, User.id != row.id).first()
+    if existing:
+        raise AppException("Email already exists", status_code=409)
+
+    row.full_name = clean_name
+    row.email = clean_email
+    row.phone = clean_phone
+    row.gate_id = clean_gate_id
+    if str(password or "").strip():
+        row.password_hash = hash_password(password)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def set_estate_security_user_active_state(
+    db: Session,
+    *,
+    owner_id: str,
+    estate_id: str,
+    security_user_id: str,
+    is_active: bool,
+) -> User:
+    _require_estate_owner(db, estate_id, owner_id)
+    row = (
+        db.query(User)
+        .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
+        .first()
+    )
+    if not row:
+        raise AppException("Security account not found", status_code=404)
+    row.is_active = bool(is_active)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_estate_security_user(
+    db: Session,
+    *,
+    owner_id: str,
+    estate_id: str,
+    security_user_id: str,
+) -> dict[str, Any]:
+    _require_estate_owner(db, estate_id, owner_id)
+    row = (
+        db.query(User)
+        .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
+        .first()
+    )
+    if not row:
+        raise AppException("Security account not found", status_code=404)
+    deleted_id = row.id
+    db.delete(row)
+    db.commit()
+    return {"id": deleted_id, "deleted": True}
 
 
 def add_home(
@@ -609,14 +889,18 @@ def get_estate_stats_summary(db: Session, owner_id: str) -> dict[str, Any]:
 
 def create_estate_shared_selector_qr(db: Session, owner_id: str, estate_id: str) -> dict[str, Any]:
     _require_estate_owner(db, estate_id, owner_id)
-    homes = db.query(Home).filter(Home.estate_id == estate_id).all()
-    home_ids = [home.id for home in homes]
-    if not home_ids:
-        raise AppException("No homes configured for this estate", status_code=400)
-
-    doors = db.query(Door).filter(Door.home_id.in_(home_ids)).order_by(Door.name.asc()).all()
+    doors = (
+        db.query(Door)
+        .join(Home, Home.id == Door.home_id)
+        .filter(Home.estate_id == estate_id)
+        .order_by(Door.name.asc())
+        .all()
+    )
     if not doors:
-        raise AppException("No doors available for this estate", status_code=400)
+        raise AppException(
+            "No doors available for this estate. Create a homeowner/home and at least one door first.",
+            status_code=400,
+        )
 
     effective_sub = get_effective_subscription(db, owner_id)
     limits = effective_sub.get("limits", {})

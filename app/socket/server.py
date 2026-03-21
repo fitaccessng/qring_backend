@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import socketio
 
 from app.core.config import get_settings

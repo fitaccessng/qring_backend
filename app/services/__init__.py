@@ -1,3 +1,3 @@
-from app.services import auth_service
+from __future__ import annotations
 
-__all__ = ["auth_service"]
+__all__: list[str] = []

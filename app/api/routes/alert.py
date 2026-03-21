@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.api.deps import require_roles
 from app.db.models import User
@@ -12,8 +15,8 @@ router = APIRouter()
 
 class AlertPayPayload(BaseModel):
     paymentMethod: str = "paystack"
-    reference: str | None = None
-    callbackUrl: str | None = None
+    reference: Optional[str] = None
+    callbackUrl: Optional[str] = None
 
 
 @router.post("/{alert_id}/pay")

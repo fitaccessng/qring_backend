@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import unittest
 import uuid
@@ -8,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import Appointment, CallSession, User, UserRole
+from app.db.models import Appointment, CallSession, DeviceSession, Door, Estate, Home, User, UserRole
 from app.services.call_service import (
     end_call_session,
     join_call_as_homeowner,
@@ -24,6 +26,25 @@ class CallServiceTests(unittest.TestCase):
         self.SessionLocal = sessionmaker(bind=self.engine, class_=Session, autoflush=False, autocommit=False)
         self.db = self.SessionLocal()
 
+        self.estate = Estate(
+            id=str(uuid.uuid4()),
+            name="Estate A",
+            owner_id=str(uuid.uuid4()),
+        )
+        self.home = Home(
+            id=str(uuid.uuid4()),
+            name="Home A",
+            homeowner_id=str(uuid.uuid4()),
+            estate_id=self.estate.id,
+        )
+        self.door = Door(
+            id=str(uuid.uuid4()),
+            name="Door A",
+            home_id=self.home.id,
+        )
+        self.db.add_all([self.estate, self.home, self.door])
+        self.db.flush()
+
         self.homeowner = User(
             id=str(uuid.uuid4()),
             full_name="Homeowner A",
@@ -38,8 +59,8 @@ class CallServiceTests(unittest.TestCase):
         self.appointment = Appointment(
             id=str(uuid.uuid4()),
             homeowner_id=self.homeowner.id,
-            home_id=str(uuid.uuid4()),
-            door_id=str(uuid.uuid4()),
+            home_id=self.home.id,
+            door_id=self.door.id,
             visitor_name="Visitor A",
             visitor_contact="+12345678",
             purpose="Delivery",
@@ -69,6 +90,7 @@ class CallServiceTests(unittest.TestCase):
             self.assertIsNotNone(row.id)
             self.assertEqual(row.status, "ringing")
             self.assertEqual(row.appointment_id, self.appointment.id)
+            self.assertEqual(row.room_name, f"qring-session-{self.appointment.id}")
             create_room_mock.assert_called_once()
             notify_mock.assert_called_once()
 
@@ -94,7 +116,7 @@ class CallServiceTests(unittest.TestCase):
             self.assertEqual(data["token"], "jwt-token")
             self.assertEqual(data["roomName"], call.room_name)
             refreshed = self.db.query(CallSession).filter(CallSession.id == call.id).first()
-            self.assertEqual(refreshed.status, "active")
+            self.assertEqual(refreshed.status, "ongoing")
 
     def test_call_end_disconnects_and_marks_ended(self):
         call = CallSession(
@@ -134,7 +156,7 @@ class CallServiceTests(unittest.TestCase):
             }
             joined = join_call_as_visitor(self.db, call_session_id=call.id, visitor_id="visitor-device-abc")
             self.assertEqual(joined["token"], "visitor-jwt")
-            self.assertEqual(joined["status"], "active")
+            self.assertEqual(joined["status"], "ongoing")
 
 
 if __name__ == "__main__":

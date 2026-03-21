@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import logging
 import base64
 from time import perf_counter
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
@@ -18,8 +21,8 @@ from app.services.appointment_service import (
     mark_appointment_qr_used,
 )
 from app.services.livekit_service import issue_livekit_token
-from app.services.notification_service import create_notification
 from app.services.qr_service import resolve_qr
+from app.services.security_service import notify_security_request, serialize_security_session
 from app.services.session_service import create_visitor_session
 from app.services.voice_note_service import save_voice_note
 from app.services.advanced_service import create_snapshot_audit
@@ -31,21 +34,21 @@ logger = logging.getLogger(__name__)
 
 
 class VisitorLiveKitTokenPayload(BaseModel):
-    displayName: str | None = None
+    displayName: Optional[str] = None
 
 
 class VisitorAppointmentAcceptPayload(BaseModel):
     shareToken: str
     deviceId: str
-    visitorName: str | None = None
+    visitorName: Optional[str] = None
 
 
 class VisitorAppointmentArrivalPayload(BaseModel):
     shareToken: str
     deviceId: str
-    lat: float | None = None
-    lng: float | None = None
-    batteryPct: int | None = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    batteryPct: Optional[int] = None
 
 
 @router.post("/request")
@@ -105,7 +108,13 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             visitor_label=effective_visitor_name,
             appointment_id=appointment.id if appointment else None,
             request_id=request_id,
-        )
+            visitor_phone=payload.phoneNumber,
+            purpose=payload.purpose,
+            visitor_type=payload.visitorType,
+            delivery_option=payload.deliveryOption,
+            request_source="visitor_qr",
+            creator_role="visitor",
+            )
         if appointment:
             mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
 
@@ -155,7 +164,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     logger.exception("Snapshot capture failed. Continuing without snapshot.")
                     snapshot_audit = None
 
+        if snapshot_audit and isinstance(snapshot_audit, dict):
+            session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
+            db.commit()
+            db.refresh(session)
+
         phase = "create_notification"
+        from app.services.notification_service import create_notification
+
         create_notification(
             db=db,
             user_id=session.homeowner_id,
@@ -163,13 +179,18 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             payload={
                 "sessionId": session.id,
                 "doorId": session.door_id,
-                "visitorName": (payload.name or "Visitor").strip() or "Visitor",
-                "phoneNumber": (payload.phoneNumber or "").strip(),
-                "purpose": (payload.purpose or "").strip(),
+                "visitorName": session.visitor_label or "Visitor",
+                "phoneNumber": session.visitor_phone or "",
+                "purpose": session.purpose or "",
+                "photoUrl": session.photo_url,
                 "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
-                "message": f"New visitor request from {(payload.name or 'Visitor').strip() or 'Visitor'}",
+                "estateId": session.estate_id,
+                "requestSource": session.request_source or "visitor_qr",
+                "creatorRole": session.creator_role or "visitor",
+                "message": f"New visitor request from {session.visitor_label or 'Visitor'}",
             },
         )
+        notify_security_request(db, session)
 
         phase = "emit_dashboard_patch"
         await sio.emit(
@@ -181,11 +202,16 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                             "id": session.id,
                             "event": f"Visitor request at door {session.door_id}",
                             "time": session.started_at.isoformat(),
-                            "state": "pending",
+                            "state": session.status,
                         }
                     ]
                 }
             },
+            namespace=settings.DASHBOARD_NAMESPACE,
+        )
+        await sio.emit(
+            "new_visitor_request",
+            {"data": serialize_security_session(db, session)},
             namespace=settings.DASHBOARD_NAMESPACE,
         )
         await sio.emit(
@@ -200,7 +226,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "doorId": session.door_id,
                 "hasVideo": False,
                 "state": "ringing",
-                "message": f"{effective_visitor_name} arrived at your door.",
+                "message": f"{effective_visitor_name} arrived at your gate.",
             },
             room=f"user:{session.homeowner_id}",
             namespace=settings.DASHBOARD_NAMESPACE,

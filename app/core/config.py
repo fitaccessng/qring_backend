@@ -1,10 +1,55 @@
+from __future__ import annotations
+
 from functools import lru_cache
+import os
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlparse
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    class BaseSettings:
+        def __init__(self, **kwargs):
+            env_values = _load_env_file(ENV_FILE)
+            annotations = getattr(self.__class__, "__annotations__", {})
+            for field_name in annotations:
+                if field_name.startswith("_"):
+                    continue
+                default = getattr(self.__class__, field_name, None)
+                raw_value = kwargs.get(field_name, os.getenv(field_name, env_values.get(field_name, default)))
+                setattr(self, field_name, _coerce_value(default, raw_value))
+
+    def SettingsConfigDict(**kwargs):
+        return kwargs
 
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text().splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
+def _coerce_value(default, value):
+    if value is None:
+        return default
+    if isinstance(default, bool):
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(default, int) and not isinstance(default, bool):
+        try:
+            return int(value)
+        except Exception:
+            return default
+    return value
 
 
 class Settings(BaseSettings):
@@ -94,6 +139,18 @@ class Settings(BaseSettings):
         "https://www.useqring.online",
     )
 
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def _normalize_debug(cls, value):
+        if isinstance(value, bool):
+            return value
+        raw = str(value or "").strip().lower()
+        if raw in {"1", "true", "yes", "on", "debug", "development", "dev", "local"}:
+            return True
+        if raw in {"0", "false", "no", "off", "release", "production", "prod", "staging"}:
+            return False
+        return value
+
     @property
     def cors_origins(self) -> List[str]:
         origins: list[str] = []
@@ -122,4 +179,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

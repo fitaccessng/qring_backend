@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -12,13 +15,13 @@ class VisitorSnapshotAudit(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
-    visitor_session_id: Mapped[str | None] = mapped_column(
+    visitor_session_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("visitor_sessions.id"), nullable=True, index=True
     )
-    appointment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True, index=True)
+    appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True, index=True)
     media_type: Mapped[str] = mapped_column(String(20), default="photo")
     media_path: Mapped[str] = mapped_column(Text, nullable=False)
-    media_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    media_sha256: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     source: Mapped[str] = mapped_column(String(30), default="visitor_device")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
@@ -33,9 +36,9 @@ class VisitorRecognitionProfile(Base):
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     display_name: Mapped[str] = mapped_column(String(120), default="Visitor")
     visitor_key_hash: Mapped[str] = mapped_column(String(128), index=True)
-    encrypted_template: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_template: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     visits_count: Mapped[int] = mapped_column(Integer, default=1)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -50,7 +53,7 @@ class SplitBill(Base):
     total_amount_kobo: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
     status: Mapped[str] = mapped_column(String(30), default="open", index=True)
-    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -89,13 +92,13 @@ class ThreatAlertLog(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
-    visitor_session_id: Mapped[str | None] = mapped_column(
+    visitor_session_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("visitor_sessions.id"), nullable=True, index=True
     )
     risk_score: Mapped[int] = mapped_column(Integer, default=0)
     category: Mapped[str] = mapped_column(String(80), default="unknown_face")
     message: Mapped[str] = mapped_column(Text, default="")
-    snapshot_audit_id: Mapped[str | None] = mapped_column(
+    snapshot_audit_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("visitor_snapshot_audits.id"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -109,7 +112,7 @@ class EmergencySignal(Base):
     scope: Mapped[str] = mapped_column(String(40), default="estate")
     message: Mapped[str] = mapped_column(Text, default="")
     notify_sms: Mapped[bool] = mapped_column(Boolean, default=False)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -162,7 +165,7 @@ class PushSubscription(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     provider: Mapped[str] = mapped_column(String(20), default="fcm", index=True)
     endpoint: Mapped[str] = mapped_column(Text, default="")
-    token: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     keys_json: Mapped[str] = mapped_column(Text, default="{}")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

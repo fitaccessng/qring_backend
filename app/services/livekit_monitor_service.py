@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 import logging
 from typing import Any
@@ -34,12 +36,14 @@ def handle_livekit_webhook_event(db: Session, payload: dict[str, Any]) -> dict[s
         return {"event": event, "roomName": room_name, "handled": False}
 
     if event == "participant_joined" and call.status in {"pending", "ringing"}:
-        call.status = "active"
+        call.status = "ongoing"
+        call.answered_at = call.answered_at or datetime.utcnow()
         db.commit()
         db.refresh(call)
     elif event == "room_finished":
-        call.status = "ended"
+        call.status = "missed" if call.status in {"pending", "ringing"} else "ended"
         call.ended_at = call.ended_at or datetime.utcnow()
+        call.ended_reason = call.ended_reason or ("room_finished_before_answer" if call.status == "missed" else "room_finished")
         db.commit()
         db.refresh(call)
 

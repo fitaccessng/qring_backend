@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.api.deps import get_current_user, require_roles
 from app.core.config import get_settings
@@ -41,7 +44,7 @@ class SubscriptionRequest(BaseModel):
 
 class PaystackInitializePayload(BaseModel):
     plan: str
-    callbackUrl: str | None = None
+    callbackUrl: Optional[str] = None
     billingCycle: str = "monthly"
 
 
@@ -169,7 +172,7 @@ def payment_request_subscription(
 @router.post("/paystack/webhook")
 async def payment_paystack_webhook(
     request: Request,
-    x_paystack_signature: str | None = Header(default=None),
+    x_paystack_signature: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
     raw = await request.body()

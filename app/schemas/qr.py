@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from pydantic import BaseModel
+from typing import Optional
 
 
 class QRResolveResponse(BaseModel):
@@ -7,5 +10,5 @@ class QRResolveResponse(BaseModel):
     home_id: str
     doors: list[str]
     mode: str
-    estate_id: str | None
+    estate_id: Optional[str]
     active: bool

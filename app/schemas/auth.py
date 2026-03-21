@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 
 
 class LoginRequest(BaseModel):
@@ -11,7 +14,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     role: str = "homeowner"
-    referralCode: str | None = None
+    referralCode: Optional[str] = None
 
 
 class AdminSignupRequest(BaseModel):
@@ -47,8 +50,8 @@ class AuthUser(BaseModel):
     fullName: str
     email: EmailStr
     role: str
-    referralCode: str | None = None
-    referralEarnings: int | None = None
+    referralCode: Optional[str] = None
+    referralEarnings: Optional[int] = None
 
 
 class AuthResponse(BaseModel):
@@ -59,15 +62,15 @@ class AuthResponse(BaseModel):
 
 class GoogleSigninRequest(BaseModel):
     idToken: str
-    email: EmailStr | None = None
-    displayName: str | None = None
-    photoURL: str | None = None
+    email: Optional[EmailStr] = None
+    displayName: Optional[str] = None
+    photoURL: Optional[str] = None
 
 
 class GoogleSignupRequest(BaseModel):
     idToken: str
-    email: EmailStr | None = None
-    displayName: str | None = None
-    photoURL: str | None = None
+    email: Optional[EmailStr] = None
+    displayName: Optional[str] = None
+    photoURL: Optional[str] = None
     role: str = "homeowner"
-    referralCode: str | None = None
+    referralCode: Optional[str] = None

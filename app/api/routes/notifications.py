@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.api.deps import get_current_user
 from app.db.models import User
@@ -21,7 +24,7 @@ class PushSubscriptionCreate(BaseModel):
     provider: str = "fcm"
     endpoint: str
     keys: dict
-    token: str | None = None
+    token: Optional[str] = None
 
 
 @router.get("/")

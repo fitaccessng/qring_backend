@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
 import logging
+from typing import Optional
 import uuid
 
 from app.api.deps import get_optional_current_user
@@ -12,6 +15,7 @@ from app.db.session import get_db
 from app.services.call_service import (
     end_call_session,
     join_call_as_homeowner,
+    join_call_as_security,
     join_call_as_visitor,
     start_call_session,
 )
@@ -23,11 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 class StartCallPayload(BaseModel):
-    appointmentId: str | None = None
-    sessionId: str | None = None
-    visitorId: str | None = None
-    visitorName: str | None = None
-    hasVideo: bool | None = None
+    appointmentId: Optional[str] = None
+    sessionId: Optional[str] = None
+    visitorId: Optional[str] = None
+    visitorName: Optional[str] = None
+    hasVideo: Optional[bool] = None
+    type: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -61,7 +66,7 @@ class StartCallPayload(BaseModel):
 class JoinCallPayload(BaseModel):
     callSessionId: str
     participantType: str
-    visitorId: str | None = None
+    visitorId: Optional[str] = None
 
     @field_validator("callSessionId", mode="before")
     @classmethod
@@ -74,8 +79,8 @@ class JoinCallPayload(BaseModel):
 
 class EndCallPayload(BaseModel):
     callSessionId: str
-    participantType: str | None = None
-    visitorId: str | None = None
+    participantType: Optional[str] = None
+    visitorId: Optional[str] = None
 
     @field_validator("callSessionId", mode="before")
     @classmethod
@@ -90,7 +95,7 @@ class EndCallPayload(BaseModel):
 async def start_call(
     payload: StartCallPayload,
     db: Session = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: Optional[User] = Depends(get_optional_current_user),
 ):
     logger.info(
         "api.call.start request appointment_id=%s session_id=%s has_homeowner_auth=%s",
@@ -105,6 +110,10 @@ async def start_call(
             visitor_session_id=payload.sessionId,
             visitor_id=payload.visitorId,
             homeowner_id=user.id if user and user.role.value == "homeowner" else None,
+            security_user_id=user.id if user and user.role.value == "security" else None,
+            caller_id=user.id if user else None,
+            receiver_id=None,
+            call_type=payload.type or ("video" if payload.hasVideo else "audio"),
             visitor_name=payload.visitorName,
         )
     except AppException:
@@ -137,6 +146,7 @@ async def start_call(
             "status": row.status,
             "visitorId": row.visitor_id,
             "hasVideo": bool(payload.hasVideo),
+            "type": row.call_type,
         },
         room=f"homeowner:{row.homeowner_id}",
         namespace=settings.SIGNALING_NAMESPACE,
@@ -152,6 +162,7 @@ async def start_call(
                 "status": row.status,
                 "visitorId": row.visitor_id,
                 "hasVideo": bool(payload.hasVideo),
+                "type": row.call_type,
             },
             room=f"session:{linked_session}",
             namespace=settings.SIGNALING_NAMESPACE,
@@ -171,7 +182,7 @@ async def start_call(
 async def join_call(
     payload: JoinCallPayload,
     db: Session = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: Optional[User] = Depends(get_optional_current_user),
 ):
     logger.info(
         "api.call.join request call_session_id=%s participant_type=%s homeowner_auth=%s",
@@ -180,13 +191,17 @@ async def join_call(
         bool(user and user.role.value == "homeowner"),
     )
     participant_type = (payload.participantType or "").strip().lower()
-    if participant_type not in {"homeowner", "visitor"}:
-        raise AppException("participantType must be homeowner or visitor.", status_code=400)
+    if participant_type not in {"homeowner", "visitor", "security"}:
+        raise AppException("participantType must be homeowner, visitor or security.", status_code=400)
 
     if participant_type == "homeowner":
         if not user or user.role.value != "homeowner":
             raise AppException("Homeowner authentication is required.", status_code=401)
         data = join_call_as_homeowner(db, call_session_id=payload.callSessionId, homeowner_id=user.id)
+    elif participant_type == "security":
+        if not user or user.role.value != "security":
+            raise AppException("Security authentication is required.", status_code=401)
+        data = join_call_as_security(db, call_session_id=payload.callSessionId, security_user_id=user.id)
     else:
         data = join_call_as_visitor(
             db,
@@ -194,14 +209,22 @@ async def join_call(
             visitor_id=(payload.visitorId or ""),
         )
 
-    return {"data": {"token": data["token"], "roomName": data["roomName"], "status": data["status"]}}
+    return {
+        "data": {
+            "token": data["token"],
+            "roomName": data["roomName"],
+            "status": data["status"],
+            "url": data.get("url"),
+            "expiresIn": data.get("expiresIn"),
+        }
+    }
 
 
 @router.post("/end")
 async def end_call(
     payload: EndCallPayload,
     db: Session = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: Optional[User] = Depends(get_optional_current_user),
 ):
     logger.info(
         "api.call.end request call_session_id=%s participant_type=%s homeowner_auth=%s",
@@ -210,11 +233,13 @@ async def end_call(
         bool(user and user.role.value == "homeowner"),
     )
     participant_type = (payload.participantType or "").strip().lower()
-    if participant_type and participant_type not in {"homeowner", "visitor"}:
-        raise AppException("participantType must be homeowner or visitor.", status_code=400)
+    if participant_type and participant_type not in {"homeowner", "visitor", "security"}:
+        raise AppException("participantType must be homeowner, visitor or security.", status_code=400)
 
     if participant_type == "homeowner" and (not user or user.role.value != "homeowner"):
         raise AppException("Homeowner authentication is required.", status_code=401)
+    if participant_type == "security" and (not user or user.role.value != "security"):
+        raise AppException("Security authentication is required.", status_code=401)
     if participant_type == "visitor" and not (payload.visitorId or "").strip():
         raise AppException("visitorId is required for visitor end requests.", status_code=400)
 
@@ -222,6 +247,8 @@ async def end_call(
     if not target:
         raise AppException("Call session not found.", status_code=404)
     if participant_type == "homeowner" and target.homeowner_id != user.id:
+        raise AppException("You are not allowed to end this call.", status_code=403)
+    if participant_type == "security" and target.security_user_id != user.id:
         raise AppException("You are not allowed to end this call.", status_code=403)
     if participant_type == "visitor" and target.visitor_id != (payload.visitorId or "").strip():
         raise AppException("You are not allowed to end this call.", status_code=403)

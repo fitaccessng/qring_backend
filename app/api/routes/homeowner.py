@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
 from typing import Optional
@@ -9,6 +11,11 @@ from app.db.session import get_db
 from app.services.homeowner_settings_service import (
     get_homeowner_settings_payload,
     update_homeowner_settings,
+)
+from app.services.access_pass_service import (
+    create_homeowner_access_pass,
+    deactivate_access_pass,
+    list_homeowner_access_passes,
 )
 from app.services.homeowner_service import (
     create_homeowner_session_message,
@@ -30,6 +37,7 @@ from app.services.session_service import mark_session_status
 from app.core.exceptions import AppException
 from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import mark_session_notifications_read
+from app.services.security_service import serialize_security_session, update_security_session_status
 from app.services.voice_note_service import save_voice_note
 from app.socket.server import sio
 from app.core.config import get_settings
@@ -55,10 +63,17 @@ class HomeownerSettingsUpdate(BaseModel):
     pushAlerts: bool
     soundAlerts: bool
     autoRejectUnknownVisitors: bool
+    autoApproveTrustedVisitors: bool = False
+    autoApproveKnownContacts: bool = False
+    knownContacts: list[str] = []
+    allowDeliveryDropAtGate: bool = True
+    smsFallbackEnabled: bool = False
 
 
 class VisitDecisionPayload(BaseModel):
     action: str
+    communicationChannel: Optional[str] = None
+    communicationTarget: Optional[str] = None
 
 
 class HomeownerMessagePayload(BaseModel):
@@ -75,6 +90,15 @@ class MaintenanceRequestPayload(BaseModel):
     description: str = ""
 
 
+class AccessPassCreatePayload(BaseModel):
+    label: str
+    passType: str = "qr"
+    visitorName: Optional[str] = None
+    doorId: Optional[str] = None
+    validForHours: int = 24
+    maxUses: int = 1
+
+
 class AppointmentCreatePayload(BaseModel):
     doorId: str
     visitorName: str
@@ -82,9 +106,9 @@ class AppointmentCreatePayload(BaseModel):
     purpose: str = ""
     startsAt: str
     endsAt: str
-    geofenceLat: float | None = None
-    geofenceLng: float | None = None
-    geofenceRadiusMeters: int | None = None
+    geofenceLat: Optional[float] = None
+    geofenceLng: Optional[float] = None
+    geofenceRadiusMeters: Optional[int] = None
 
 
 @router.get("/visits")
@@ -329,8 +353,49 @@ def homeowner_update_settings(
         push_alerts=payload.pushAlerts,
         sound_alerts=payload.soundAlerts,
         auto_reject_unknown_visitors=payload.autoRejectUnknownVisitors,
+        auto_approve_trusted_visitors=payload.autoApproveTrustedVisitors,
+        auto_approve_known_contacts=payload.autoApproveKnownContacts,
+        known_contacts=payload.knownContacts,
+        allow_delivery_drop_at_gate=payload.allowDeliveryDropAtGate,
+        sms_fallback_enabled=payload.smsFallbackEnabled,
     )
     return {"data": updated}
+
+
+@router.get("/access-passes")
+def homeowner_access_passes(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    return {"data": list_homeowner_access_passes(db, homeowner_id=user.id)}
+
+
+@router.post("/access-passes")
+def homeowner_create_access_pass(
+    payload: AccessPassCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = create_homeowner_access_pass(
+        db,
+        homeowner_id=user.id,
+        label=payload.label,
+        pass_type=payload.passType,
+        visitor_name=payload.visitorName,
+        door_id=payload.doorId,
+        valid_for_hours=payload.validForHours,
+        max_uses=payload.maxUses,
+    )
+    return {"data": data}
+
+
+@router.post("/access-passes/{access_pass_id}/deactivate")
+def homeowner_deactivate_access_pass(
+    access_pass_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    return {"data": deactivate_access_pass(db, homeowner_id=user.id, access_pass_id=access_pass_id)}
 
 
 @router.post("/visits/{session_id}/decision")
@@ -350,7 +415,14 @@ async def homeowner_visit_decision(
     if not session:
         raise AppException("Visit not found", status_code=404)
 
-    updated = mark_session_status(db, session_id=session_id, status="approved" if action == "approve" else "rejected")
+    updated = update_security_session_status(
+        db,
+        session_id=session_id,
+        actor=user,
+        action=action,
+        preferred_communication_channel=payload.communicationChannel,
+        preferred_communication_target=payload.communicationTarget,
+    )
     if not updated:
         raise AppException("Visit not found", status_code=404)
     await sio.emit(
@@ -374,12 +446,18 @@ async def homeowner_visit_decision(
         {
             "sessionId": session.id,
             "status": updated.status,
+            "gateStatus": updated.gate_status,
             "homeownerId": session.homeowner_id,
             "doorId": session.door_id,
             "visitorName": session.visitor_label or "Visitor",
         },
         room=f"session:{session.id}",
         namespace=settings.SIGNALING_NAMESPACE,
+    )
+    await sio.emit(
+        "visitor_forwarded" if action == "approve" else "gate_action_completed",
+        {"data": serialize_security_session(db, updated), "action": action, "actorRole": user.role.value},
+        namespace=settings.DASHBOARD_NAMESPACE,
     )
     return {"data": {"id": updated.id, "status": updated.status}}
 
@@ -474,4 +552,3 @@ def homeowner_livekit_token(
         can_subscribe=True,
     )
     return {"data": data}
-

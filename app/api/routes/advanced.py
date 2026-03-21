@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import Response
@@ -39,7 +41,7 @@ class RecognitionPayload(BaseModel):
     homeownerId: str
     displayName: str
     identifier: str = Field(min_length=6)
-    encryptedTemplate: str | None = None
+    encryptedTemplate: Optional[str] = None
 
 
 class SplitParticipant(BaseModel):
@@ -52,7 +54,7 @@ class SplitBillCreatePayload(BaseModel):
     description: str = ""
     totalAmountKobo: int
     currency: str = "NGN"
-    dueAt: str | None = None
+    dueAt: Optional[str] = None
     participants: list[SplitParticipant] = []
 
 
@@ -70,11 +72,11 @@ class ReceiptCreatePayload(BaseModel):
 
 class ThreatPayload(BaseModel):
     homeownerId: str
-    visitorSessionId: str | None = None
+    visitorSessionId: Optional[str] = None
     riskScore: int = 0
     category: str = "unknown_face"
     message: str = "AI detected unusual visitor behavior."
-    snapshotAuditId: str | None = None
+    snapshotAuditId: Optional[str] = None
 
 
 class GeofenceCheckPayload(BaseModel):
@@ -83,7 +85,7 @@ class GeofenceCheckPayload(BaseModel):
     centerLat: float
     centerLng: float
     radiusMeters: int = 50
-    homeownerId: str | None = None
+    homeownerId: Optional[str] = None
 
 
 class EmergencyPayload(BaseModel):
@@ -118,8 +120,8 @@ def advanced_live_queue(
 async def advanced_upload_snapshot(
     homeownerId: str,
     mediaType: str = "photo",
-    visitorSessionId: str | None = None,
-    appointmentId: str | None = None,
+    visitorSessionId: Optional[str] = None,
+    appointmentId: Optional[str] = None,
     source: str = "visitor_device",
     media: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -429,7 +431,7 @@ def advanced_mark_community_post_read(
 
 @router.get("/summaries/weekly")
 def advanced_weekly_summary(
-    weekStartIso: str | None = None,
+    weekStartIso: Optional[str] = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):

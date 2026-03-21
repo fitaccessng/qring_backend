@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -16,6 +19,6 @@ class DeviceSession(Base):
     user_agent: Mapped[str] = mapped_column(String(255), default="")
     ip_address: Mapped[str] = mapped_column(String(80), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="device_sessions")

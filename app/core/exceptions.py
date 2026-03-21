@@ -1,5 +1,15 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from __future__ import annotations
+
+try:
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    FastAPI = object
+    Request = object
+
+    class JSONResponse(dict):
+        def __init__(self, status_code: int, content: dict):
+            super().__init__(status_code=status_code, content=content)
 
 
 class AppException(Exception):

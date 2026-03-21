@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import uuid
 from collections import defaultdict
@@ -51,13 +53,22 @@ def register_socket_events(sio):
                     last_error = "session_not_found"
                     break
 
-                resolved_sender_type = (
-                    "homeowner" if sender_user_id and sender_user_id == session.homeowner_id else "visitor"
-                )
+                resolved_sender_type = "visitor"
+                if sender_user_id:
+                    if sender_user_id == session.homeowner_id:
+                        resolved_sender_type = "homeowner"
+                    else:
+                        from app.db.models import User
+
+                        sender_user = db.query(User).filter(User.id == sender_user_id).first()
+                        if sender_user and sender_user.role.value == "security":
+                            resolved_sender_type = "security"
                 message = Message(
                     id=message_id,
                     session_id=session_id,
                     sender_type=resolved_sender_type,
+                    sender_id=sender_user_id,
+                    receiver_id=session.homeowner_id if resolved_sender_type != "homeowner" else None,
                     body=body,
                     created_at=datetime.fromisoformat(created_at_iso),
                 )
@@ -233,7 +244,7 @@ def register_socket_events(sio):
             return
         sender_user_id = socket_state.sid_user.get(sid)
         raw_sender_type = (payload or {}).get("senderType")
-        optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor"} else "visitor"
+        optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor", "security"} else "visitor"
         display_name = (payload or {}).get("displayName") or "Participant"
         created_at = datetime.utcnow().isoformat()
         message_id = str(uuid.uuid4())

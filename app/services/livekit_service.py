@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from app.core.config import get_settings
 from app.core.exceptions import AppException
 from datetime import timedelta
@@ -6,6 +8,7 @@ import logging
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+LIVEKIT_TOKEN_TTL_MINUTES = 30
 
 
 def ensure_livekit_configured() -> None:
@@ -25,6 +28,21 @@ def build_call_room_name(call_session_id: str) -> str:
     if not safe_call_session:
         raise AppException("Invalid call session id", status_code=400)
     return f"{settings.LIVEKIT_ROOM_PREFIX}call-{safe_call_session}"
+
+
+def build_request_room_name(visitor_request_id: str) -> str:
+    safe_request = str(visitor_request_id or "").strip()
+    if not safe_request:
+        raise AppException("Invalid visitor request id", status_code=400)
+    return f"{settings.LIVEKIT_ROOM_PREFIX}{safe_request}"
+
+
+def build_livekit_identity(role: str, user_id: str) -> str:
+    normalized_role = str(role or "").strip().lower()
+    safe_user_id = str(user_id or "").strip()
+    if normalized_role not in {"homeowner", "security", "visitor"} or not safe_user_id:
+        raise AppException("Invalid LiveKit identity parameters.", status_code=400)
+    return f"{normalized_role}_{safe_user_id}"
 
 
 async def _close_livekit_client(client) -> None:
@@ -139,8 +157,9 @@ def issue_livekit_token(
         can_subscribe=can_subscribe,
     )
     access_token = livekit_api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
+    expires_in_seconds = LIVEKIT_TOKEN_TTL_MINUTES * 60
     if hasattr(access_token, "with_ttl"):
-        access_token = access_token.with_ttl(timedelta(hours=1))
+        access_token = access_token.with_ttl(timedelta(minutes=LIVEKIT_TOKEN_TTL_MINUTES))
     token = (
         access_token
         .with_identity(identity)
@@ -159,6 +178,7 @@ def issue_livekit_token(
         "url": settings.LIVEKIT_URL,
         "roomName": room_name,
         "token": token,
+        "expiresIn": expires_in_seconds,
     }
 
 
@@ -184,8 +204,9 @@ def issue_livekit_token_for_room(
         can_subscribe=can_subscribe,
     )
     access_token = livekit_api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
+    expires_in_seconds = LIVEKIT_TOKEN_TTL_MINUTES * 60
     if hasattr(access_token, "with_ttl"):
-        access_token = access_token.with_ttl(timedelta(hours=1))
+        access_token = access_token.with_ttl(timedelta(minutes=LIVEKIT_TOKEN_TTL_MINUTES))
     token = (
         access_token
         .with_identity(identity)
@@ -204,4 +225,5 @@ def issue_livekit_token_for_room(
         "url": settings.LIVEKIT_URL,
         "roomName": room_name,
         "token": token,
+        "expiresIn": expires_in_seconds,
     }
