@@ -1,0 +1,32 @@
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: true
+
+turn:
+  enabled: true
+  domain: turn.useqring.online
+  udp_port: 3478
+  tls_port: 443
+  external_tls: false
+
+keys:
+  devkey: replace-with-livekit-api-secret
+
+room:
+  auto_create: true
+  empty_timeout: 30m
+  enable_remote_unmute: false
+
+logging:
+  level: info
+
+# Notes:
+# - Point both your app domain and TURN domain to the LiveKit host.
+# - Open ports 443/tcp, 7881/tcp, 3478/udp, and 50000-60000/udp.
+# - If you terminate TLS before LiveKit, set turn.external_tls: true and use the LB TLS port instead.

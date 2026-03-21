@@ -5,6 +5,7 @@ from app.core.exceptions import AppException
 from datetime import timedelta
 import inspect
 import logging
+from urllib.parse import urlparse, urlunparse
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -14,6 +15,21 @@ LIVEKIT_TOKEN_TTL_MINUTES = 30
 def ensure_livekit_configured() -> None:
     if not settings.LIVEKIT_URL or not settings.LIVEKIT_API_KEY or not settings.LIVEKIT_API_SECRET:
         raise AppException("LiveKit is not configured on the server.", status_code=503)
+
+
+def build_livekit_client_url() -> str:
+    raw_url = str(settings.LIVEKIT_URL or "").strip()
+    if not raw_url:
+        raise AppException("LiveKit is not configured on the server.", status_code=503)
+
+    parsed = urlparse(raw_url)
+    if parsed.scheme in {"ws", "wss"}:
+        return raw_url
+    if parsed.scheme in {"http", "https"}:
+        return urlunparse(
+            parsed._replace(scheme="wss" if parsed.scheme == "https" else "ws")
+        )
+    return raw_url
 
 
 def build_room_name(session_id: str) -> str:
@@ -175,7 +191,7 @@ def issue_livekit_token(
         can_subscribe,
     )
     return {
-        "url": settings.LIVEKIT_URL,
+        "url": build_livekit_client_url(),
         "roomName": room_name,
         "token": token,
         "expiresIn": expires_in_seconds,
@@ -222,7 +238,7 @@ def issue_livekit_token_for_room(
         can_subscribe,
     )
     return {
-        "url": settings.LIVEKIT_URL,
+        "url": build_livekit_client_url(),
         "roomName": room_name,
         "token": token,
         "expiresIn": expires_in_seconds,

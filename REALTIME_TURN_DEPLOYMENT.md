@@ -2,16 +2,31 @@
 
 This guide is the production baseline for stable messaging, audio, and video across mobile/NAT-heavy networks.
 
+## LiveKit baseline
+
+Use the production template at:
+
+- `infra/livekit/livekit.production.yaml`
+
+Recommended production ports:
+
+- `443/tcp` for HTTPS + TURN/TLS
+- `7881/tcp` for WebRTC/TCP fallback
+- `3478/udp` for TURN/UDP
+- `50000-60000/udp` for RTP relay/media
+
+Set `rtc.use_external_ip: true` unless you are explicitly handling NAT traversal elsewhere.
+
 ## 1) Provision TURN host
 
 - Create a VM in/near target users (recommended primary: Africa region).
 - Assign a static public IPv4 address.
 - Create DNS record (example): `turn.useqring.online` -> VM public IP.
 - Open firewall/security group:
-  - `3478/udp`
-  - `3478/tcp`
-  - `5349/tcp`
-  - `49152-65535/udp` (relay media range)
+- `3478/udp`
+- `3478/tcp`
+- `443/tcp`
+- `49152-65535/udp` (relay media range)
 
 ## 2) Install and configure coturn
 
@@ -49,7 +64,11 @@ docker compose -f docker-compose.turn.yml up -d
 Update `frontend/.env` (and deployment secrets) with ICE servers:
 
 ```env
-VITE_WEBRTC_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{"urls":["turn:turn.useqring.online:3478?transport=udp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turns:turn.useqring.online:5349?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"}]
+VITE_WEBRTC_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{"urls":["turn:turn.useqring.online:3478?transport=udp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turns:turn.useqring.online:443?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"}]
+VITE_LIVEKIT_URL=wss://livekit.useqring.online
+VITE_CALL_CONNECT_TIMEOUT_MS=8000
+VITE_CALL_RING_TIMEOUT_MS=30000
+VITE_PREFER_VOICE_NOTE_FALLBACK=true
 ```
 
 This is consumed by `env.webRtcIceServers` in:
@@ -78,7 +97,7 @@ This is consumed by `env.webRtcIceServers` in:
    - Verify connection succeeds within a few seconds.
 3. Failover test:
    - Temporarily block UDP on one client network.
-   - Verify call still connects over `turns:...:5349` (TCP/TLS).
+   - Verify call still connects over `turns:...:443` (TCP/TLS).
 4. Messaging persistence test:
    - Send chat message and confirm immediate UI delivery + persisted state.
    - Simulate DB outage and confirm `Not saved` + retry flow works.
