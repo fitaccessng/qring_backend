@@ -227,7 +227,12 @@ def _add_column_if_missing(
 ) -> None:
     if column in table_columns:
         return
-    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_fragment}"))
+    normalized_fragment = (
+        sql_fragment
+        .replace("BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE")
+        .replace("BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE")
+    )
+    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {normalized_fragment}"))
 
 
 def _ensure_runtime_compatibility_schema() -> None:
