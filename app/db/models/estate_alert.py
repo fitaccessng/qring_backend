@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Numeric, String, T
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class EstateAlertType(str, Enum):
@@ -42,8 +43,8 @@ class EstateAlert(Base):
     poll_options: Mapped[Optional[str]] = mapped_column(Text, default="")
     target_homeowner_ids: Mapped[Optional[str]] = mapped_column(Text, default="")
     maintenance_status: Mapped[Optional[str]] = mapped_column(String(20), default="pending")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class HomeownerPayment(Base):
@@ -70,5 +71,5 @@ class HomeownerPayment(Base):
     receipt_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)

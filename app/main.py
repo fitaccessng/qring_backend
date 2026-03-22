@@ -29,6 +29,7 @@ from app.services.estate_alert_service import (
     repair_estate_alert_schema,
     run_scheduled_payment_reminders,
 )
+from app.services.subscription_lifecycle_service import run_subscription_lifecycle_jobs
 
 settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
@@ -600,6 +601,10 @@ def _ensure_subscription_schema() -> None:
     Base.metadata.tables["subscription_plans"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["subscriptions"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["payment_purposes"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["subscription_invoices"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["payment_attempts"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["subscription_events"].create(bind=engine, checkfirst=True)
+    Base.metadata.tables["subscription_notifications"].create(bind=engine, checkfirst=True)
 
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
@@ -622,6 +627,20 @@ def _ensure_subscription_schema() -> None:
             columns = {col["name"] for col in inspector.get_columns("subscriptions")}
             _add_column_if_missing(conn, columns, "subscriptions", "payment_status", "VARCHAR(30) DEFAULT 'unpaid'")
             _add_column_if_missing(conn, columns, "subscriptions", "billing_cycle", "VARCHAR(20) DEFAULT 'monthly'")
+            _add_column_if_missing(conn, columns, "subscriptions", "tenant_type", "VARCHAR(20) DEFAULT 'homeowner'")
+            _add_column_if_missing(conn, columns, "subscriptions", "tenant_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "subscriptions", "billing_scope", "VARCHAR(20) DEFAULT 'homeowner'")
+            _add_column_if_missing(conn, columns, "subscriptions", "auto_renew", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, "subscriptions", "cancel_at_period_end", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, "subscriptions", "grace_days", "INTEGER DEFAULT 5")
+            _add_column_if_missing(conn, columns, "subscriptions", "grace_ends_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "subscriptions", "warning_phase", "VARCHAR(20)")
+            _add_column_if_missing(conn, columns, "subscriptions", "suspension_reason", "VARCHAR(50)")
+            _add_column_if_missing(conn, columns, "subscriptions", "last_payment_attempt_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "subscriptions", "last_successful_payment_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "subscriptions", "amount_due", "NUMERIC(12, 2) DEFAULT 0")
+            _add_column_if_missing(conn, columns, "subscriptions", "amount_paid", "NUMERIC(12, 2) DEFAULT 0")
+            _add_column_if_missing(conn, columns, "subscriptions", "timezone", "VARCHAR(64) DEFAULT 'Africa/Lagos'")
             _add_column_if_missing(conn, columns, "subscriptions", "trial_started_at", datetime_sql)
             _add_column_if_missing(conn, columns, "subscriptions", "trial_ends_at", datetime_sql)
 
@@ -637,6 +656,19 @@ async def _payment_reminder_loop() -> None:
         except Exception:
             logging.exception("Automatic payment reminder cycle failed.")
         await asyncio.sleep(6 * 60 * 60)
+
+
+async def _subscription_lifecycle_loop() -> None:
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                run_subscription_lifecycle_jobs(db)
+            finally:
+                db.close()
+        except Exception:
+            logging.exception("Automatic subscription lifecycle cycle failed.")
+        await asyncio.sleep(60 * 60)
 
 
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
@@ -683,6 +715,7 @@ async def on_startup():
     finally:
         db.close()
     asyncio.create_task(_payment_reminder_loop())
+    asyncio.create_task(_subscription_lifecycle_loop())
 
 
 app = socketio.ASGIApp(

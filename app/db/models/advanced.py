@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uni
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class VisitorSnapshotAudit(Base):
@@ -23,7 +24,7 @@ class VisitorSnapshotAudit(Base):
     media_path: Mapped[str] = mapped_column(Text, nullable=False)
     media_sha256: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     source: Mapped[str] = mapped_column(String(30), default="visitor_device")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class VisitorRecognitionProfile(Base):
@@ -39,8 +40,8 @@ class VisitorRecognitionProfile(Base):
     encrypted_template: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     visits_count: Mapped[int] = mapped_column(Integer, default=1)
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class SplitBill(Base):
@@ -54,8 +55,8 @@ class SplitBill(Base):
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
     status: Mapped[str] = mapped_column(String(30), default="open", index=True)
     due_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class SplitContribution(Base):
@@ -70,8 +71,8 @@ class SplitContribution(Base):
     pledged_amount_kobo: Mapped[int] = mapped_column(Integer, default=0)
     paid_amount_kobo: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class DigitalReceipt(Base):
@@ -84,7 +85,7 @@ class DigitalReceipt(Base):
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
     purpose: Mapped[str] = mapped_column(String(80), default="general")
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class ThreatAlertLog(Base):
@@ -101,7 +102,7 @@ class ThreatAlertLog(Base):
     snapshot_audit_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("visitor_snapshot_audits.id"), nullable=True, index=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class EmergencySignal(Base):
@@ -113,7 +114,7 @@ class EmergencySignal(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     notify_sms: Mapped[bool] = mapped_column(Boolean, default=False)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class CommunityPost(Base):
@@ -126,8 +127,8 @@ class CommunityPost(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     tag: Mapped[str] = mapped_column(String(40), default="notice")
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class CommunityPostRead(Base):
@@ -139,7 +140,7 @@ class CommunityPostRead(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     post_id: Mapped[str] = mapped_column(String(36), ForeignKey("community_posts.id"), index=True)
     reader_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
-    read_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class WeeklySummaryLog(Base):
@@ -152,7 +153,7 @@ class WeeklySummaryLog(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     week_start_iso: Mapped[str] = mapped_column(String(30), index=True)
     summary_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class PushSubscription(Base):
@@ -168,5 +169,5 @@ class PushSubscription(Base):
     token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     keys_json: Mapped[str] = mapped_column(Text, default="{}")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)

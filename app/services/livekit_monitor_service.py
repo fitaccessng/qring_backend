@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_now
 from app.db.models import CallSession
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,12 @@ def handle_livekit_webhook_event(db: Session, payload: dict[str, Any]) -> dict[s
 
     if event == "participant_joined" and call.status in {"pending", "ringing"}:
         call.status = "ongoing"
-        call.answered_at = call.answered_at or datetime.utcnow()
+        call.answered_at = call.answered_at or utc_now()
         db.commit()
         db.refresh(call)
     elif event == "room_finished":
         call.status = "missed" if call.status in {"pending", "ringing"} else "ended"
-        call.ended_at = call.ended_at or datetime.utcnow()
+        call.ended_at = call.ended_at or utc_now()
         call.ended_reason = call.ended_reason or ("room_finished_before_answer" if call.status == "missed" else "room_finished")
         db.commit()
         db.refresh(call)

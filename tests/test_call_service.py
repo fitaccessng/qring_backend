@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.db.models import Appointment, CallSession, DeviceSession, Door, Estate, Home, User, UserRole
+from app.services.payment_service import activate_subscription
 from app.services.call_service import (
     end_call_session,
     join_call_as_homeowner,
@@ -55,6 +56,7 @@ class CallServiceTests(unittest.TestCase):
         )
         self.db.add(self.homeowner)
         self.db.flush()
+        activate_subscription(self.db, user_id=self.homeowner.id, plan="home_pro", billing_cycle="monthly")
 
         self.appointment = Appointment(
             id=str(uuid.uuid4()),
@@ -64,8 +66,8 @@ class CallServiceTests(unittest.TestCase):
             visitor_name="Visitor A",
             visitor_contact="+12345678",
             purpose="Delivery",
-            starts_at=datetime.utcnow() - timedelta(minutes=5),
-            ends_at=datetime.utcnow() + timedelta(minutes=55),
+            starts_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            ends_at=datetime.now(timezone.utc) + timedelta(minutes=55),
             status="accepted",
         )
         self.db.add(self.appointment)

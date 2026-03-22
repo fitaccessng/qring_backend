@@ -5,6 +5,7 @@ import hmac
 import uuid
 import re
 from datetime import datetime, timedelta
+from decimal import Decimal
 from hashlib import sha512
 from typing import Any
 from urllib.parse import urlparse
@@ -14,10 +15,27 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import Notification, PaymentPurpose, ReferralReward, Subscription, SubscriptionPlan, User
+from app.core.time import ensure_utc, utc_now
+from app.db.models import (
+    Notification,
+    PaymentAttempt,
+    PaymentPurpose,
+    ReferralReward,
+    Subscription,
+    SubscriptionInvoice,
+    SubscriptionPlan,
+    User,
+)
+from app.services.subscription_policy_service import (
+    build_subscription_summary,
+    create_subscription_event,
+    serialize_subscription_metadata,
+    sync_subscription_lifecycle,
+)
 
 settings = get_settings()
 REFERRAL_REWARD_AMOUNT = 2000
+DEFAULT_GRACE_DAYS = 5
 
 DEFAULT_PLAN_CATALOG = [
     {
@@ -507,7 +525,7 @@ def _notify_trial_and_expiry_windows(db: Session, *, user_id: str, subscription:
         expiry_dt = datetime.fromisoformat(str(expires_at))
     except Exception:
         return
-    remaining_days = max((expiry_dt - datetime.utcnow()).days, 0)
+    remaining_days = max((expiry_dt - utc_now()).days, 0)
     if 0 < remaining_days <= 3:
         _insert_notification_if_missing(
             db,
@@ -532,18 +550,339 @@ def _default_plan_id_for_audience(audience: str) -> str:
     return "estate_starter" if audience == "estate" else "free"
 
 
+def _resolve_subscription_scope(user: User | None, audience: str) -> tuple[str, str, str]:
+    tenant_type = audience or "homeowner"
+    tenant_id = str(user.id) if user else ""
+    billing_scope = "estate" if tenant_type == "estate" else "homeowner"
+    return tenant_type, tenant_id, billing_scope
+
+
+def _apply_subscription_lifecycle(row: Subscription, *, now: datetime | None = None) -> Subscription:
+    current_time = now or utc_now()
+    lifecycle = sync_subscription_lifecycle(row, now=current_time, default_grace_days=DEFAULT_GRACE_DAYS)
+    if lifecycle["status_changed"]:
+        event_type = "subscription.entered_grace" if row.status == "grace_period" else "subscription.suspended" if row.status == "suspended" else "subscription.expiring_soon"
+        try:
+            from sqlalchemy.orm.session import object_session
+
+            session = object_session(row)
+            if session is not None and getattr(row, "id", None):
+                _log_subscription_event(
+                    session,
+                    subscription_id=row.id,
+                    event_type=event_type,
+                    old_status=lifecycle["previous_status"],
+                    new_status=row.status,
+                    metadata={"expiresAt": lifecycle["expires_at"].isoformat() if lifecycle["expires_at"] else None},
+                )
+        except Exception:
+            pass
+    return row
+
+
+def _merge_subscription_summary(base: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **base,
+        "status": summary.get("status", base.get("status")),
+        "daysToExpiry": summary.get("days_to_expiry"),
+        "days_to_expiry": summary.get("days_to_expiry"),
+        "graceDaysLeft": summary.get("grace_days_left", 0),
+        "grace_days_left": summary.get("grace_days_left", 0),
+        "isBillPayer": summary.get("is_bill_payer", False),
+        "is_bill_payer": summary.get("is_bill_payer", False),
+        "warningPhase": summary.get("warning_phase"),
+        "warning_phase": summary.get("warning_phase"),
+        "allowedActions": summary.get("allowed_actions", {}),
+        "allowed_actions": summary.get("allowed_actions", {}),
+        "currentPeriodEnd": summary.get("current_period_end"),
+        "current_period_end": summary.get("current_period_end"),
+        "graceEndsAt": summary.get("grace_ends_at"),
+        "grace_ends_at": summary.get("grace_ends_at"),
+        "billingScope": summary.get("billing_scope"),
+        "billing_scope": summary.get("billing_scope"),
+    }
+
+
+def _to_decimal_amount(amount: int | float | str | Decimal | None, *, kobo: bool = False) -> Decimal:
+    if amount in (None, ""):
+        value = Decimal("0")
+    else:
+        value = Decimal(str(amount))
+    return (value / Decimal("100")) if kobo else value
+
+
+def _serialize_json(value: dict[str, Any] | list[Any] | None) -> str:
+    if isinstance(value, list):
+        try:
+            return json.dumps(value)
+        except Exception:
+            return "[]"
+    return serialize_subscription_metadata(value)
+
+
+def _log_subscription_event(
+    db: Session,
+    *,
+    subscription_id: str,
+    event_type: str,
+    old_status: str | None = None,
+    new_status: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    db.add(
+        create_subscription_event(
+            subscription_id=subscription_id,
+            event_type=event_type,
+            old_status=old_status,
+            new_status=new_status,
+            metadata=metadata,
+        )
+    )
+
+
+def _ensure_subscription_billing_record(
+    db: Session,
+    *,
+    user_id: str,
+    plan_id: str,
+    billing_cycle: str,
+) -> Subscription:
+    row = get_user_subscription(db, user_id)
+    if row:
+        return row
+
+    user = db.query(User).filter(User.id == user_id).first()
+    plan_meta = get_plan_or_raise(db, plan_id, include_inactive=True)
+    tenant_type, tenant_id, billing_scope = _resolve_subscription_scope(user, str(plan_meta.get("audience") or "homeowner"))
+    current_time = utc_now()
+    row = Subscription(
+        user_id=user_id,
+        plan=plan_id,
+        status="payment_pending",
+        payment_status="pending",
+        billing_cycle=billing_cycle,
+        tenant_type=tenant_type,
+        tenant_id=tenant_id,
+        billing_scope=billing_scope,
+        auto_renew=True,
+        cancel_at_period_end=False,
+        grace_days=DEFAULT_GRACE_DAYS,
+        last_payment_attempt_at=current_time,
+        amount_due=plan_meta.get("amount") or 0,
+        amount_paid=0,
+        timezone="Africa/Lagos",
+        starts_at=current_time,
+    )
+    db.add(row)
+    db.flush()
+    _log_subscription_event(
+        db,
+        subscription_id=row.id,
+        event_type="subscription.payment_pending",
+        old_status=None,
+        new_status=row.status,
+        metadata={"planId": plan_id, "billingCycle": billing_cycle, "source": "paystack_initialize"},
+    )
+    return row
+
+
+def _find_invoice_by_reference(db: Session, reference: str | None) -> SubscriptionInvoice | None:
+    if not reference:
+        return None
+    return (
+        db.query(SubscriptionInvoice)
+        .filter(SubscriptionInvoice.provider == "paystack", SubscriptionInvoice.provider_reference == str(reference))
+        .order_by(SubscriptionInvoice.created_at.desc())
+        .first()
+    )
+
+
+def _create_or_update_invoice_and_attempt(
+    db: Session,
+    *,
+    subscription: Subscription,
+    reference: str,
+    amount_kobo: int,
+    currency: str,
+    billing_cycle: str,
+    callback_url: str | None,
+    payload: dict[str, Any],
+) -> tuple[SubscriptionInvoice, PaymentAttempt]:
+    invoice = _find_invoice_by_reference(db, reference)
+    if not invoice:
+        invoice = SubscriptionInvoice(
+            subscription_id=subscription.id,
+            provider="paystack",
+            provider_reference=reference,
+            amount_expected=_to_decimal_amount(amount_kobo, kobo=True),
+            amount_received=Decimal("0"),
+            currency=currency,
+            status="pending",
+            due_at=utc_now(),
+            raw_payload=_serialize_json(payload),
+        )
+        db.add(invoice)
+        db.flush()
+    else:
+        invoice.subscription_id = subscription.id
+        invoice.amount_expected = _to_decimal_amount(amount_kobo, kobo=True)
+        invoice.currency = currency
+        invoice.status = "pending"
+        invoice.raw_payload = _serialize_json(payload)
+
+    attempt = (
+        db.query(PaymentAttempt)
+        .filter(PaymentAttempt.provider == "paystack", PaymentAttempt.provider_reference == reference)
+        .order_by(PaymentAttempt.attempted_at.desc())
+        .first()
+    )
+    if not attempt:
+        attempt = PaymentAttempt(
+            subscription_id=subscription.id,
+            invoice_id=invoice.id,
+            provider="paystack",
+            provider_reference=reference,
+            status="pending",
+            amount=_to_decimal_amount(amount_kobo, kobo=True),
+            attempted_at=utc_now(),
+        )
+        db.add(attempt)
+    else:
+        attempt.subscription_id = subscription.id
+        attempt.invoice_id = invoice.id
+        attempt.status = "pending"
+        attempt.amount = _to_decimal_amount(amount_kobo, kobo=True)
+
+    subscription.last_payment_attempt_at = utc_now()
+    subscription.payment_status = "pending"
+    subscription.status = "payment_pending"
+    subscription.amount_due = _to_decimal_amount(amount_kobo, kobo=True)
+    subscription.warning_phase = None
+    _log_subscription_event(
+        db,
+        subscription_id=subscription.id,
+        event_type="subscription.payment_initialized",
+        old_status=None,
+        new_status=subscription.status,
+        metadata={"reference": reference, "billingCycle": billing_cycle, "callbackUrl": callback_url},
+    )
+    return invoice, attempt
+
+
+def _mark_payment_failure(
+    db: Session,
+    *,
+    reference: str | None,
+    reason: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    invoice = _find_invoice_by_reference(db, reference)
+    attempt = (
+        db.query(PaymentAttempt)
+        .filter(PaymentAttempt.provider == "paystack", PaymentAttempt.provider_reference == str(reference or ""))
+        .order_by(PaymentAttempt.attempted_at.desc())
+        .first()
+    )
+    if invoice:
+        invoice.status = "failed"
+        invoice.raw_payload = _serialize_json(payload)
+    if attempt:
+        attempt.status = "failed"
+        attempt.failure_reason = reason
+    if invoice:
+        _log_subscription_event(
+            db,
+            subscription_id=invoice.subscription_id,
+            event_type="subscription.payment_failed",
+            metadata={"reference": reference, "reason": reason},
+        )
+    db.commit()
+
+
+def _finalize_successful_payment(
+    db: Session,
+    *,
+    user_id: str,
+    plan_id: str,
+    billing_cycle: str,
+    reference: str,
+    amount_kobo: int,
+    currency: str,
+    payload: dict[str, Any],
+    source: str,
+) -> tuple[Subscription, dict[str, Any]]:
+    invoice = _find_invoice_by_reference(db, reference)
+    if invoice and invoice.status == "paid":
+        existing_subscription = (
+            db.query(Subscription)
+            .filter(Subscription.id == invoice.subscription_id)
+            .first()
+        )
+        if existing_subscription:
+            plan = get_plan_or_raise(db, plan_id)
+            return existing_subscription, plan
+
+    previous_subscription = get_user_subscription(db, user_id)
+    previous_status = previous_subscription.status if previous_subscription else None
+    row = activate_subscription(db, user_id=user_id, plan=plan_id, billing_cycle=billing_cycle, payment_status="paid")
+
+    if invoice:
+        invoice.subscription_id = row.id
+        invoice.amount_received = _to_decimal_amount(amount_kobo, kobo=True)
+        invoice.currency = currency
+        invoice.status = "paid"
+        invoice.paid_at = utc_now()
+        invoice.raw_payload = _serialize_json(payload)
+
+    attempt = (
+        db.query(PaymentAttempt)
+        .filter(PaymentAttempt.provider == "paystack", PaymentAttempt.provider_reference == reference)
+        .order_by(PaymentAttempt.attempted_at.desc())
+        .first()
+    )
+    if attempt:
+        attempt.subscription_id = row.id
+        attempt.invoice_id = invoice.id if invoice else attempt.invoice_id
+        attempt.status = "confirmed"
+        attempt.confirmed_at = utc_now()
+        attempt.failure_code = None
+        attempt.failure_reason = None
+
+    row.amount_paid = _to_decimal_amount(amount_kobo, kobo=True)
+    row.amount_due = Decimal("0")
+    row.last_successful_payment_at = utc_now()
+    _log_subscription_event(
+        db,
+        subscription_id=row.id,
+        event_type="subscription.reactivated" if previous_status in {"grace_period", "suspended"} else "subscription.activated",
+        old_status=previous_status,
+        new_status=row.status,
+        metadata={"reference": reference, "source": source, "planId": plan_id},
+    )
+    db.commit()
+    db.refresh(row)
+    plan = get_plan_or_raise(db, plan_id)
+    return row, plan
+
+
 def _create_default_estate_trial(db: Session, user_id: str) -> Subscription:
-    now = datetime.utcnow()
+    now = utc_now()
     row = Subscription(
         user_id=user_id,
         plan="estate_starter",
         status="active",
         payment_status="trialing",
         billing_cycle="monthly",
+        tenant_type="estate",
+        tenant_id=user_id,
+        billing_scope="estate",
+        grace_days=DEFAULT_GRACE_DAYS,
+        grace_ends_at=now + timedelta(days=30 + DEFAULT_GRACE_DAYS),
         starts_at=now,
         ends_at=now + timedelta(days=30),
         trial_started_at=now,
         trial_ends_at=now + timedelta(days=30),
+        timezone="Africa/Lagos",
     )
     db.add(row)
     db.commit()
@@ -565,20 +904,36 @@ def activate_subscription(
     if plan_meta.get("manualActivationRequired"):
         raise AppException("This plan requires manual activation by an administrator.", status_code=400)
 
-    now = datetime.utcnow()
+    now = utc_now()
+    tenant_type, tenant_id, billing_scope = _resolve_subscription_scope(user, str(plan_meta.get("audience") or "homeowner"))
+    replaced_statuses: list[str] = []
     for active_row in db.query(Subscription).filter(Subscription.user_id == user_id, Subscription.status == "active").all():
+        replaced_statuses.append(active_row.status)
         active_row.status = "replaced"
         active_row.ends_at = active_row.ends_at or now
 
     duration_days = _resolve_duration_days(plan_meta, billing_cycle)
     ends_at = now + timedelta(days=duration_days) if duration_days else None
     trialing = int(plan_meta.get("trialDays") or 0) > 0 and int(plan_meta.get("amount") or 0) == 0
+    payment_state = payment_status or ("trialing" if trialing else ("active" if int(plan_meta.get("amount") or 0) > 0 else "free"))
     row = Subscription(
         user_id=user_id,
         plan=plan,
         status="active",
-        payment_status=payment_status or ("trialing" if trialing else ("active" if int(plan_meta.get("amount") or 0) > 0 else "free")),
+        payment_status=payment_state,
         billing_cycle=(billing_cycle or "monthly").strip().lower() or "monthly",
+        tenant_type=tenant_type,
+        tenant_id=tenant_id,
+        billing_scope=billing_scope,
+        auto_renew=True,
+        cancel_at_period_end=False,
+        grace_days=DEFAULT_GRACE_DAYS,
+        grace_ends_at=ends_at + timedelta(days=DEFAULT_GRACE_DAYS) if ends_at else None,
+        last_payment_attempt_at=now if payment_state in {"pending", "paid", "active"} else None,
+        last_successful_payment_at=now if payment_state in {"paid", "active", "free", "trialing"} else None,
+        amount_due=0,
+        amount_paid=plan_meta.get("amount") if payment_state in {"paid", "active"} else 0,
+        timezone="Africa/Lagos",
         starts_at=now,
         ends_at=ends_at,
         trial_started_at=now if trialing else None,
@@ -586,6 +941,14 @@ def activate_subscription(
     )
     db.add(row)
     db.flush()
+    _log_subscription_event(
+        db,
+        subscription_id=row.id,
+        event_type="subscription.activated",
+        old_status=replaced_statuses[-1] if replaced_statuses else None,
+        new_status=row.status,
+        metadata={"planId": plan, "billingCycle": row.billing_cycle, "paymentStatus": payment_state},
+    )
     _award_referral_reward_if_eligible(db=db, subscribed_user_id=user_id, plan_meta=plan_meta)
     db.commit()
     db.refresh(row)
@@ -775,11 +1138,42 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
 
     if not row:
         free_plan = get_plan_or_raise(db, _default_plan_id_for_audience(audience))
+        summary = {
+            "status": "active",
+            "days_to_expiry": None,
+            "grace_days_left": 0,
+            "is_bill_payer": audience in {"homeowner", "estate"},
+            "warning_phase": None,
+            "allowed_actions": {
+                "view_dashboard": True,
+                "renew_subscription": True,
+                "view_logs": True,
+                "view_messages": True,
+                "respond_to_visitor": True,
+                "scan_qr": True,
+                "approve_entry": True,
+                "deny_entry": True,
+                "start_call": True,
+                "send_message": True,
+                "create_qr": True,
+                "create_visitor_request": True,
+                "add_home": True,
+                "add_user": True,
+                "edit_settings": True,
+                "edit_automation": True,
+                "send_broadcast": True,
+                "export_reports": True,
+                "manage_billing": audience in {"homeowner", "estate"},
+            },
+            "current_period_end": None,
+            "grace_ends_at": None,
+            "billing_scope": "estate" if audience == "estate" else "homeowner",
+        }
         result = {
             "id": None,
             "plan": free_plan["id"],
             "planName": free_plan["name"],
-            "status": "active",
+            "status": summary["status"],
             "paymentStatus": "free",
             "audience": free_plan["audience"],
             "startsAt": None,
@@ -801,7 +1195,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "restrictions": free_plan["restrictions"],
             "billingCycle": "monthly",
         }
-        return result
+        return _merge_subscription_summary(result, summary)
 
     try:
         plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True)
@@ -810,25 +1204,27 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         row.plan = plan_meta["id"]
         db.commit()
 
-    now = datetime.utcnow()
-    expires_at = row.ends_at or row.trial_ends_at
-    if expires_at and row.status == "active" and now > expires_at:
-        row.status = "expired"
-        row.ends_at = row.ends_at or expires_at
-        if row.payment_status in {"trialing", "active"} and plan_meta.get("amount", 0) <= 0:
-            row.payment_status = "expired"
-        db.commit()
-
-    expires_at = row.ends_at or row.trial_ends_at
+    now = utc_now()
+    _apply_subscription_lifecycle(row, now=now)
+    db.commit()
+    db.refresh(row)
+    expires_at = ensure_utc(row.ends_at or row.trial_ends_at)
     trial_days_remaining = 0
     if expires_at:
         trial_days_remaining = max((expires_at - now).days, 0)
+
+    summary = build_subscription_summary(
+        row,
+        actor_role=audience,
+        is_bill_payer=audience in {"homeowner", "estate"},
+        now=now,
+    )
 
     result = {
         "id": row.id,
         "plan": plan_meta["id"],
         "planName": plan_meta["name"],
-        "status": row.status,
+        "status": summary["status"],
         "paymentStatus": row.payment_status or ("trialing" if plan_meta.get("trialDays") else "active"),
         "audience": plan_meta["audience"],
         "startsAt": row.starts_at.isoformat() if row.starts_at else None,
@@ -850,22 +1246,35 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         "restrictions": plan_meta["restrictions"],
         "billingCycle": row.billing_cycle or "monthly",
     }
+    result = _merge_subscription_summary(result, summary)
     _notify_trial_and_expiry_windows(db, user_id=user_id, subscription=result)
     return result
 
 
 def is_paid_subscription_expired(db: Session, user_id: str) -> bool:
     subscription = get_effective_subscription(db, user_id)
-    if subscription.get("plan") in {"free", "estate_starter"} and subscription.get("status") == "active":
+    if subscription.get("plan") in {"free", "estate_starter"} and subscription.get("status") in {"active", "expiring_soon", "trial"}:
         return False
-    return subscription.get("status") != "active"
+    return subscription.get("status") == "suspended"
 
 
 def require_subscription_feature(db: Session, user_id: str, feature: str, user_role: str | None = None) -> dict[str, Any]:
     subscription = get_effective_subscription(db, user_id, user_role=user_role)
-    if subscription.get("status") != "active":
-        raise AppException("Your subscription is inactive or expired. Upgrade to continue.", status_code=402)
+    if subscription.get("status") == "suspended":
+        raise AppException(
+            "Your subscription has been paused. Renew now to restore visitor operations.",
+            status_code=403,
+            code="SUBSCRIPTION_ACTION_BLOCKED",
+            extra={"subscription": subscription, "renew_url": "/billing/paywall"},
+        )
     feature_key = str(feature or "").strip()
+    if subscription.get("allowed_actions") and subscription.get("allowed_actions", {}).get(feature_key) is False:
+        raise AppException(
+            "This action is temporarily limited by your current subscription state.",
+            status_code=403,
+            code="SUBSCRIPTION_ACTION_BLOCKED",
+            extra={"subscription": subscription, "renew_url": "/billing/paywall"},
+        )
     if subscription.get("featureFlags", {}).get(feature_key):
         return subscription
     feature_name = FEATURE_LABELS.get(feature_key, feature_key.replace("_", " "))
@@ -922,6 +1331,12 @@ def initialize_paystack_transaction_db(
         )
 
     reference = f"qring-{uuid.uuid4().hex[:18]}"
+    subscription_record = _ensure_subscription_billing_record(
+        db,
+        user_id=user_id,
+        plan_id=plan_id,
+        billing_cycle=cycle,
+    )
     payload = {
         "email": email,
         "amount": _compute_expected_amount_kobo(plan["amount"], cycle),
@@ -934,6 +1349,17 @@ def initialize_paystack_transaction_db(
             "source": "qring-billing",
         },
     }
+    _create_or_update_invoice_and_attempt(
+        db,
+        subscription=subscription_record,
+        reference=reference,
+        amount_kobo=int(payload["amount"]),
+        currency=(plan.get("currency") or "NGN").upper(),
+        billing_cycle=cycle,
+        callback_url=callback_url,
+        payload=payload,
+    )
+    db.commit()
 
     normalized_callback = _normalize_url(callback_url)
     resolved_callback = normalized_callback or f"{frontend_base_url}/billing/callback"
@@ -963,6 +1389,12 @@ def initialize_paystack_transaction_db(
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         error_code, error_message = _extract_paystack_error(detail)
+        _mark_payment_failure(
+            db,
+            reference=reference,
+            reason=f"paystack initialize failed: {error_message or detail}",
+            payload={"detail": detail, "code": error_code},
+        )
         if error_code == "1010":
             raise AppException(
                 f"Paystack blocked initialization (1010: {error_message or 'operation blocked'}). "
@@ -973,14 +1405,22 @@ def initialize_paystack_transaction_db(
         raise AppException(f"Paystack initialize failed: {error_message or detail}", status_code=502)
     except error.URLError as exc:
         reason = getattr(exc, "reason", None)
+        _mark_payment_failure(
+            db,
+            reference=reference,
+            reason=f"paystack initialize network error ({reason or 'unreachable'})",
+            payload={"reason": str(reason or "unreachable")},
+        )
         raise AppException(
             f"Paystack initialize failed: upstream network error ({reason or 'unreachable'}).",
             status_code=502,
         )
     except Exception:
+        _mark_payment_failure(db, reference=reference, reason="paystack initialize failed", payload={})
         raise AppException("Paystack initialize failed", status_code=502)
 
     if not data.get("status") or not data.get("data", {}).get("authorization_url"):
+        _mark_payment_failure(db, reference=reference, reason="paystack initialize returned no authorization url", payload=data)
         raise AppException("Unable to initialize payment", status_code=502)
     return data["data"]
 
@@ -1005,21 +1445,36 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
             data = json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
+        _mark_payment_failure(db, reference=reference, reason=f"paystack verify failed: {detail}", payload={"detail": detail})
         raise AppException(f"Paystack verify failed: {detail}", status_code=502)
     except error.URLError as exc:
         reason = getattr(exc, "reason", None)
+        _mark_payment_failure(
+            db,
+            reference=reference,
+            reason=f"paystack verify network error ({reason or 'unreachable'})",
+            payload={"reason": str(reason or "unreachable")},
+        )
         raise AppException(
             f"Paystack verify failed: upstream network error ({reason or 'unreachable'}).",
             status_code=502,
         )
     except Exception:
+        _mark_payment_failure(db, reference=reference, reason="paystack verify failed", payload={})
         raise AppException("Paystack verify failed", status_code=502)
 
     if not data.get("status"):
+        _mark_payment_failure(db, reference=reference, reason="unable to verify payment", payload=data)
         raise AppException("Unable to verify payment", status_code=400)
 
     payment = data.get("data", {})
     if payment.get("status") != "success":
+        _mark_payment_failure(
+            db,
+            reference=reference,
+            reason=f"payment not successful ({payment.get('status') or 'unknown'})",
+            payload=payment,
+        )
         raise AppException("Payment not successful", status_code=400)
 
     metadata = payment.get("metadata") or {}
@@ -1034,12 +1489,28 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
     paid_currency = str(payment.get("currency") or "").upper()
     expected_currency = (plan.get("currency") or "NGN").upper()
     if paid_amount_kobo != expected_amount_kobo or paid_currency != expected_currency:
+        _mark_payment_failure(
+            db,
+            reference=reference,
+            reason="payment amount or currency mismatch",
+            payload=payment,
+        )
         raise AppException(
             "Payment amount or currency does not match selected plan",
             status_code=400,
         )
 
-    row = activate_subscription(db, user_id=user_id, plan=plan["id"], billing_cycle=billing_cycle, payment_status="paid")
+    row, plan = _finalize_successful_payment(
+        db,
+        user_id=user_id,
+        plan_id=plan["id"],
+        billing_cycle=billing_cycle,
+        reference=reference,
+        amount_kobo=paid_amount_kobo,
+        currency=paid_currency,
+        payload=payment,
+        source="paystack_verify",
+    )
     try:
         from app.services.advanced_service import create_digital_receipt
 
@@ -1115,15 +1586,28 @@ def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None)
     user_id = metadata.get("user_id")
     plan_id = metadata.get("plan")
     payment_status = data.get("status")
-    if payment_status != "success" or not user_id or not plan_id:
+    reference = str(data.get("reference") or "")
+    if event_name == "charge.failed" or payment_status != "success":
+        _mark_payment_failure(
+            db,
+            reference=reference,
+            reason=f"webhook reported {payment_status or event_name}",
+            payload=data,
+        )
+        return {"status": "ignored"}
+    if not user_id or not plan_id:
         return {"status": "ignored"}
 
-    activate_subscription(
+    row, _ = _finalize_successful_payment(
         db=db,
         user_id=user_id,
-        plan=plan_id,
+        plan_id=plan_id,
         billing_cycle=str(metadata.get("billing_cycle") or "monthly"),
-        payment_status="paid",
+        reference=reference or f"webhook-{uuid.uuid4().hex[:10]}",
+        amount_kobo=int(data.get("amount") or 0),
+        currency=str(data.get("currency") or "NGN").upper(),
+        payload=data,
+        source="paystack_webhook",
     )
     try:
         from app.services.advanced_service import create_digital_receipt
@@ -1131,7 +1615,7 @@ def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None)
         create_digital_receipt(
             db,
             owner_user_id=user_id,
-            reference=str(data.get("reference") or f"webhook-{uuid.uuid4().hex[:10]}"),
+            reference=reference or f"webhook-{uuid.uuid4().hex[:10]}",
             amount_kobo=int(data.get("amount") or 0),
             currency=str(data.get("currency") or "NGN").upper(),
             purpose="subscription",
@@ -1139,4 +1623,4 @@ def handle_paystack_webhook(db: Session, raw_body: bytes, signature: str | None)
         )
     except Exception:
         pass
-    return {"status": "processed", "plan": plan_id}
+    return {"status": "processed", "plan": plan_id, "subscriptionId": row.id}

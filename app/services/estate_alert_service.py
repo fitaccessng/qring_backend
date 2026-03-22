@@ -14,6 +14,7 @@ from anyio import from_thread
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 from app.db.models import (
     Estate,
     EstateAlert,
@@ -234,6 +235,34 @@ def _emit_alert_event(*, event: str, payload: dict, estate_id: str, homeowner_id
             room=room,
             namespace=namespace,
         )
+
+
+def _emit_estate_room_event(*, event: str, payload: dict, estate_id: str) -> None:
+    namespace = settings.DASHBOARD_NAMESPACE
+    room = f"estate:{estate_id}:alerts"
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            from_thread.run(
+                sio.emit,
+                event,
+                payload,
+                room=room,
+                namespace=namespace,
+            )
+        except Exception:
+            return
+        return
+
+    sio.start_background_task(
+        sio.emit,
+        event,
+        payload,
+        room=room,
+        namespace=namespace,
+    )
 
 
 def _resolve_estate_or_404(db: Session, estate_id: str) -> Estate:
@@ -1096,7 +1125,7 @@ def initialize_alert_payment(
         payment.payment_provider_reference = reference
         payment.payment_note = "Wallet payment completed"
         payment.amount_paid = amount_due
-        payment.paid_at = datetime.utcnow()
+        payment.paid_at = utc_now()
         payment.receipt_url = _build_receipt_url(reference, None)
         db.commit()
         db.refresh(payment)
@@ -1181,9 +1210,9 @@ def apply_alert_payment_webhook(
             try:
                 payment.paid_at = datetime.fromisoformat(paid_at_iso.replace("Z", "+00:00"))
             except Exception:
-                payment.paid_at = datetime.utcnow()
+                payment.paid_at = utc_now()
         else:
-            payment.paid_at = datetime.utcnow()
+            payment.paid_at = utc_now()
     elif normalized_status in {"failed", "abandoned"}:
         payment.status = HomeownerPaymentStatus.failed
         payment.payment_provider_reference = reference or payment.payment_provider_reference
@@ -1233,12 +1262,10 @@ def apply_alert_payment_webhook(
         "receiptUrl": payment.receipt_url,
         "paidAt": payment.paid_at.isoformat() if payment.paid_at else None,
     }
-    sio.start_background_task(
-        sio.emit,
-        "PAYMENT_STATUS_UPDATED",
-        payload,
-        room=f"estate:{alert.estate_id}:alerts",
-        namespace=settings.DASHBOARD_NAMESPACE,
+    _emit_estate_room_event(
+        event="PAYMENT_STATUS_UPDATED",
+        payload=payload,
+        estate_id=alert.estate_id,
     )
     return {"status": "processed", **payload}
 
@@ -1331,7 +1358,7 @@ def send_payment_reminders(db: Session, *, alert_id: str, estate_admin_id: str) 
         if status == "paid":
             continue
         if payment:
-            payment.reminder_sent_at = datetime.utcnow()
+            payment.reminder_sent_at = utc_now()
         db.add(
             Notification(
                 user_id=homeowner_id,
@@ -1397,7 +1424,7 @@ def verify_estate_alert_payment(
     if not payment.receipt_url:
         payment.receipt_url = _build_receipt_url(payment.payment_provider_reference or "", None)
     payment.amount_paid = amount_due
-    payment.paid_at = datetime.utcnow()
+    payment.paid_at = utc_now()
     payment.payment_note = "Verified by estate admin"
 
     db.commit()
@@ -1474,7 +1501,7 @@ def attach_alert_payment_proof(
 
 
 def run_scheduled_payment_reminders(db: Session) -> dict:
-    now = datetime.utcnow()
+    now = utc_now()
     alerts = (
         db.query(EstateAlert)
         .filter(EstateAlert.alert_type == EstateAlertType.payment_request)

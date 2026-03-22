@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -75,7 +75,7 @@ class AdvancedServiceTests(unittest.TestCase):
             homeowner_id=self.homeowner.id,
             visitor_label="Alice",
             status="pending",
-            started_at=datetime.utcnow() - timedelta(minutes=10),
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=10),
         )
         second = VisitorSession(
             qr_id="qr-2",
@@ -84,7 +84,7 @@ class AdvancedServiceTests(unittest.TestCase):
             homeowner_id=self.homeowner.id,
             visitor_label="Bob",
             status="approved",
-            started_at=datetime.utcnow() - timedelta(minutes=2),
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=2),
         )
         self.db.add_all([first, second])
         self.db.commit()
@@ -126,7 +126,7 @@ class AdvancedServiceTests(unittest.TestCase):
             homeowner_id=self.homeowner.id,
             visitor_label="Chris",
             status="pending",
-            started_at=datetime.utcnow() - timedelta(days=1),
+            started_at=datetime.now(timezone.utc) - timedelta(days=1),
         )
         self.db.add(session)
         self.db.commit()
@@ -141,7 +141,7 @@ class AdvancedServiceTests(unittest.TestCase):
             payload={"test": True},
         )
 
-        week_start = (datetime.utcnow() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         summary = generate_weekly_summary(self.db, user_id=self.homeowner.id, week_start_iso=week_start.isoformat())
         self.assertGreaterEqual(summary["visitors"], 1)
         self.assertGreaterEqual(summary["paymentsMade"], 1)

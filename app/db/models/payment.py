@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class SubscriptionPlan(Base):
@@ -29,11 +30,11 @@ class SubscriptionPlan(Base):
     enabled_features: Mapped[str] = mapped_column(Text, default="[]")
     restrictions: Mapped[str] = mapped_column(Text, default="[]")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=utc_now,
+        onupdate=utc_now,
     )
 
 
@@ -44,7 +45,7 @@ class PaymentPurpose(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     account_info: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class Subscription(Base):
@@ -56,6 +57,20 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(30), default="inactive")
     payment_status: Mapped[str] = mapped_column(String(30), default="unpaid")
     billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly")
+    tenant_type: Mapped[str] = mapped_column(String(20), default="homeowner")
+    tenant_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    billing_scope: Mapped[str] = mapped_column(String(20), default="homeowner")
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    grace_days: Mapped[int] = mapped_column(Integer, default=5)
+    grace_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    warning_phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    suspension_reason: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    last_payment_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_successful_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    amount_due: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    amount_paid: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    timezone: Mapped[str] = mapped_column(String(64), default="Africa/Lagos")
     starts_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     trial_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -69,11 +84,11 @@ class HomeownerWallet(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, unique=True, index=True)
     balance: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=utc_now,
+        onupdate=utc_now,
     )
 
 
@@ -87,4 +102,4 @@ class HomeownerWalletTransaction(Base):
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
     type: Mapped[str] = mapped_column(String(40), default="fund")
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)

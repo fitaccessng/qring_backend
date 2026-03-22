@@ -9,6 +9,7 @@ from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, 
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class UserRole(str, Enum):
@@ -34,7 +35,7 @@ class User(Base):
     referral_code: Mapped[str] = mapped_column(String(24), unique=True, nullable=False, index=True, default=lambda: f"QR{uuid.uuid4().hex[:8].upper()}")
     referred_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     referral_earnings: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
     device_sessions = relationship("DeviceSession", back_populates="user", cascade="all, delete-orphan")

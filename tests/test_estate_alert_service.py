@@ -5,13 +5,16 @@ import hmac
 import json
 import unittest
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
+from app.db.models.appointment import Appointment  # noqa: F401
+from app.db.models.device_session import DeviceSession  # noqa: F401
+from app.db.models.estate import Door  # noqa: F401
 from app.db.models import Estate, Home, User, UserRole
 from app.services.estate_alert_service import (
     apply_alert_payment_webhook,
@@ -62,11 +65,11 @@ class EstateAlertsServiceTests(unittest.TestCase):
                 description="March levy",
                 alert_type="payment_request",
                 amount_due=None,
-                due_date=datetime.utcnow(),
+                due_date=datetime.now(timezone.utc),
             )
 
     def test_alert_creation_emits_realtime_event(self):
-        with patch("app.services.estate_alert_service.sio.start_background_task") as emit_mock:
+        with patch("app.services.estate_alert_service.from_thread.run") as emit_mock:
             created = create_estate_alert(
                 db=self.db,
                 estate_id=self.estate.id,
@@ -89,7 +92,7 @@ class EstateAlertsServiceTests(unittest.TestCase):
             description="March levy",
             alert_type="payment_request",
             amount_due=5000,
-            due_date=datetime.utcnow(),
+            due_date=datetime.now(timezone.utc),
         )
 
         data = apply_alert_payment_webhook(
@@ -102,10 +105,10 @@ class EstateAlertsServiceTests(unittest.TestCase):
             reference="qring-alert-ref-1",
             status="success",
             amount_kobo=500000,
-            paid_at_iso=datetime.utcnow().isoformat(),
+            paid_at_iso=datetime.now(timezone.utc).isoformat(),
             paystack_transaction_id=1234567,
         )
-        self.assertEqual(data["status"], "processed")
+        self.assertEqual(data["status"], "paid")
         self.assertIn("transactions/1234567", data["receiptUrl"])
 
     def test_payment_webhook_routes_estate_alert_payments(self):
@@ -117,7 +120,7 @@ class EstateAlertsServiceTests(unittest.TestCase):
             description="Monthly payment",
             alert_type="payment_request",
             amount_due=2500,
-            due_date=datetime.utcnow(),
+            due_date=datetime.now(timezone.utc),
         )
         body = {
             "event": "charge.success",
@@ -137,7 +140,7 @@ class EstateAlertsServiceTests(unittest.TestCase):
         with patch("app.services.payment_service.settings.PAYSTACK_SECRET_KEY", "sk_test_sample"):
             signature = hmac.new(b"sk_test_sample", raw_body, hashlib.sha512).hexdigest()
             result = handle_paystack_webhook(self.db, raw_body=raw_body, signature=signature)
-            self.assertEqual(result["status"], "processed")
+            self.assertEqual(result["status"], "paid")
             self.assertEqual(result["homeownerId"], self.homeowner.id)
 
 

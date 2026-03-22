@@ -13,9 +13,11 @@ except ModuleNotFoundError:  # pragma: no cover - local test fallback
 
 
 class AppException(Exception):
-    def __init__(self, message: str, status_code: int = 400):
+    def __init__(self, message: str, status_code: int = 400, code: str | None = None, extra: dict | None = None):
         self.message = message
         self.status_code = status_code
+        self.code = code
+        self.extra = extra or {}
         super().__init__(message)
 
 
@@ -24,7 +26,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _app_exception_handler(_: Request, exc: AppException):
         return JSONResponse(
             status_code=exc.status_code,
-            content={"message": exc.message},
+            content={"message": exc.message, **({"code": exc.code} if exc.code else {}), **exc.extra},
         )
 
     @app.exception_handler(Exception)

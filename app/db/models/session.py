@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class VisitorSession(Base):
@@ -55,7 +56,7 @@ class VisitorSession(Base):
     homeowner_decision_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     gate_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     state_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
@@ -70,7 +71,7 @@ class Message(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     read_by_homeowner_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     read_by_security_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class Notification(Base):
@@ -81,7 +82,7 @@ class Notification(Base):
     kind: Mapped[str] = mapped_column(String(50), nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False)
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class CallSession(Base):
@@ -106,5 +107,5 @@ class CallSession(Base):
     initiated_by_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     ended_reason: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)

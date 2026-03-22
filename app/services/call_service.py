@@ -7,6 +7,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
+from app.core.time import ensure_utc, utc_now
 from app.db.models import Appointment, CallSession, User, VisitorSession
 try:
     from app.services.payment_service import require_subscription_feature
@@ -36,7 +37,8 @@ logger = logging.getLogger(__name__)
 def _validate_appointment_for_call(appointment: Appointment) -> None:
     if appointment.status in {"cancelled", "completed", "closed", "ended", "rejected"}:
         raise AppException("Appointment is not valid for calling.", status_code=409)
-    if appointment.ends_at and appointment.ends_at < datetime.utcnow():
+    appointment_end = ensure_utc(appointment.ends_at)
+    if appointment_end and appointment_end < utc_now():
         raise AppException("Appointment has expired.", status_code=409)
 
 
@@ -194,7 +196,7 @@ def _get_visitor_display_name(db: Session, call_session: CallSession) -> str:
 def _mark_call_ongoing(db: Session, row: CallSession) -> CallSession:
     if row.status in CALL_SETUP_STATUSES:
         row.status = "ongoing"
-        row.answered_at = row.answered_at or datetime.utcnow()
+        row.answered_at = row.answered_at or utc_now()
         db.commit()
         db.refresh(row)
     return row
@@ -313,7 +315,7 @@ async def end_call_session(db: Session, *, call_session_id: str, reason: str | N
 
     if row.status not in CALL_TERMINAL_STATUSES:
         row.status = "missed" if row.status in CALL_SETUP_STATUSES else "ended"
-        row.ended_at = row.ended_at or datetime.utcnow()
+        row.ended_at = row.ended_at or utc_now()
         row.ended_reason = str(reason or "").strip() or ("unanswered" if row.status == "missed" else "completed")
         db.commit()
         db.refresh(row)

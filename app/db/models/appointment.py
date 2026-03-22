@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class Appointment(Base):
@@ -45,5 +46,5 @@ class Appointment(Base):
     arrival_lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     arrival_battery_pct: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)

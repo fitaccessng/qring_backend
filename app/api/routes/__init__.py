@@ -16,6 +16,7 @@ from app.api.routes import (
     media,
     notifications,
     payment,
+    subscription_policy,
     qr,
     security,
     visitor,
@@ -34,6 +35,7 @@ api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(estate.router, prefix="/estate", tags=["estate"])
 api_router.include_router(alert.router, prefix="/alert", tags=["alert"])
 api_router.include_router(payment.router, prefix="/payment", tags=["payment"])
+api_router.include_router(subscription_policy.router, prefix="/payment", tags=["payment"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(ws_gateway.router, tags=["websocket"])
 api_router.include_router(calls.router, prefix="/calls", tags=["calls"])

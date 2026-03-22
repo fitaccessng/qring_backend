@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 from app.db.models import (
     Appointment,
     CommunityPost,
@@ -142,7 +143,7 @@ def _summary_window(week_start_iso: str | None = None) -> tuple[datetime, dateti
         start = datetime.fromisoformat(week_start_iso.replace("Z", "+00:00")).replace(tzinfo=None)
         end = start + timedelta(days=7)
     else:
-        now = datetime.utcnow()
+        now = utc_now()
         start = now - timedelta(days=7)
         end = now
     return start, end
@@ -363,7 +364,7 @@ def register_or_recognize_visitor(
     returning = bool(row)
     if row:
         row.visits_count = int(row.visits_count or 0) + 1
-        row.last_seen_at = datetime.utcnow()
+        row.last_seen_at = utc_now()
         if display_name:
             row.display_name = display_name.strip()
         if encrypted_template:
@@ -375,7 +376,7 @@ def register_or_recognize_visitor(
             visitor_key_hash=key_hash,
             encrypted_template=encrypted_template,
             visits_count=1,
-            last_seen_at=datetime.utcnow(),
+            last_seen_at=utc_now(),
         )
         db.add(row)
     db.commit()

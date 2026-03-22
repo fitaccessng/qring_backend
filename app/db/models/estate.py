@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.core.time import utc_now
 
 
 class Estate(Base):
@@ -25,7 +26,7 @@ class Estate(Base):
     suspicious_visit_window_minutes: Mapped[int] = mapped_column(Integer, default=20)
     suspicious_house_threshold: Mapped[int] = mapped_column(Integer, default=3)
     suspicious_rejection_threshold: Mapped[int] = mapped_column(Integer, default=2)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     homes = relationship("Home", back_populates="estate", cascade="all, delete-orphan")
 
@@ -37,7 +38,7 @@ class Home(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True)
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     estate = relationship("Estate", back_populates="homes")
     doors = relationship("Door", back_populates="home", cascade="all, delete-orphan")
