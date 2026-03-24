@@ -18,6 +18,7 @@ from app.api.routes import (
     payment,
     subscription_policy,
     qr,
+    safety,
     security,
     visitor,
     ws_gateway,
@@ -29,6 +30,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(homeowner.router, prefix="/homeowner", tags=["homeowner"])
 api_router.include_router(qr.router, prefix="/qr", tags=["qr"])
+api_router.include_router(safety.router, prefix="/safety", tags=["safety"])
 api_router.include_router(security.router, prefix="/security", tags=["security"])
 api_router.include_router(visitor.router, prefix="/visitor", tags=["visitor"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])

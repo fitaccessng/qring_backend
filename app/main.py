@@ -29,6 +29,7 @@ from app.services.estate_alert_service import (
     repair_estate_alert_schema,
     run_scheduled_payment_reminders,
 )
+from app.services.safety_service import create_safety_tables
 from app.services.subscription_lifecycle_service import run_subscription_lifecycle_jobs
 
 settings = get_settings()
@@ -703,6 +704,7 @@ async def on_startup():
     _ensure_homeowner_payment_schema()
     _ensure_wallet_schema()
     _ensure_runtime_compatibility_schema()
+    create_safety_tables(engine)
     db = SessionLocal()
     try:
         if settings.ENVIRONMENT.lower() == "development":
