@@ -7,27 +7,46 @@ from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.security import decode_token
-from app.db.models import Message, VisitorSession
+from app.db.models import Message, User, UserRole, VisitorSession, Estate
 from app.db.session import SessionLocal
 from app.socket.manager import socket_state
+from app.services.visitor_session_auth import require_visitor_session_access
 
 settings = get_settings()
 session_members: dict[str, set[str]] = defaultdict(set)
+sid_allowed_sessions: dict[str, set[str]] = defaultdict(set)
 CHAT_PERSIST_RETRY_DELAYS = (0.35, 1.0, 2.0)
 
 
-def _resolve_user_id(auth: dict | None) -> str | None:
+def _resolve_user_id(auth: dict | None) -> tuple[str | None, str | None]:
     auth = auth or {}
     if auth.get("userId"):
-        return auth["userId"]
+        return auth["userId"], None
     token = auth.get("token")
     if not token:
-        return None
+        return None, None
     try:
         payload = decode_token(token)
-        return payload.get("sub")
+        if payload.get("type") != "access":
+            return None, None
+        return payload.get("sub"), payload.get("role")
     except Exception:
-        return None
+        return None, None
+
+
+def _is_user_allowed_for_session(db, *, user: User, session: VisitorSession) -> bool:
+    if user.role == UserRole.admin:
+        return True
+    if user.role == UserRole.homeowner:
+        return session.homeowner_id == user.id
+    if user.role == UserRole.security:
+        return bool(user.estate_id) and bool(session.estate_id) and user.estate_id == session.estate_id
+    if user.role == UserRole.estate:
+        if not session.estate_id:
+            return False
+        estate = db.query(Estate).filter(Estate.id == session.estate_id, Estate.owner_id == user.id).first()
+        return bool(estate)
+    return False
 
 
 def register_socket_events(sio):
@@ -118,7 +137,7 @@ def register_socket_events(sio):
 
     @sio.event(namespace=settings.DASHBOARD_NAMESPACE)
     async def connect(sid, environ, auth):
-        user_id = _resolve_user_id(auth)
+        user_id, _role = _resolve_user_id(auth)
         if user_id:
             socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"user:{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
@@ -141,7 +160,7 @@ def register_socket_events(sio):
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def connect(sid, environ, auth):  # type: ignore[no-redef]
-        user_id = _resolve_user_id(auth)
+        user_id, _role = _resolve_user_id(auth)
         if user_id:
             socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
@@ -149,6 +168,7 @@ def register_socket_events(sio):
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def disconnect(sid):  # type: ignore[no-redef]
         socket_state.unbind_sid(sid)
+        sid_allowed_sessions.pop(sid, None)
         for room, members in list(session_members.items()):
             if sid in members:
                 members.discard(sid)
@@ -166,9 +186,49 @@ def register_socket_events(sio):
         session_id = (payload or {}).get("sessionId")
         if not session_id:
             return
+        visitor_token = (payload or {}).get("visitorToken")
+        sender_user_id = socket_state.sid_user.get(sid)
+
+        db = SessionLocal()
+        try:
+            session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+            if not session:
+                await sio.emit(
+                    "session.join_denied",
+                    {"sessionId": session_id, "reason": "session_not_found"},
+                    to=sid,
+                    namespace=settings.SIGNALING_NAMESPACE,
+                )
+                return
+
+            if sender_user_id:
+                user = db.query(User).filter(User.id == sender_user_id).first()
+                if not user or not _is_user_allowed_for_session(db, user=user, session=session):
+                    await sio.emit(
+                        "session.join_denied",
+                        {"sessionId": session_id, "reason": "not_authorized"},
+                        to=sid,
+                        namespace=settings.SIGNALING_NAMESPACE,
+                    )
+                    return
+            else:
+                try:
+                    require_visitor_session_access(db, session=session, visitor_token=visitor_token)
+                except Exception:
+                    await sio.emit(
+                        "session.join_denied",
+                        {"sessionId": session_id, "reason": "invalid_visitor_token"},
+                        to=sid,
+                        namespace=settings.SIGNALING_NAMESPACE,
+                    )
+                    return
+        finally:
+            db.close()
+
         room = f"session:{session_id}"
         await sio.enter_room(sid, room, namespace=settings.SIGNALING_NAMESPACE)
         session_members[room].add(sid)
+        sid_allowed_sessions[sid].add(str(session_id))
         await sio.emit(
             "session.participant_joined",
             {
@@ -242,12 +302,40 @@ def register_socket_events(sio):
         client_id = (payload or {}).get("clientId")
         if not session_id or not body:
             return
+        if str(session_id) not in sid_allowed_sessions.get(sid, set()):
+            await sio.emit(
+                "chat.ack",
+                {
+                    "id": "",
+                    "sessionId": session_id,
+                    "clientId": client_id,
+                    "at": datetime.utcnow().isoformat(),
+                    "status": "denied",
+                },
+                to=sid,
+                namespace=settings.SIGNALING_NAMESPACE,
+            )
+            return
+        if len(body) > 2000:
+            body = body[:2000]
         sender_user_id = socket_state.sid_user.get(sid)
+        visitor_token = (payload or {}).get("visitorToken")
         raw_sender_type = (payload or {}).get("senderType")
         optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor", "security"} else "visitor"
         display_name = (payload or {}).get("displayName") or "Participant"
         created_at = datetime.utcnow().isoformat()
         message_id = str(uuid.uuid4())
+
+        # Validate visitor token again for unauthenticated senders to avoid replay after disconnects.
+        if not sender_user_id:
+            db = SessionLocal()
+            try:
+                session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+                if not session:
+                    return
+                require_visitor_session_access(db, session=session, visitor_token=visitor_token)
+            finally:
+                db.close()
 
         await sio.emit(
             "chat.message",

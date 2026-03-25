@@ -16,7 +16,9 @@ from app.schemas.auth import (
     LogoutRequest,
     ResetPasswordRequest,
     RefreshTokenRequest,
+    RequestEmailVerificationRequest,
     SignupRequest,
+    VerifyEmailRequest,
 )
 from app.services import auth_service
 
@@ -43,6 +45,7 @@ def admin_signup(payload: AdminSignupRequest, db: Session = Depends(get_db)):
         full_name=payload.fullName,
         email=payload.email,
         password=payload.password,
+        admin_key=payload.adminKey,
     )
     return {"data": data}
 
@@ -88,13 +91,37 @@ def google_signup(payload: GoogleSignupRequest, request: Request, db: Session = 
 
 
 @router.post("/forgot-password")
-def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    return {"data": auth_service.request_password_reset(db, payload.email)}
+def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    return {
+        "data": auth_service.request_password_reset(
+            db,
+            payload.email,
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=request.client.host if request.client else "",
+        )
+    }
 
 
 @router.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
-    return {"data": auth_service.reset_password(db, payload.email, payload.newPassword)}
+    return {"data": auth_service.reset_password(db, payload.email, payload.token, payload.newPassword)}
+
+
+@router.post("/request-email-verification")
+def request_email_verification(payload: RequestEmailVerificationRequest, request: Request, db: Session = Depends(get_db)):
+    return {
+        "data": auth_service.request_email_verification(
+            db,
+            payload.email,
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=request.client.host if request.client else "",
+        )
+    }
+
+
+@router.post("/verify-email")
+def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
+    return {"data": auth_service.verify_email(db, payload.email, payload.token)}
 
 
 @router.post("/refresh-token")

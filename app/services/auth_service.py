@@ -4,8 +4,9 @@ import uuid
 import json
 import base64
 import logging
+import re
 from threading import Lock
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -21,10 +22,25 @@ from app.core.security import (
 )
 from app.db.models import DeviceSession, Notification, User, UserRole
 from app.schemas.auth import AuthResponse
+from app.services.provider_integrations import send_email_smtp
+from app.db.models.user_token import UserToken, UserTokenType, generate_user_token, hash_user_token
 
 settings = get_settings()
 _firebase_init_lock = Lock()
 logger = logging.getLogger(__name__)
+_auth_lock = Lock()
+_failed_login_hits: dict[str, list[float]] = {}
+_failed_login_blocked_until: dict[str, float] = {}
+
+# 5 failures in 10 minutes => 10 minute lock.
+_LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_LOCK_SECONDS = 10 * 60
+
+_PASSWORD_MIN_LEN = 8
+_TOKEN_ISSUE_WINDOW_SECONDS = 60 * 60
+_TOKEN_ISSUE_MAX = 5
+_token_issue_hits: dict[str, list[float]] = {}
 
 try:
     import firebase_admin
@@ -199,6 +215,8 @@ def signup(
     if existing:
         raise AppException("Email already exists", status_code=409)
 
+    _validate_password_strength(password)
+
     try:
         user_role = UserRole(role)
     except ValueError as exc:
@@ -218,6 +236,11 @@ def signup(
     db.add(user)
     db.commit()
     db.refresh(user)
+    # Send email verification (best-effort). Do not block signup on SMTP.
+    try:
+        request_email_verification(db, user.email)
+    except Exception:
+        logger.exception("Unable to send verification email for user=%s", user.id)
     return {"id": user.id, "email": user.email}
 
 
@@ -226,10 +249,24 @@ def admin_signup(
     full_name: str,
     email: str,
     password: str,
+    admin_key: str | None = None,
 ):
+    # Do not allow admin signup unless an explicit key is configured.
+    # This endpoint is a high-risk footgun.
+    configured_key = (settings.ADMIN_SIGNUP_KEY or "").strip()
+    env = (settings.ENVIRONMENT or "").strip().lower()
+    if env in {"production", "staging"}:
+        raise AppException("Admin signup is disabled", status_code=403)
+    if configured_key:
+        provided = (admin_key or "").strip()
+        if not provided or provided != configured_key:
+            raise AppException("Invalid admin signup key", status_code=403)
+
     existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise AppException("Email already exists", status_code=409)
+
+    _validate_password_strength(password)
 
     user = User(
         full_name=full_name,
@@ -247,6 +284,7 @@ def admin_signup(
 
 def login(db: Session, email: str, password: str, user_agent: str = "", ip_address: str = "") -> AuthResponse:
     login_key = (email or "").strip().lower()
+    _enforce_login_rate_limit(login_key=login_key, ip_address=ip_address)
     user = (
         db.query(User)
         .filter(
@@ -257,8 +295,16 @@ def login(db: Session, email: str, password: str, user_agent: str = "", ip_addre
         )
         .first()
     )
-    if not user or not verify_password(password, user.password_hash):
+    if not user or not user.is_active:
+        _record_login_failure(login_key=login_key, ip_address=ip_address)
         raise AppException("Invalid credentials", status_code=401)
+    if not user.email_verified:
+        # Do not issue sessions to unverified users. Allow them to request verification.
+        raise AppException("Email is not verified", status_code=403)
+    if not verify_password(password, user.password_hash):
+        _record_login_failure(login_key=login_key, ip_address=ip_address)
+        raise AppException("Invalid credentials", status_code=401)
+    _clear_login_failures(login_key=login_key, ip_address=ip_address)
     return _issue_auth_tokens(db=db, user=user, user_agent=user_agent, ip_address=ip_address)
 
 
@@ -274,6 +320,9 @@ def google_signin(
     user = db.query(User).filter(User.email == token_email).first()
     if not user:
         raise AppException("Account not found. Please sign up first.", status_code=404)
+    if not user.email_verified:
+        user.email_verified = True
+        db.commit()
     return _issue_auth_tokens(db=db, user=user, user_agent=user_agent, ip_address=ip_address)
 
 
@@ -368,18 +417,76 @@ def logout(db: Session, refresh_token: str):
         db.commit()
 
 
-def request_password_reset(db: Session, email: str):
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise AppException("Email not found", status_code=404)
-    return {"email": email, "status": "email_verified"}
+def request_password_reset(db: Session, email: str, user_agent: str = "", ip_address: str = ""):
+    # Prevent account enumeration: always return ok.
+    login_key = (email or "").strip().lower()
+    _enforce_token_issue_rate_limit(login_key=login_key, ip_address=ip_address, purpose="password_reset")
+    user = db.query(User).filter(User.email == login_key).first()
+    if not user or not user.is_active:
+        return {"status": "ok"}
+
+    token = generate_user_token()
+    token_hash = hash_user_token(token)
+    expires_at = datetime.utcnow() + timedelta(minutes=30)
+    db.add(
+        UserToken(
+            user_id=user.id,
+            token_type=UserTokenType.password_reset,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+    )
+    db.commit()
+
+    reset_link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/reset-password?email={user.email}&token={token}"
+    body = (
+        "You requested a password reset for your QRing account.\n\n"
+        f"Reset link (expires in 30 minutes):\n{reset_link}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+    send_email_smtp(to_email=user.email, subject="QRing password reset", body=body)
+
+    # Token is never returned in normal responses.
+    return {"status": "ok", **({"debugToken": token} if settings.DEBUG else {})}
 
 
-def reset_password(db: Session, email: str, new_password: str):
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise AppException("Email not found", status_code=404)
+def reset_password(db: Session, email: str, token: str, new_password: str):
+    login_key = (email or "").strip().lower()
+    user = db.query(User).filter(User.email == login_key).first()
+    if not user or not user.is_active:
+        # Avoid enumeration.
+        return {"status": "ok"}
+
+    _validate_password_strength(new_password)
+
+    token_value = (token or "").strip()
+    if not token_value:
+        raise AppException("Reset token is required", status_code=400)
+
+    token_hash = hash_user_token(token_value)
+    now = datetime.utcnow()
+    row = (
+        db.query(UserToken)
+        .filter(
+            UserToken.user_id == user.id,
+            UserToken.token_type == UserTokenType.password_reset,
+            UserToken.token_hash == token_hash,
+            UserToken.used_at.is_(None),
+            UserToken.expires_at > now,
+        )
+        .order_by(UserToken.created_at.desc())
+        .first()
+    )
+    if not row:
+        raise AppException("Invalid or expired reset token", status_code=401)
+
+    row.used_at = now
     user.password_hash = hash_password(new_password)
+    # Revoke all sessions after password reset.
+    db.query(DeviceSession).filter(DeviceSession.user_id == user.id, DeviceSession.revoked_at.is_(None)).update(
+        {DeviceSession.revoked_at: now},
+        synchronize_session=False,
+    )
     db.commit()
     return {"status": "password_reset"}
 
@@ -390,6 +497,164 @@ def change_password(db: Session, user_id: str, current_password: str, new_passwo
         raise AppException("User not found", status_code=404)
     if not verify_password(current_password, user.password_hash):
         raise AppException("Current password is incorrect", status_code=400)
+    _validate_password_strength(new_password)
     user.password_hash = hash_password(new_password)
+    now = datetime.utcnow()
+    # Revoke all existing refresh sessions so stolen refresh tokens can't be used.
+    db.query(DeviceSession).filter(DeviceSession.user_id == user.id, DeviceSession.revoked_at.is_(None)).update(
+        {DeviceSession.revoked_at: now},
+        synchronize_session=False,
+    )
     db.commit()
     return {"status": "password_changed"}
+
+
+def request_email_verification(db: Session, email: str, user_agent: str = "", ip_address: str = ""):
+    login_key = (email or "").strip().lower()
+    _enforce_token_issue_rate_limit(login_key=login_key, ip_address=ip_address, purpose="email_verify")
+    user = db.query(User).filter(User.email == login_key).first()
+    if not user or not user.is_active:
+        return {"status": "ok"}
+    if user.email_verified:
+        return {"status": "ok"}
+
+    token = generate_user_token()
+    token_hash = hash_user_token(token)
+    expires_at = datetime.utcnow() + timedelta(hours=24)
+    db.add(
+        UserToken(
+            user_id=user.id,
+            token_type=UserTokenType.email_verify,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+    )
+    db.commit()
+
+    verify_link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/verify-email?email={user.email}&token={token}"
+    body = (
+        "Welcome to QRing.\n\n"
+        f"Verify your email (expires in 24 hours):\n{verify_link}\n\n"
+        "If you did not create an account, you can ignore this email."
+    )
+    send_email_smtp(to_email=user.email, subject="Verify your QRing email", body=body)
+    return {"status": "ok", **({"debugToken": token} if settings.DEBUG else {})}
+
+
+def verify_email(db: Session, email: str, token: str):
+    login_key = (email or "").strip().lower()
+    user = db.query(User).filter(User.email == login_key).first()
+    if not user or not user.is_active:
+        # Avoid enumeration.
+        return {"status": "ok"}
+    if user.email_verified:
+        return {"status": "verified"}
+
+    token_value = (token or "").strip()
+    if not token_value:
+        raise AppException("Verification token is required", status_code=400)
+
+    token_hash = hash_user_token(token_value)
+    now = datetime.utcnow()
+    row = (
+        db.query(UserToken)
+        .filter(
+            UserToken.user_id == user.id,
+            UserToken.token_type == UserTokenType.email_verify,
+            UserToken.token_hash == token_hash,
+            UserToken.used_at.is_(None),
+            UserToken.expires_at > now,
+        )
+        .order_by(UserToken.created_at.desc())
+        .first()
+    )
+    if not row:
+        raise AppException("Invalid or expired verification token", status_code=401)
+
+    row.used_at = now
+    user.email_verified = True
+    db.commit()
+    return {"status": "verified"}
+
+
+def _validate_password_strength(password: str) -> None:
+    value = str(password or "")
+    if len(value) < _PASSWORD_MIN_LEN:
+        raise AppException(f"Password must be at least {_PASSWORD_MIN_LEN} characters", status_code=400)
+    if not re.search(r"[a-z]", value):
+        raise AppException("Password must include a lowercase letter", status_code=400)
+    if not re.search(r"[A-Z]", value):
+        raise AppException("Password must include an uppercase letter", status_code=400)
+    if not re.search(r"[0-9]", value):
+        raise AppException("Password must include a number", status_code=400)
+
+
+def _login_rate_key(login_key: str, ip_address: str, scope: str) -> str:
+    ip = (ip_address or "").strip() or "unknown"
+    email = (login_key or "").strip().lower()
+    if scope == "ip":
+        return f"ip:{ip}"
+    if scope == "email":
+        return f"email:{email}"
+    return f"ip_email:{ip}:{email}"
+
+
+def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
+    now = datetime.utcnow().timestamp()
+    keys = [
+        _login_rate_key(login_key, ip_address, "ip"),
+        _login_rate_key(login_key, ip_address, "email"),
+        _login_rate_key(login_key, ip_address, "ip_email"),
+    ]
+    with _auth_lock:
+        for key in keys:
+            blocked_until = _failed_login_blocked_until.get(key, 0.0)
+            if blocked_until and now < blocked_until:
+                raise AppException("Too many login attempts. Please retry later.", status_code=429)
+
+
+def _record_login_failure(login_key: str, ip_address: str) -> None:
+    now = datetime.utcnow().timestamp()
+    keys = [
+        _login_rate_key(login_key, ip_address, "ip"),
+        _login_rate_key(login_key, ip_address, "email"),
+        _login_rate_key(login_key, ip_address, "ip_email"),
+    ]
+    with _auth_lock:
+        for key in keys:
+            hits = _failed_login_hits.setdefault(key, [])
+            threshold = now - _LOGIN_FAILURE_WINDOW_SECONDS
+            hits[:] = [ts for ts in hits if ts > threshold]
+            hits.append(now)
+            if len(hits) >= _LOGIN_MAX_FAILURES:
+                _failed_login_blocked_until[key] = now + _LOGIN_LOCK_SECONDS
+
+
+def _clear_login_failures(login_key: str, ip_address: str) -> None:
+    keys = [
+        _login_rate_key(login_key, ip_address, "ip"),
+        _login_rate_key(login_key, ip_address, "email"),
+        _login_rate_key(login_key, ip_address, "ip_email"),
+    ]
+    with _auth_lock:
+        for key in keys:
+            _failed_login_hits.pop(key, None)
+            _failed_login_blocked_until.pop(key, None)
+
+
+def _token_issue_rate_key(login_key: str, ip_address: str, purpose: str) -> str:
+    ip = (ip_address or "").strip() or "unknown"
+    email = (login_key or "").strip().lower()
+    return f"{purpose}:{ip}:{email}"
+
+
+def _enforce_token_issue_rate_limit(login_key: str, ip_address: str, purpose: str) -> None:
+    now = datetime.utcnow().timestamp()
+    key = _token_issue_rate_key(login_key, ip_address, purpose)
+    with _auth_lock:
+        hits = _token_issue_hits.setdefault(key, [])
+        threshold = now - _TOKEN_ISSUE_WINDOW_SECONDS
+        hits[:] = [ts for ts in hits if ts > threshold]
+        if len(hits) >= _TOKEN_ISSUE_MAX:
+            raise AppException("Too many requests. Please retry later.", status_code=429)
+        hits.append(now)

@@ -115,7 +115,7 @@ class AdvancedServiceTests(unittest.TestCase):
         self.assertEqual(updated["paidAmountKobo"], 25_000)
         self.assertEqual(updated["remainingAmountKobo"], 75_000)
 
-        fetched = get_split_bill(self.db, bill["id"])
+        fetched = get_split_bill(self.db, bill["id"], requester_user_id=self.participant.id)
         self.assertEqual(fetched["paidAmountKobo"], 25_000)
 
     def test_weekly_summary_counts_visitors_payments_and_pending_alerts(self):

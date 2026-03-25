@@ -219,6 +219,13 @@ def _ensure_auth_runtime_schema() -> None:
                 datetime_sql = DateTime().compile(dialect=conn.dialect)
                 conn.execute(text(f"ALTER TABLE device_sessions ADD COLUMN revoked_at {datetime_sql}"))
 
+    # Token tables are required in production as well (no password reset/email verify without them).
+    if "user_tokens" not in table_names:
+        # Ensure model is imported so Base metadata contains the table.
+        from app.db.models.user_token import UserToken  # noqa: F401
+
+        Base.metadata.tables["user_tokens"].create(bind=engine, checkfirst=True)
+
 
 def _add_column_if_missing(
     conn,
@@ -240,6 +247,13 @@ def _add_column_if_missing(
 def _ensure_runtime_compatibility_schema() -> None:
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
+
+    # Token tables are required in production as well (no email verification / password reset without them).
+    if "user_tokens" not in table_names:
+        from app.db.models.user_token import UserToken  # noqa: F401
+
+        Base.metadata.tables["user_tokens"].create(bind=engine, checkfirst=True)
+        table_names.add("user_tokens")
 
     with engine.begin() as conn:
         datetime_sql = str(DateTime().compile(dialect=conn.dialect))
@@ -302,6 +316,8 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "visitor_sessions", "status", "VARCHAR(40) DEFAULT 'pending'")
             _add_column_if_missing(conn, columns, "visitor_sessions", "started_at", datetime_sql)
             _add_column_if_missing(conn, columns, "visitor_sessions", "ended_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "visitor_sessions", "visitor_token_hash", "VARCHAR(128)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "visitor_token_expires_at", datetime_sql)
             conn.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS ix_visitor_sessions_request_id ON visitor_sessions (request_id)"
@@ -685,8 +701,20 @@ def _validate_livekit_runtime() -> tuple[bool, list[str]]:
 
 @fastapi_app.on_event("startup")
 async def on_startup():
-    livekit_ok, missing = _validate_livekit_runtime()
     env = settings.ENVIRONMENT.lower().strip()
+
+    # Fail fast on weak/default secrets in production-like environments.
+    if env in {"production", "staging"}:
+        secret = str(settings.JWT_SECRET_KEY or "").strip()
+        if secret in {"", "change-me", "changeme"} or len(secret) < 32:
+            raise RuntimeError(
+                "JWT_SECRET_KEY is not configured securely for production/staging. "
+                "Set a strong random value (32+ chars)."
+            )
+        if settings.DEBUG:
+            logging.warning("DEBUG=True while ENVIRONMENT=%s. This is not recommended.", settings.ENVIRONMENT)
+
+    livekit_ok, missing = _validate_livekit_runtime()
     if not livekit_ok:
         message = f"LiveKit configuration missing: {', '.join(missing)}"
         if env in {"production", "staging"}:

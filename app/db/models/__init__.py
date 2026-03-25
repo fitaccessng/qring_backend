@@ -59,6 +59,8 @@ _EXPORT_MAP = {
     "WatchlistRiskLevel": "app.db.models.safety",
     "User": "app.db.models.user",
     "UserRole": "app.db.models.user",
+    "UserToken": "app.db.models.user_token",
+    "UserTokenType": "app.db.models.user_token",
 }
 
 __all__ = list(_EXPORT_MAP.keys())

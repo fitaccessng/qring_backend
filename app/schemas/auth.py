@@ -21,6 +21,7 @@ class AdminSignupRequest(BaseModel):
     fullName: str
     email: EmailStr
     password: str
+    adminKey: Optional[str] = None
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -29,6 +30,7 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
+    token: str
     newPassword: str
 
 
@@ -43,6 +45,15 @@ class RefreshTokenRequest(BaseModel):
 
 class LogoutRequest(BaseModel):
     refreshToken: str
+
+
+class RequestEmailVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    token: str
 
 
 class AuthUser(BaseModel):

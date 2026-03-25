@@ -33,6 +33,7 @@ class StartCallPayload(BaseModel):
     visitorName: Optional[str] = None
     hasVideo: Optional[bool] = None
     type: Optional[str] = None
+    visitorToken: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -67,6 +68,7 @@ class JoinCallPayload(BaseModel):
     callSessionId: str
     participantType: str
     visitorId: Optional[str] = None
+    visitorToken: Optional[str] = None
 
     @field_validator("callSessionId", mode="before")
     @classmethod
@@ -81,6 +83,7 @@ class EndCallPayload(BaseModel):
     callSessionId: str
     participantType: Optional[str] = None
     visitorId: Optional[str] = None
+    visitorToken: Optional[str] = None
 
     @field_validator("callSessionId", mode="before")
     @classmethod
@@ -203,6 +206,21 @@ async def join_call(
             raise AppException("Security authentication is required.", status_code=401)
         data = join_call_as_security(db, call_session_id=payload.callSessionId, security_user_id=user.id)
     else:
+        # Visitor join must be tied to the visitor session token as well (prevents IDOR via leaked callSessionId).
+        if not (payload.visitorId or "").strip():
+            raise AppException("visitorId is required for visitor join requests.", status_code=400)
+        target_call = db.query(CallSession).filter(CallSession.id == payload.callSessionId).first()
+        if not target_call:
+            raise AppException("Call session not found.", status_code=404)
+        session_id = target_call.visitor_session_id or target_call.visitor_id
+        if not session_id:
+            raise AppException("Visitor session context is missing for this call.", status_code=400)
+        session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+        if not session:
+            raise AppException("Visitor session not found.", status_code=404)
+        from app.services.visitor_session_auth import require_visitor_session_access
+
+        require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)
         data = join_call_as_visitor(
             db,
             call_session_id=payload.callSessionId,
@@ -242,6 +260,19 @@ async def end_call(
         raise AppException("Security authentication is required.", status_code=401)
     if participant_type == "visitor" and not (payload.visitorId or "").strip():
         raise AppException("visitorId is required for visitor end requests.", status_code=400)
+    if participant_type == "visitor":
+        target_call = db.query(CallSession).filter(CallSession.id == payload.callSessionId).first()
+        if not target_call:
+            raise AppException("Call session not found.", status_code=404)
+        session_id = target_call.visitor_session_id or target_call.visitor_id
+        if not session_id:
+            raise AppException("Visitor session context is missing for this call.", status_code=400)
+        session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+        if not session:
+            raise AppException("Visitor session not found.", status_code=404)
+        from app.services.visitor_session_auth import require_visitor_session_access
+
+        require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)
 
     target = db.query(CallSession).filter(CallSession.id == payload.callSessionId).first()
     if not target:
@@ -297,3 +328,13 @@ async def end_call(
         )
 
     return {"data": {"callSessionId": row.id, "status": row.status, "endedAt": row.ended_at.isoformat() if row.ended_at else None}}
+    if not user:
+        # Visitor-initiated call: require a valid visitor token for the target session.
+        if not payload.sessionId:
+            raise AppException("sessionId is required for visitor call start.", status_code=400)
+        session = db.query(VisitorSession).filter(VisitorSession.id == payload.sessionId).first()
+        if not session:
+            raise AppException("Visitor session not found.", status_code=404)
+        from app.services.visitor_session_auth import require_visitor_session_access
+
+        require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)

@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db.models import Door, Estate, Home, HomeownerSetting, VisitorSession
 from app.services.security_service import evaluate_session_intelligence
 from app.services.door_routing_service import select_door
+from app.services.visitor_session_auth import issue_visitor_session_token
 
 
 def create_visitor_session(
@@ -125,6 +126,14 @@ def create_visitor_session(
     db.commit()
     db.refresh(session)
     return session
+
+
+def rotate_visitor_session_token(db: Session, *, session: VisitorSession) -> str:
+    """
+    Rotate and return a visitor token for the given session. This is safe to call repeatedly:
+    it invalidates the previous visitor token, but does not affect homeowner/security access.
+    """
+    return issue_visitor_session_token(db, session=session)
 
 
 def mark_session_status(db: Session, session_id: str, status: str) -> VisitorSession | None:

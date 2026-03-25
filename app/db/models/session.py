@@ -59,6 +59,10 @@ class VisitorSession(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Visitor-side session authentication (prevents anyone with a leaked UUID from reading messages/joining rooms).
+    visitor_token_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    visitor_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
 
 class Message(Base):
     __tablename__ = "messages"

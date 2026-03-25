@@ -129,6 +129,11 @@ async def advanced_upload_snapshot(
 ):
     if user.role not in {UserRole.homeowner, UserRole.estate, UserRole.admin}:
         raise AppException("Insufficient permissions.", status_code=403)
+    if user.role == UserRole.homeowner and homeownerId != user.id:
+        raise AppException("Not authorized to upload snapshot for another user.", status_code=403)
+    if user.role == UserRole.estate:
+        # Estate users should not be able to upload into arbitrary homeowner storage.
+        raise AppException("Insufficient permissions.", status_code=403)
     media_bytes = await media.read()
     if not media_bytes:
         raise AppException("Empty media upload.", status_code=400)
@@ -198,8 +203,10 @@ def advanced_download_snapshot_file(
 def advanced_visitor_recognition(
     payload: RecognitionPayload,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
+    if user.role != UserRole.admin and payload.homeownerId != user.id:
+        raise AppException("Not authorized.", status_code=403)
     data = register_or_recognize_visitor(
         db,
         homeowner_id=payload.homeownerId,
@@ -235,9 +242,9 @@ async def advanced_create_split_bill(
 def advanced_get_split_bill(
     bill_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    return {"data": get_split_bill(db, bill_id)}
+    return {"data": get_split_bill(db, bill_id, requester_user_id=user.id, is_admin=user.role == UserRole.admin)}
 
 
 @router.post("/split-bills/{bill_id}/contribute")
@@ -312,6 +319,18 @@ async def advanced_threat_alert(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner", "estate", "admin")),
 ):
+    if user.role == UserRole.estate:
+        target_id = str(payload.homeownerId or "").strip()
+        if not target_id:
+            raise AppException("homeownerId is required.", status_code=400)
+        target = db.query(User).filter(User.id == target_id, User.role == UserRole.homeowner).first()
+        if not target or not target.estate_id:
+            raise AppException("Not authorized.", status_code=403)
+        from app.db.models import Estate
+
+        estate = db.query(Estate).filter(Estate.id == target.estate_id, Estate.owner_id == user.id).first()
+        if not estate:
+            raise AppException("Not authorized.", status_code=403)
     data = create_threat_alert(
         db,
         homeowner_id=payload.homeownerId if user.role != UserRole.homeowner else user.id,

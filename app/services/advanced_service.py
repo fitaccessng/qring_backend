@@ -439,13 +439,33 @@ def create_split_bill(
             payload={"splitBillId": bill.id, "dueAt": bill.due_at.isoformat() if bill.due_at else None},
         )
     db.commit()
-    return get_split_bill(db, bill.id)
+    return get_split_bill(db, bill.id, requester_user_id=owner_user_id)
 
 
-def get_split_bill(db: Session, bill_id: str) -> dict[str, Any]:
+def get_split_bill(
+    db: Session,
+    bill_id: str,
+    *,
+    requester_user_id: str | None = None,
+    is_admin: bool = False,
+) -> dict[str, Any]:
     bill = db.query(SplitBill).filter(SplitBill.id == bill_id).first()
     if not bill:
         raise AppException("Split bill not found.", status_code=404)
+    if not is_admin and requester_user_id:
+        if bill.owner_user_id != requester_user_id:
+            allowed = (
+                db.query(SplitContribution.id)
+                .filter(
+                    SplitContribution.split_bill_id == bill.id,
+                    SplitContribution.contributor_user_id == requester_user_id,
+                )
+                .first()
+            )
+            if not allowed:
+                raise AppException("Not authorized to access this split bill.", status_code=403)
+    if not is_admin and not requester_user_id:
+        raise AppException("Not authorized to access this split bill.", status_code=403)
     rows = (
         db.query(SplitContribution)
         .filter(SplitContribution.split_bill_id == bill.id)
@@ -496,7 +516,7 @@ def contribute_split_bill(db: Session, *, bill_id: str, user_id: str, amount_kob
     row.paid_amount_kobo = int(row.paid_amount_kobo or 0) + int(amount_kobo)
     row.status = "paid" if row.paid_amount_kobo >= int(row.pledged_amount_kobo or 0) else "partial"
     db.commit()
-    return get_split_bill(db, bill_id)
+    return get_split_bill(db, bill_id, requester_user_id=user_id)
 
 
 def create_digital_receipt(
@@ -637,6 +657,10 @@ def create_threat_alert(
     message: str,
     snapshot_audit_id: str | None = None,
 ) -> dict[str, Any]:
+    if visitor_session_id:
+        session = db.query(VisitorSession).filter(VisitorSession.id == visitor_session_id).first()
+        if not session or session.homeowner_id != homeowner_id:
+            raise AppException("Not authorized to attach this visitor session.", status_code=403)
     row = ThreatAlertLog(
         homeowner_id=homeowner_id,
         visitor_session_id=visitor_session_id,
@@ -692,11 +716,41 @@ def trigger_emergency_signal(
 
     requester = db.query(User).filter(User.id == requester_user_id).first()
     if requester:
-        recipients = db.query(User).filter(User.role.in_([UserRole.homeowner, UserRole.estate])).all()
-        for user in recipients:
+        # Scope notifications to the requester's tenant context to avoid cross-estate leakage.
+        recipient_ids: set[str] = {requester.id}
+        effective_scope = (scope or "estate").strip().lower()
+
+        if effective_scope == "global" and requester.role == UserRole.admin:
+            for user in db.query(User).filter(User.role.in_([UserRole.homeowner, UserRole.security, UserRole.estate])).all():
+                recipient_ids.add(user.id)
+        else:
+            estate_ids: list[str] = []
+            if requester.role in {UserRole.homeowner, UserRole.security} and requester.estate_id:
+                estate_ids = [requester.estate_id]
+            elif requester.role == UserRole.estate:
+                from app.db.models import Estate
+
+                estate_ids = [e.id for e in db.query(Estate).filter(Estate.owner_id == requester.id).all()]
+
+            if estate_ids:
+                for user_id in (
+                    db.query(User.id)
+                    .filter(User.estate_id.in_(estate_ids), User.role.in_([UserRole.homeowner, UserRole.security]))
+                    .all()
+                ):
+                    if user_id and user_id[0]:
+                        recipient_ids.add(user_id[0])
+                # Also notify estate owners of the involved estates.
+                from app.db.models import Estate
+
+                owner_rows = db.query(Estate.owner_id).filter(Estate.id.in_(estate_ids)).all()
+                for owner_id in [r[0] for r in owner_rows if r and r[0]]:
+                    recipient_ids.add(owner_id)
+
+        for recipient_id in recipient_ids:
             notify_multi_channel(
                 db,
-                user_id=user.id,
+                user_id=recipient_id,
                 kind="security.emergency",
                 message=f"Emergency alert from {requester.full_name or 'Resident'}: {row.message}",
                 payload={"emergencySignalId": row.id, "scope": row.scope},

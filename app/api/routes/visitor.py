@@ -5,12 +5,14 @@ import base64
 from time import perf_counter
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Header, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.api.deps import get_optional_current_user
 from app.db.session import get_db
 from app.schemas.visitor import VisitorRequestCreate
 from app.services.appointment_service import (
@@ -23,7 +25,8 @@ from app.services.appointment_service import (
 from app.services.livekit_service import issue_livekit_token
 from app.services.qr_service import resolve_qr
 from app.services.security_service import notify_security_request, serialize_security_session
-from app.services.session_service import create_visitor_session
+from app.services.session_service import create_visitor_session, rotate_visitor_session_token
+from app.services.visitor_session_auth import require_visitor_session_access
 from app.services.voice_note_service import save_voice_note
 from app.services.advanced_service import create_snapshot_audit
 from app.socket.server import sio
@@ -256,7 +259,8 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             payload.qrId,
             session.id,
         )
-        return {"data": {"sessionId": session.id, "status": session.status}}
+        visitor_token = rotate_visitor_session_token(db, session=session)
+        return {"data": {"sessionId": session.id, "status": session.status, "visitorToken": visitor_token}}
     except Exception:
         elapsed_ms = (perf_counter() - started) * 1000
         logger.exception(
@@ -303,6 +307,13 @@ def visitor_accept_appointment(
     )
     if data.get("appointment", {}).get("id") != appointment_id:
         raise AppException("Appointment mismatch.", status_code=400)
+    session_id = str(data.get("sessionId") or "").strip()
+    if session_id:
+        from app.db.models import VisitorSession
+
+        session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+        if session:
+            data["visitorToken"] = rotate_visitor_session_token(db, session=session)
     return {"data": data}
 
 
@@ -375,11 +386,41 @@ async def visitor_appointment_arrival(
 
 
 @router.get("/sessions/{session_id}")
-def visitor_session_status(session_id: str, db: Session = Depends(get_db)):
+def visitor_session_status(
+    session_id: str,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
+    db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
+):
     from app.db.models import VisitorSession
     row = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
     if not row:
         return {"data": {"sessionId": session_id, "status": "not_found"}}
+
+    # AuthZ: homeowner/security/estate/admin via JWT, otherwise require visitor token.
+    if user is None:
+        require_visitor_session_access(db, session=row, visitor_token=visitorToken or x_visitor_token)
+    else:
+        from app.db.models import Estate, UserRole
+
+        if user.role == UserRole.admin:
+            pass
+        elif user.role == UserRole.homeowner:
+            if row.homeowner_id != user.id:
+                raise AppException("Not authorized to access this session.", status_code=403)
+        elif user.role == UserRole.security:
+            if not user.estate_id or not row.estate_id or row.estate_id != user.estate_id:
+                raise AppException("Not authorized to access this session.", status_code=403)
+        elif user.role == UserRole.estate:
+            if not row.estate_id:
+                raise AppException("Not authorized to access this session.", status_code=403)
+            estate = db.query(Estate).filter(Estate.id == row.estate_id, Estate.owner_id == user.id).first()
+            if not estate:
+                raise AppException("Not authorized to access this session.", status_code=403)
+        else:
+            raise AppException("Not authorized to access this session.", status_code=403)
+
     return {
         "data": {
             "sessionId": row.id,
@@ -391,12 +432,40 @@ def visitor_session_status(session_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/sessions/{session_id}/messages")
-def visitor_session_messages(session_id: str, db: Session = Depends(get_db)):
+def visitor_session_messages(
+    session_id: str,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
+    db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
+):
     from app.db.models import Message, VisitorSession
 
     session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
     if not session:
         return {"data": []}
+
+    if user is None:
+        require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
+    else:
+        from app.db.models import Estate, UserRole
+
+        if user.role == UserRole.admin:
+            pass
+        elif user.role == UserRole.homeowner:
+            if session.homeowner_id != user.id:
+                raise AppException("Not authorized to access this session.", status_code=403)
+        elif user.role == UserRole.security:
+            if not user.estate_id or not session.estate_id or session.estate_id != user.estate_id:
+                raise AppException("Not authorized to access this session.", status_code=403)
+        elif user.role == UserRole.estate:
+            if not session.estate_id:
+                raise AppException("Not authorized to access this session.", status_code=403)
+            estate = db.query(Estate).filter(Estate.id == session.estate_id, Estate.owner_id == user.id).first()
+            if not estate:
+                raise AppException("Not authorized to access this session.", status_code=403)
+        else:
+            raise AppException("Not authorized to access this session.", status_code=403)
 
     rows = (
         db.query(Message)
@@ -423,7 +492,10 @@ def visitor_session_messages(session_id: str, db: Session = Depends(get_db)):
 def visitor_livekit_token(
     session_id: str,
     payload: VisitorLiveKitTokenPayload,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
     db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
 ):
     from app.db.models import VisitorSession
 
@@ -432,6 +504,8 @@ def visitor_livekit_token(
         raise AppException("Session not found", status_code=404)
     if session.status in {"closed", "rejected"}:
         raise AppException("Session is not available for calls.", status_code=400)
+    if user is None:
+        require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
 
     display_name = (payload.displayName or session.visitor_label or "Visitor").strip() or "Visitor"
     data = issue_livekit_token(
@@ -447,14 +521,19 @@ def visitor_livekit_token(
 @router.post("/sessions/{session_id}/voice-notes")
 async def visitor_upload_voice_note(
     session_id: str,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
     media: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
 ):
     from app.db.models import VisitorSession
 
     session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
     if not session:
         raise AppException("Session not found", status_code=404)
+    if user is None:
+        require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
 
     data = await media.read()
     payload = save_voice_note(
