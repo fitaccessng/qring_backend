@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.models import Estate, Home
 from app.db.models import HomeownerSetting
 from app.services.payment_service import get_effective_subscription
+
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_homeowner_settings(db: Session, user_id: str) -> HomeownerSetting:
@@ -21,13 +26,20 @@ def get_or_create_homeowner_settings(db: Session, user_id: str) -> HomeownerSett
 
 def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
     row = get_or_create_homeowner_settings(db, user_id)
-    estate_row = (
-        db.query(Home, Estate)
-        .join(Estate, Estate.id == Home.estate_id)
-        .filter(Home.homeowner_id == user_id, Home.estate_id.is_not(None))
-        .order_by(Home.created_at.desc())
-        .first()
-    )
+    estate_row = None
+    try:
+        estate_row = (
+            db.query(Home, Estate)
+            .join(Estate, Estate.id == Home.estate_id)
+            .filter(Home.homeowner_id == user_id, Home.estate_id.is_not(None))
+            .order_by(Home.created_at.desc())
+            .first()
+        )
+    except SQLAlchemyError:
+        # Production schema drift (missing tables/columns) should not break the homeowner UI.
+        # The exception will still be captured by app logs for follow-up.
+        logger.exception("homeowner_settings_estate_lookup_failed user_id=%s", user_id)
+        estate_row = None
     managed_by_estate = bool(estate_row)
     subscription_owner_id = estate_row[1].owner_id if estate_row else user_id
     subscription = get_effective_subscription(db, subscription_owner_id)
