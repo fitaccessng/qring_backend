@@ -4,6 +4,7 @@ import json
 import logging
 import smtplib
 from email.message import EmailMessage
+from email.utils import make_msgid
 from threading import Lock
 from urllib import error, request
 
@@ -164,15 +165,19 @@ def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
     username = (settings.SMTP_USERNAME or "").strip()
     password = (settings.SMTP_PASSWORD or "").strip()
     from_email = (settings.SMTP_FROM_EMAIL or "").strip()
+    domain = (from_email.split("@", 1)[1] if "@" in from_email else "useqring.online").strip() or "useqring.online"
     if not host or not from_email:
-        return {"status": "disabled", "reason": "smtp_not_configured"}
+        return {"status": "disabled", "reason": "smtp_not_configured", "messageId": None}
     if not to_email.strip():
-        return {"status": "skipped", "reason": "missing_recipient"}
+        return {"status": "skipped", "reason": "missing_recipient", "messageId": None}
 
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = from_email
     message["To"] = to_email.strip()
+    # Add a deterministic-ish trace key so Brevo logs can be searched even if delivery is delayed/bounced.
+    message_id = make_msgid(domain=domain)
+    message["Message-ID"] = message_id
     message.set_content(body)
 
     port = int(settings.SMTP_PORT or 587)
@@ -191,10 +196,10 @@ def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
                 if username and password:
                     server.login(username, password)
                 server.send_message(message)
-        return {"status": "sent"}
+        return {"status": "sent", "messageId": message_id}
     except Exception as exc:
         logger.exception("SMTP send failed to %s", to_email)
-        return {"status": "failed", "reason": str(exc)}
+        return {"status": "failed", "reason": str(exc), "messageId": message_id}
 
 
 def send_sms_provider(*, phone_number: str, message: str) -> dict:

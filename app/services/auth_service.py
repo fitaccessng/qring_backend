@@ -545,10 +545,12 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
     delivery = send_email_smtp(to_email=user.email, subject="Verify your QRing email", body=body) or {}
     email_status = str(delivery.get("status") or "unknown")
     email_reason = delivery.get("reason")
+    email_message_id = delivery.get("messageId")
     payload = {
         "status": "ok",
         "emailStatus": email_status,
         "emailReason": email_reason,
+        "emailMessageId": email_message_id,
     }
     if settings.DEBUG:
         payload["debugToken"] = token
