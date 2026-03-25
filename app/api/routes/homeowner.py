@@ -42,6 +42,7 @@ from app.services.voice_note_service import save_voice_note
 from app.socket.server import sio
 from app.core.config import get_settings
 from app.services.estate_alert_service import create_homeowner_maintenance_request, attach_alert_payment_proof
+from app.services.estate_service import join_estate_by_token
 
 router = APIRouter()
 settings = get_settings()
@@ -68,6 +69,11 @@ class HomeownerSettingsUpdate(BaseModel):
     knownContacts: list[str] = []
     allowDeliveryDropAtGate: bool = True
     smsFallbackEnabled: bool = False
+
+
+class JoinEstatePayload(BaseModel):
+    joinToken: str
+    unitName: str
 
 
 class VisitDecisionPayload(BaseModel):
@@ -339,6 +345,21 @@ def homeowner_settings(
     user: User = Depends(require_roles("homeowner")),
 ):
     return {"data": get_homeowner_settings_payload(db, user.id)}
+
+
+@router.post("/join-estate")
+def homeowner_join_estate(
+    payload: JoinEstatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    data = join_estate_by_token(
+        db=db,
+        homeowner_id=user.id,
+        join_token=payload.joinToken,
+        unit_name=payload.unitName,
+    )
+    return {"data": data}
 
 
 @router.put("/settings")

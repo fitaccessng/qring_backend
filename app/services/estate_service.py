@@ -17,6 +17,17 @@ settings = get_settings()
 FREE_ESTATE_LIMIT = 5
 
 
+def _generate_estate_join_code(db: Session) -> str:
+    # Short, human-shareable token. Not meant to be secret-grade, just unguessable enough for casual entry.
+    # Example: QR-EST-8F3K2D
+    for _ in range(30):
+        token = f"QR-EST-{uuid.uuid4().hex[:6].upper()}"
+        exists = db.query(Estate).filter(Estate.join_code == token).first()
+        if not exists:
+            return token
+    raise AppException("Unable to generate estate join code", status_code=500)
+
+
 def _require_estate_owner(db: Session, estate_id: str, owner_id: str) -> Estate:
     estate = db.query(Estate).filter(Estate.id == estate_id, Estate.owner_id == owner_id).first()
     if not estate:
@@ -292,17 +303,59 @@ def create_estate(db: Session, name: str, owner_id: str) -> Estate:
     estate_name = (name or "").strip()
     if not estate_name:
         raise AppException("Estate name is required", status_code=400)
-    estate = Estate(name=estate_name, owner_id=owner_id)
+    estate = Estate(name=estate_name, owner_id=owner_id, join_code=_generate_estate_join_code(db))
     db.add(estate)
     db.commit()
     db.refresh(estate)
     return estate
 
 
-def get_estate_settings(db: Session, *, estate_id: str, owner_id: str) -> dict[str, int | str]:
-    estate = _require_estate_owner(db, estate_id, owner_id)
+def join_estate_by_token(
+    db: Session,
+    *,
+    homeowner_id: str,
+    join_token: str,
+    unit_name: str,
+) -> dict[str, Any]:
+    token = (join_token or "").strip()
+    if not token:
+        raise AppException("Estate code or estate ID is required", status_code=400)
+
+    clean_unit_name = (unit_name or "").strip()
+    if not clean_unit_name:
+        raise AppException("Unit / house label is required", status_code=400)
+
+    estate = db.query(Estate).filter((Estate.join_code == token) | (Estate.id == token)).first()
+    if not estate:
+        raise AppException("Estate not found. Check the code/ID and try again.", status_code=404)
+
+    existing = (
+        db.query(Home)
+        .filter(Home.homeowner_id == homeowner_id, Home.estate_id.is_not(None))
+        .order_by(Home.created_at.desc())
+        .first()
+    )
+    if existing:
+        raise AppException("This account is already linked to an estate.", status_code=409)
+
+    home = add_home(db=db, name=clean_unit_name, estate_id=estate.id, homeowner_id=homeowner_id, owner_id=None)
     return {
         "estateId": estate.id,
+        "estateName": estate.name,
+        "homeId": home.id,
+        "homeName": home.name,
+    }
+
+
+def get_estate_settings(db: Session, *, estate_id: str, owner_id: str) -> dict[str, int | str]:
+    estate = _require_estate_owner(db, estate_id, owner_id)
+    if not getattr(estate, "join_code", None):
+        estate.join_code = _generate_estate_join_code(db)
+        db.commit()
+        db.refresh(estate)
+    return {
+        "estateId": estate.id,
+        "joinCode": estate.join_code or "",
         "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
         "canApproveWithoutHomeowner": bool(estate.security_can_approve_without_homeowner),
         "mustNotifyHomeowner": bool(estate.security_must_notify_homeowner),

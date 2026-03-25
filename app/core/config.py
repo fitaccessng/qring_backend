@@ -11,7 +11,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - local test fallback
     class BaseSettings:
         def __init__(self, **kwargs):
-            env_values = _load_env_file(ENV_FILE)
+            env_values = _load_env_files(ENV_FILES)
             annotations = getattr(self.__class__, "__annotations__", {})
             for field_name in annotations:
                 if field_name.startswith("_"):
@@ -23,7 +23,25 @@ except ModuleNotFoundError:  # pragma: no cover - local test fallback
     def SettingsConfigDict(**kwargs):
         return kwargs
 
-ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+MONOREPO_ROOT = BACKEND_ROOT.parent
+
+
+def _resolve_env_files() -> list[str]:
+    explicit = (os.getenv("QRING_ENV_FILE") or os.getenv("ENV_FILE") or "").strip()
+    if explicit:
+        return [explicit]
+
+    candidates = [
+        MONOREPO_ROOT / ".env.production",
+        BACKEND_ROOT / ".env.production",
+        MONOREPO_ROOT / ".env",
+        BACKEND_ROOT / ".env",
+    ]
+    return [str(path) for path in candidates if path.exists()]
+
+
+ENV_FILES = _resolve_env_files()
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -37,6 +55,16 @@ def _load_env_file(path: Path) -> dict[str, str]:
         key, value = raw.split("=", 1)
         values[key.strip()] = value.strip().strip("\"'")
     return values
+
+
+def _load_env_files(paths: list[str]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for raw_path in paths:
+        try:
+            merged.update(_load_env_file(Path(raw_path)))
+        except Exception:
+            continue
+    return merged
 
 
 def _coerce_value(default, value):
@@ -53,7 +81,7 @@ def _coerce_value(default, value):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=str(ENV_FILE), case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=ENV_FILES or None, case_sensitive=False)
 
     APP_NAME: str = "Qring Backend"
     ENVIRONMENT: str = "development"

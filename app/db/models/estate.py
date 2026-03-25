@@ -16,6 +16,7 @@ class Estate(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    join_code: Mapped[Optional[str]] = mapped_column(String(24), unique=True, nullable=True, index=True)
     owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     reminder_frequency_days: Mapped[int] = mapped_column(Integer, default=1)
     security_can_approve_without_homeowner: Mapped[bool] = mapped_column(Boolean, default=False)

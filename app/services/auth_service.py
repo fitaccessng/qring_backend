@@ -5,6 +5,7 @@ import json
 import base64
 import logging
 import re
+from urllib.parse import quote
 from threading import Lock
 from datetime import datetime, timedelta
 
@@ -514,9 +515,10 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
     _enforce_token_issue_rate_limit(login_key=login_key, ip_address=ip_address, purpose="email_verify")
     user = db.query(User).filter(User.email == login_key).first()
     if not user or not user.is_active:
-        return {"status": "ok"}
+        # Avoid user enumeration and avoid revealing email delivery configuration.
+        return {"status": "ok", "emailStatus": "ok"}
     if user.email_verified:
-        return {"status": "ok"}
+        return {"status": "ok", "emailStatus": "ok"}
 
     token = generate_user_token()
     token_hash = hash_user_token(token)
@@ -531,14 +533,27 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
     )
     db.commit()
 
-    verify_link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/verify-email?email={user.email}&token={token}"
+    verify_link = (
+        f"{settings.FRONTEND_BASE_URL.rstrip('/')}/verify-email"
+        f"?email={quote(user.email)}&token={quote(token)}"
+    )
     body = (
         "Welcome to QRing.\n\n"
         f"Verify your email (expires in 24 hours):\n{verify_link}\n\n"
         "If you did not create an account, you can ignore this email."
     )
-    send_email_smtp(to_email=user.email, subject="Verify your QRing email", body=body)
-    return {"status": "ok", **({"debugToken": token} if settings.DEBUG else {})}
+    delivery = send_email_smtp(to_email=user.email, subject="Verify your QRing email", body=body) or {}
+    email_status = str(delivery.get("status") or "unknown")
+    email_reason = delivery.get("reason")
+    payload = {
+        "status": "ok",
+        "emailStatus": email_status,
+        "emailReason": email_reason,
+    }
+    if settings.DEBUG:
+        payload["debugToken"] = token
+        payload["debugLink"] = verify_link
+    return payload
 
 
 def verify_email(db: Session, email: str, token: str):
