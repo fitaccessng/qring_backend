@@ -5,6 +5,7 @@ import json
 import base64
 import logging
 import re
+import secrets
 from urllib.parse import quote
 from threading import Lock
 from datetime import datetime, timedelta
@@ -42,6 +43,7 @@ _PASSWORD_MIN_LEN = 8
 _TOKEN_ISSUE_WINDOW_SECONDS = 60 * 60
 _TOKEN_ISSUE_MAX = 5
 _token_issue_hits: dict[str, list[float]] = {}
+_email_verify_attempt_hits: dict[str, list[float]] = {}
 
 try:
     import firebase_admin
@@ -522,6 +524,8 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
 
     token = generate_user_token()
     token_hash = hash_user_token(token)
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    otp_hash = hash_user_token(otp)
     expires_at = datetime.utcnow() + timedelta(hours=24)
     db.add(
         UserToken(
@@ -529,6 +533,15 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
             token_type=UserTokenType.email_verify,
             token_hash=token_hash,
             expires_at=expires_at,
+        )
+    )
+    db.add(
+        UserToken(
+            user_id=user.id,
+            token_type=UserTokenType.email_verify,
+            token_hash=otp_hash,
+            expires_at=expires_at,
+            metadata_json=json.dumps({"kind": "otp", "len": 6}),
         )
     )
     db.commit()
@@ -540,6 +553,7 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
     body = (
         "Welcome to QRing.\n\n"
         f"Verify your email (expires in 24 hours):\n{verify_link}\n\n"
+        f"Or enter this OTP code in the app:\n{otp}\n\n"
         "If you did not create an account, you can ignore this email."
     )
     delivery = send_email_smtp(to_email=user.email, subject="Verify your QRing email", body=body) or {}
@@ -571,6 +585,8 @@ def verify_email(db: Session, email: str, token: str):
     if not token_value:
         raise AppException("Verification token is required", status_code=400)
 
+    _enforce_email_verify_rate_limit(login_key=login_key, ip_address="")
+
     token_hash = hash_user_token(token_value)
     now = datetime.utcnow()
     row = (
@@ -592,6 +608,21 @@ def verify_email(db: Session, email: str, token: str):
     user.email_verified = True
     db.commit()
     return {"status": "verified"}
+
+
+def _enforce_email_verify_rate_limit(login_key: str, ip_address: str) -> None:
+    # Best-effort brute-force mitigation for OTP verification attempts.
+    now = datetime.utcnow().timestamp()
+    key = f"verify:{(login_key or '').strip().lower()}:{(ip_address or '').strip() or 'unknown'}"
+    window_seconds = 15 * 60
+    max_hits = 12
+    with _auth_lock:
+        hits = _email_verify_attempt_hits.setdefault(key, [])
+        threshold = now - window_seconds
+        hits[:] = [ts for ts in hits if ts > threshold]
+        hits.append(now)
+        if len(hits) > max_hits:
+            raise AppException("Too many verification attempts. Please try again later.", status_code=429)
 
 
 def _validate_password_strength(password: str) -> None:
