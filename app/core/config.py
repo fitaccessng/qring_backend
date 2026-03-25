@@ -81,7 +81,7 @@ def _coerce_value(default, value):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ENV_FILES or None, case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=ENV_FILES or None, case_sensitive=False, extra="ignore")
 
     APP_NAME: str = "Qring Backend"
     ENVIRONMENT: str = "development"
