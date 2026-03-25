@@ -1184,9 +1184,15 @@ def get_user_subscription(db: Session, user_id: str):
 
 
 def get_effective_subscription(db: Session, user_id: str, user_role: str | None = None):
-    user = db.query(User).filter(User.id == user_id).first()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+    except Exception:
+        user = None
     audience = (user_role or (user.role.value if user else "") or "homeowner").strip().lower()
-    row = get_user_subscription(db, user_id)
+    try:
+        row = get_user_subscription(db, user_id)
+    except Exception:
+        row = None
 
     if not row and audience == "estate":
         prior_trial = (
@@ -1198,7 +1204,9 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         row = prior_trial or _create_default_estate_trial(db, user_id)
 
     if not row:
-        free_plan = get_plan_or_raise(db, _default_plan_id_for_audience(audience))
+        # Avoid depending on subscription-plan tables for the free baseline.
+        free_plan = _catalog_row_by_id(_default_plan_id_for_audience(audience)) or {"id": "free", "name": "Free", "audience": audience}
+        free_feature_flags = _build_feature_flags(list(free_plan.get("enabledFeatures") or []))
         summary = {
             "status": "active",
             "days_to_expiry": None,
@@ -1236,7 +1244,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "planName": free_plan["name"],
             "status": summary["status"],
             "paymentStatus": "free",
-            "audience": free_plan["audience"],
+            "audience": free_plan.get("audience", audience),
             "startsAt": None,
             "endsAt": None,
             "expiresAt": None,
@@ -1246,14 +1254,14 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "expiresSoon": False,
             "requiresManualActivation": bool(free_plan.get("manualActivationRequired")),
             "limits": {
-                "maxDoors": free_plan["maxDoors"],
-                "maxQrCodes": free_plan["maxQrCodes"],
-                "maxAdmins": free_plan["maxAdmins"],
-                "logRetentionDays": LIMITED_LOG_RETENTION_DAYS if free_plan["featureFlags"].get("limited_logs") else 0,
+                "maxDoors": int(free_plan.get("maxDoors") or 0),
+                "maxQrCodes": int(free_plan.get("maxQrCodes") or 0),
+                "maxAdmins": int(free_plan.get("maxAdmins") or 1),
+                "logRetentionDays": LIMITED_LOG_RETENTION_DAYS if free_feature_flags.get("limited_logs") else 0,
             },
-            "features": free_plan["enabledFeatures"],
-            "featureFlags": free_plan["featureFlags"],
-            "restrictions": free_plan["restrictions"],
+            "features": list(free_plan.get("enabledFeatures") or []),
+            "featureFlags": free_feature_flags,
+            "restrictions": list(free_plan.get("restrictions") or []),
             "billingCycle": "monthly",
         }
         return _merge_subscription_summary(result, summary)
