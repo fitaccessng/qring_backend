@@ -17,6 +17,8 @@ from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.core.time import ensure_utc, utc_now
 from app.db.models import (
+    Estate,
+    Home,
     Notification,
     PaymentAttempt,
     PaymentPurpose,
@@ -44,6 +46,8 @@ DEFAULT_PLAN_CATALOG = [
         "amount": 0,
         "currency": "NGN",
         "billingLabel": "month",
+        "maxEstates": 1,
+        "maxHomes": 3,
         "maxDoors": 3,
         "maxQrCodes": 3,
         "maxAdmins": 1,
@@ -52,7 +56,7 @@ DEFAULT_PLAN_CATALOG = [
         "durationDays": 30,
         "trialDays": 30,
         "selfServe": True,
-        "description": "30-day trial for estates with up to 3 houses",
+        "description": "Up to 3 houses. Full system access at limited scale for 30 days.",
         "enabledFeatures": [
             "manual_visitor_logging",
             "basic_notifications",
@@ -86,6 +90,8 @@ DEFAULT_PLAN_CATALOG = [
         "amount": 6000,
         "currency": "NGN",
         "billingLabel": "month",
+        "maxEstates": 1,
+        "maxHomes": 10,
         "maxDoors": 10,
         "maxQrCodes": 10,
         "maxAdmins": 1,
@@ -93,6 +99,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
+        "description": "Up to 10 houses with realtime alerts, visitor logs, resident management, and mobile dashboard.",
         "enabledFeatures": [
             "manual_visitor_logging",
             "basic_notifications",
@@ -126,6 +133,8 @@ DEFAULT_PLAN_CATALOG = [
         "amount": 9000,
         "currency": "NGN",
         "billingLabel": "month",
+        "maxEstates": 1,
+        "maxHomes": 15,
         "maxDoors": 15,
         "maxQrCodes": 15,
         "maxAdmins": 2,
@@ -133,6 +142,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
+        "description": "Everything in Basic plus visitor scheduling, access time windows, and chat + call verification.",
         "enabledFeatures": [
             "manual_visitor_logging",
             "basic_notifications",
@@ -166,6 +176,8 @@ DEFAULT_PLAN_CATALOG = [
         "amount": 18000,
         "currency": "NGN",
         "billingLabel": "month",
+        "maxEstates": 2,
+        "maxHomes": 30,
         "maxDoors": 30,
         "maxQrCodes": 30,
         "maxAdmins": 5,
@@ -173,6 +185,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
+        "description": "Everything in Plus with multi-admin roles, analytics dashboard, and activity tracking.",
         "enabledFeatures": [
             "manual_visitor_logging",
             "basic_notifications",
@@ -206,6 +219,8 @@ DEFAULT_PLAN_CATALOG = [
         "amount": 30000,
         "currency": "NGN",
         "billingLabel": "month",
+        "maxEstates": 5,
+        "maxHomes": 50,
         "maxDoors": 50,
         "maxQrCodes": 50,
         "maxAdmins": 15,
@@ -213,6 +228,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
+        "description": "Everything in Growth with advanced analytics, security audit logs, role permissions, and priority support.",
         "enabledFeatures": [
             "manual_visitor_logging",
             "basic_notifications",
@@ -242,6 +258,8 @@ DEFAULT_PLAN_CATALOG = [
         "amount": 0,
         "currency": "NGN",
         "billingLabel": "custom",
+        "maxEstates": 0,
+        "maxHomes": 0,
         "maxDoors": 0,
         "maxQrCodes": 0,
         "maxAdmins": 0,
@@ -290,6 +308,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "homeowner",
         "durationDays": None,
         "selfServe": True,
+        "description": "1 door with basic notifications and limited logs.",
         "enabledFeatures": [
             "basic_notifications",
             "limited_logs",
@@ -318,6 +337,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "homeowner",
         "durationDays": 30,
         "selfServe": True,
+        "description": "Smart homeowner controls with chat + call verification, visitor history, scheduling, and advanced notifications.",
         "enabledFeatures": [
             "basic_notifications",
             "limited_logs",
@@ -346,6 +366,7 @@ DEFAULT_PLAN_CATALOG = [
         "audience": "homeowner",
         "durationDays": 30,
         "selfServe": True,
+        "description": "Advanced access and privacy with multiple doors, access time windows, priority support, and advanced privacy controls.",
         "enabledFeatures": [
             "basic_notifications",
             "limited_logs",
@@ -505,10 +526,14 @@ def _build_feature_flags(features: list[str]) -> dict[str, bool]:
 def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any]) -> dict[str, Any]:
     features = _decode_json_list(getattr(row, "enabled_features", "[]")) or list(catalog_row.get("enabledFeatures") or [])
     restrictions = _decode_json_list(getattr(row, "restrictions", "[]")) or list(catalog_row.get("restrictions") or [])
+    monthly_amount = int(row.amount or 0)
+    yearly_amount = monthly_amount * 12 if monthly_amount > 0 else 0
     return {
         "id": row.id,
         "name": row.name,
-        "amount": int(row.amount or 0),
+        "amount": monthly_amount,
+        "monthlyAmount": monthly_amount,
+        "yearlyAmount": yearly_amount,
         "currency": row.currency or "NGN",
         "billingLabel": catalog_row.get("billingLabel", "month"),
         "maxDoors": int(row.max_doors or 0),
@@ -529,6 +554,16 @@ def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any]) -> dict[st
         "enabledFeatures": features,
         "restrictions": restrictions,
         "featureFlags": _build_feature_flags(features),
+        "billingCycles": {
+            "monthly": {
+                "amount": monthly_amount,
+                "label": "month",
+            },
+            "yearly": {
+                "amount": yearly_amount,
+                "label": "year",
+            },
+        },
     }
 
 
@@ -1189,8 +1224,30 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
     except Exception:
         user = None
     audience = (user_role or (user.role.value if user else "") or "homeowner").strip().lower()
+    managed_by_estate = False
+    estate_id = None
+    estate_name = None
+    subscription_owner_id = user_id
+
+    if audience == "homeowner":
+        try:
+            estate_row = (
+                db.query(Home, Estate)
+                .join(Estate, Estate.id == Home.estate_id)
+                .filter(Home.homeowner_id == user_id, Home.estate_id.is_not(None))
+                .order_by(Home.created_at.desc())
+                .first()
+            )
+        except Exception:
+            estate_row = None
+        if estate_row:
+            managed_by_estate = True
+            estate_id = estate_row[1].id
+            estate_name = estate_row[1].name
+            subscription_owner_id = estate_row[1].owner_id or user_id
+            audience = "estate"
     try:
-        row = get_user_subscription(db, user_id)
+        row = get_user_subscription(db, subscription_owner_id)
     except Exception:
         row = None
 
@@ -1211,7 +1268,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "status": "active",
             "days_to_expiry": None,
             "grace_days_left": 0,
-            "is_bill_payer": audience in {"homeowner", "estate"},
+            "is_bill_payer": False if managed_by_estate else audience in {"homeowner", "estate"},
             "warning_phase": None,
             "allowed_actions": {
                 "view_dashboard": True,
@@ -1254,6 +1311,8 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "expiresSoon": False,
             "requiresManualActivation": bool(free_plan.get("manualActivationRequired")),
             "limits": {
+                "maxEstates": int(free_plan.get("maxEstates") or (1 if audience == "estate" else 0)),
+                "maxHomes": int(free_plan.get("maxHomes") or free_plan.get("maxDoors") or 0),
                 "maxDoors": int(free_plan.get("maxDoors") or 0),
                 "maxQrCodes": int(free_plan.get("maxQrCodes") or 0),
                 "maxAdmins": int(free_plan.get("maxAdmins") or 1),
@@ -1264,7 +1323,12 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "restrictions": list(free_plan.get("restrictions") or []),
             "billingCycle": "monthly",
         }
-        return _merge_subscription_summary(result, summary)
+        result = _merge_subscription_summary(result, summary)
+        result["managedByEstate"] = managed_by_estate
+        result["subscriptionOwnerId"] = subscription_owner_id
+        result["estateId"] = estate_id
+        result["estateName"] = estate_name
+        return result
 
     try:
         plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True)
@@ -1285,7 +1349,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
     summary = build_subscription_summary(
         row,
         actor_role=audience,
-        is_bill_payer=audience in {"homeowner", "estate"},
+        is_bill_payer=False if managed_by_estate else audience in {"homeowner", "estate"},
         now=now,
     )
 
@@ -1305,6 +1369,8 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         "expiresSoon": bool(expires_at and 0 <= (expires_at - now).days <= 3),
         "requiresManualActivation": bool(plan_meta.get("manualActivationRequired")),
         "limits": {
+            "maxEstates": int(plan_meta.get("maxEstates") or (0 if plan_meta["id"] == "estate_enterprise" else (1 if audience == "estate" else 0))),
+            "maxHomes": int(plan_meta.get("maxHomes") or plan_meta["maxDoors"]),
             "maxDoors": plan_meta["maxDoors"],
             "maxQrCodes": plan_meta["maxQrCodes"],
             "maxAdmins": plan_meta["maxAdmins"],
@@ -1316,6 +1382,10 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         "billingCycle": row.billing_cycle or "monthly",
     }
     result = _merge_subscription_summary(result, summary)
+    result["managedByEstate"] = managed_by_estate
+    result["subscriptionOwnerId"] = subscription_owner_id
+    result["estateId"] = estate_id
+    result["estateName"] = estate_name
     _notify_trial_and_expiry_windows(db, user_id=user_id, subscription=result)
     return result
 

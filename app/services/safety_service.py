@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.core.time import utc_now
 from app.db.base import Base
+from app.db.session import SessionLocal
 from app.db.models import (
     AlertDeliveryStatus,
     AuditLog,
@@ -26,6 +27,9 @@ from app.db.models import (
     Estate,
     Home,
     HomeownerSetting,
+    PanicEvent,
+    PanicEventStatus,
+    PanicMode,
     User,
     UserRole,
     VisitorReport,
@@ -36,10 +40,13 @@ from app.db.models import (
     WatchlistRiskLevel,
 )
 from app.services.notification_service import create_notification
+from app.services.provider_integrations import send_email_smtp
 from app.socket.server import sio
 
 settings = get_settings()
 MAX_VISITOR_REPORTS_PER_DAY = 5
+PANIC_RETRY_INTERVAL_SECONDS = 5
+PANIC_MAX_RETRIES = 3
 
 PRIORITY_BY_TYPE = {
     EmergencyAlertType.panic: EmergencyAlertPriority.critical,
@@ -56,6 +63,7 @@ def create_safety_tables(bind) -> None:
     for table in [
         "emergency_alerts",
         "emergency_alert_events",
+        "panic_events",
         "visitor_reports",
         "watchlist_entries",
     ]:
@@ -87,6 +95,20 @@ def _normalize_name(value: str | None) -> str:
 def _normalize_phone(value: str | None) -> str:
     digits = re.sub(r"\D+", "", str(value or ""))
     return digits[-11:] if digits else ""
+
+
+def _normalize_email(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _parse_recipient_user_ids(raw: str | None) -> list[str]:
+    try:
+        rows = json.loads(raw or "[]")
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        return []
+    return [str(item).strip() for item in rows if str(item).strip()]
 
 
 def _log_audit(db: Session, *, actor_user_id: str | None, action: str, resource_type: str, resource_id: str, meta: dict[str, Any]) -> None:
@@ -146,7 +168,7 @@ def _resolve_context(db: Session, user: User) -> dict[str, Any]:
 
 
 def _list_security_users(db: Session, estate_id: str) -> list[User]:
-    return (
+    rows = (
         db.query(User)
         .filter(
             User.estate_id == estate_id,
@@ -156,6 +178,12 @@ def _list_security_users(db: Session, estate_id: str) -> list[User]:
         .order_by(User.full_name.asc())
         .all()
     )
+    estate = db.query(Estate).filter(Estate.id == estate_id).first()
+    if estate and estate.owner_id:
+        owner = db.query(User).filter(User.id == estate.owner_id, User.is_active.is_(True)).first()
+        if owner and owner.id not in {row.id for row in rows}:
+            rows.append(owner)
+    return rows
 
 
 def _alert_rooms(alert: EmergencyAlert, recipient_ids: list[str]) -> list[str]:
@@ -218,6 +246,382 @@ def serialize_alert(db: Session, alert: EmergencyAlert) -> dict[str, Any]:
         "updatedAt": alert.updated_at.isoformat() if alert.updated_at else None,
         "events": [serialize_alert_event(event) for event in events],
     }
+
+
+def _resolve_panic_context(db: Session, user: User) -> dict[str, Any]:
+    if user.role == UserRole.homeowner:
+        home = (
+            db.query(Home)
+            .filter(Home.homeowner_id == user.id)
+            .order_by(Home.created_at.desc())
+            .first()
+        )
+        estate = db.query(Estate).filter(Estate.id == home.estate_id).first() if home and home.estate_id else None
+        return {
+            "home": home,
+            "estate": estate,
+            "mode": PanicMode.estate if estate else PanicMode.personal,
+            "unitLabel": home.name if home else None,
+        }
+
+    estate = db.query(Estate).filter(Estate.id == user.estate_id).first() if user.estate_id else None
+    if not estate and user.role != UserRole.admin:
+        raise AppException("This account is not linked to an estate.", status_code=400)
+    return {
+        "home": None,
+        "estate": estate,
+        "mode": PanicMode.estate if estate else PanicMode.personal,
+        "unitLabel": None,
+    }
+
+
+def _known_contact_matches_user(contact_line: str, candidate: User) -> bool:
+    contact_line = str(contact_line or "").strip()
+    if not contact_line:
+        return False
+
+    email_match = _normalize_email(candidate.email) and _normalize_email(candidate.email) in _normalize_email(contact_line)
+    phone_match = _normalize_phone(candidate.phone) and _normalize_phone(candidate.phone) in _normalize_phone(contact_line)
+    name_match = _normalize_name(candidate.full_name) and _normalize_name(candidate.full_name) in _normalize_name(contact_line)
+    return bool(email_match or phone_match or name_match)
+
+
+def _list_personal_contact_users(db: Session, *, homeowner: User, settings_row: HomeownerSetting | None) -> list[User]:
+    known_contacts = []
+    if settings_row:
+        try:
+            known_contacts = json.loads(settings_row.known_contacts_json or "[]")
+        except Exception:
+            known_contacts = []
+    known_contacts = [str(item or "").strip() for item in known_contacts if str(item or "").strip()]
+    if not known_contacts:
+        return []
+
+    candidates = (
+        db.query(User)
+        .filter(User.id != homeowner.id, User.is_active.is_(True))
+        .order_by(User.full_name.asc())
+        .all()
+    )
+    matches: list[User] = []
+    seen_ids: set[str] = set()
+    for contact_line in known_contacts:
+        for candidate in candidates:
+            if candidate.id in seen_ids:
+                continue
+            if _known_contact_matches_user(contact_line, candidate):
+                matches.append(candidate)
+                seen_ids.add(candidate.id)
+    return matches
+
+
+def _list_estate_homeowner_users(db: Session, *, estate_id: str, exclude_user_id: str) -> list[User]:
+    rows = (
+        db.query(User)
+        .join(Home, Home.homeowner_id == User.id)
+        .filter(
+            Home.estate_id == estate_id,
+            User.role == UserRole.homeowner,
+            User.is_active.is_(True),
+            User.id != exclude_user_id,
+        )
+        .order_by(User.full_name.asc())
+        .all()
+    )
+    unique_rows: list[User] = []
+    seen_ids: set[str] = set()
+    for row in rows:
+        if row.id in seen_ids:
+            continue
+        seen_ids.add(row.id)
+        unique_rows.append(row)
+    return unique_rows
+
+
+def _panic_recipient_users(db: Session, *, homeowner: User, estate_id: str | None, settings_row: HomeownerSetting | None) -> list[User]:
+    recipients: list[User] = []
+    seen_ids: set[str] = set()
+
+    for contact in _list_personal_contact_users(db, homeowner=homeowner, settings_row=settings_row):
+        if contact.id not in seen_ids:
+            recipients.append(contact)
+            seen_ids.add(contact.id)
+
+    if estate_id:
+        for security_user in _list_security_users(db, estate_id):
+            if security_user.id not in seen_ids:
+                recipients.append(security_user)
+                seen_ids.add(security_user.id)
+        for resident in _list_estate_homeowner_users(db, estate_id=estate_id, exclude_user_id=homeowner.id):
+            if resident.id not in seen_ids:
+                recipients.append(resident)
+                seen_ids.add(resident.id)
+
+    return recipients
+
+
+def _panic_rooms(panic: PanicEvent, recipient_ids: list[str]) -> list[str]:
+    rooms = {
+        f"user:{panic.user_id}",
+        f"user_{panic.user_id}",
+        f"contacts:{panic.user_id}",
+        f"contacts_{panic.user_id}",
+    }
+    if panic.estate_id:
+        rooms.update(
+            {
+                f"estate:{panic.estate_id}:panic",
+                f"estate_{panic.estate_id}",
+            }
+        )
+    for recipient_id in recipient_ids:
+        rooms.update({f"user:{recipient_id}", f"user_{recipient_id}"})
+    return list(rooms)
+
+
+def serialize_panic_event(db: Session, panic: PanicEvent) -> dict[str, Any]:
+    trigger_user = db.query(User).filter(User.id == panic.user_id).first()
+    return {
+        "id": panic.id,
+        "panicId": panic.id,
+        "userId": panic.user_id,
+        "userName": trigger_user.full_name if trigger_user else "Resident",
+        "estateId": panic.estate_id,
+        "homeId": panic.home_id,
+        "type": "panic",
+        "mode": panic.mode.value if hasattr(panic.mode, "value") else str(panic.mode),
+        "status": panic.status.value if hasattr(panic.status, "value") else str(panic.status),
+        "acknowledged": bool(panic.acknowledged),
+        "unitLabel": panic.unit_label,
+        "location": {
+            "doorName": panic.unit_label,
+            "address": panic.last_known_address,
+            "lat": _to_float(panic.last_known_lat),
+            "lng": _to_float(panic.last_known_lng),
+            "source": panic.last_known_source,
+        },
+        "retryCount": int(panic.retry_count or 0),
+        "recipientUserIds": _parse_recipient_user_ids(panic.recipient_user_ids_json),
+        "acknowledgedAt": panic.acknowledged_at.isoformat() if panic.acknowledged_at else None,
+        "resolvedAt": panic.resolved_at.isoformat() if panic.resolved_at else None,
+        "lastDispatchedAt": panic.last_dispatched_at.isoformat() if panic.last_dispatched_at else None,
+        "createdAt": panic.created_at.isoformat() if panic.created_at else None,
+        "updatedAt": panic.updated_at.isoformat() if panic.updated_at else None,
+        "timestamp": panic.created_at.isoformat() if panic.created_at else None,
+    }
+
+
+def _emit_panic_state(db: Session, panic: PanicEvent, *, event_name: str = "panic_alert") -> dict[str, Any]:
+    payload = serialize_panic_event(db, panic)
+    _emit(event_name, payload, rooms=_panic_rooms(panic, payload["recipientUserIds"]))
+    return payload
+
+
+async def _panic_retry_loop(panic_id: str) -> None:
+    for attempt in range(1, PANIC_MAX_RETRIES + 1):
+        await asyncio.sleep(PANIC_RETRY_INTERVAL_SECONDS)
+        db = SessionLocal()
+        try:
+            panic = db.query(PanicEvent).filter(PanicEvent.id == panic_id).first()
+            if not panic:
+                return
+            if panic.status == PanicEventStatus.resolved or panic.acknowledged:
+                return
+            panic.retry_count = int(panic.retry_count or 0) + 1
+            panic.last_dispatched_at = utc_now()
+            db.commit()
+            db.refresh(panic)
+            _emit_panic_state(db, panic, event_name="panic_alert")
+        except Exception:
+            db.rollback()
+            return
+        finally:
+            db.close()
+
+
+def _schedule_panic_retries(panic_id: str) -> None:
+    try:
+        sio.start_background_task(_panic_retry_loop, panic_id)
+    except Exception:
+        return
+
+
+def _can_access_panic(db: Session, *, panic: PanicEvent, actor: User) -> bool:
+    if actor.role == UserRole.admin:
+        return True
+    if actor.id == panic.user_id:
+        return True
+    if panic.estate_id and actor.estate_id == panic.estate_id and actor.role in {UserRole.security, UserRole.estate}:
+        return True
+    return actor.id in set(_parse_recipient_user_ids(panic.recipient_user_ids_json))
+
+
+def _load_panic_for_actor(db: Session, *, panic_id: str, actor: User) -> PanicEvent:
+    panic = db.query(PanicEvent).filter(PanicEvent.id == panic_id).first()
+    if not panic:
+        raise AppException("Panic event not found.", status_code=404)
+    if not _can_access_panic(db, panic=panic, actor=actor):
+        raise AppException("You do not have access to this panic event.", status_code=403)
+    return panic
+
+
+def trigger_panic_event(
+    db: Session,
+    *,
+    actor: User,
+    user_id: str | None = None,
+    trigger_mode: str = "hold",
+    location: dict[str, Any] | None = None,
+    offline_queued: bool = False,
+) -> dict[str, Any]:
+    target_user = actor
+    if user_id and actor.role == UserRole.admin:
+        loaded = db.query(User).filter(User.id == user_id).first()
+        if not loaded:
+            raise AppException("User not found.", status_code=404)
+        target_user = loaded
+    elif user_id and str(user_id) != str(actor.id):
+        raise AppException("You can only trigger panic for your own account.", status_code=403)
+
+    if target_user.role != UserRole.homeowner:
+        raise AppException("Panic alerts can only be triggered for homeowner accounts.", status_code=400)
+
+    context = _resolve_panic_context(db, target_user)
+    settings_row = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == target_user.id).first()
+    recipients = _panic_recipient_users(
+        db,
+        homeowner=target_user,
+        estate_id=context["estate"].id if context["estate"] else None,
+        settings_row=settings_row,
+    )
+    now = utc_now()
+    panic = PanicEvent(
+        user_id=target_user.id,
+        estate_id=context["estate"].id if context["estate"] else None,
+        home_id=context["home"].id if context["home"] else None,
+        type="panic",
+        mode=context["mode"],
+        status=PanicEventStatus.active,
+        acknowledged=False,
+        unit_label=context["unitLabel"] or (location or {}).get("doorName") or (location or {}).get("address"),
+        last_known_lat=(location or {}).get("lat"),
+        last_known_lng=(location or {}).get("lng"),
+        last_known_address=(location or {}).get("address"),
+        last_known_source=(location or {}).get("source") or trigger_mode,
+        recipient_user_ids_json=json.dumps([recipient.id for recipient in recipients], ensure_ascii=True),
+        retry_count=0,
+        last_dispatched_at=now,
+        created_at=now,
+    )
+    db.add(panic)
+    db.flush()
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.triggered",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={
+            "mode": panic.mode.value if hasattr(panic.mode, "value") else str(panic.mode),
+            "offlineQueued": bool(offline_queued),
+            "recipientCount": len(recipients),
+        },
+    )
+    db.commit()
+    db.refresh(panic)
+
+    notification_message = (
+        f"{target_user.full_name} triggered a panic alert"
+        f"{f' at {panic.unit_label}' if panic.unit_label else ''}. Respond immediately."
+    )
+    for recipient in recipients:
+        create_notification(
+            db=db,
+            user_id=recipient.id,
+            kind="safety.panic",
+            payload={
+                "panicId": panic.id,
+                "userId": target_user.id,
+                "userName": target_user.full_name,
+                "mode": panic.mode.value if hasattr(panic.mode, "value") else str(panic.mode),
+                "unitLabel": panic.unit_label,
+                "message": notification_message,
+                "route": (
+                    "/dashboard/estate/emergency"
+                    if recipient.role == UserRole.estate
+                    else "/dashboard/security/emergency"
+                    if recipient.role == UserRole.security
+                    else "/dashboard/homeowner/safety"
+                ),
+                "sound": "panic_alert",
+                "priority": "critical",
+            },
+        )
+        if recipient.email:
+            send_email_smtp(
+                to_email=recipient.email,
+                subject="Qring Panic Alert",
+                body=notification_message,
+            )
+
+    payload = _emit_panic_state(db, panic, event_name="panic_alert")
+    _schedule_panic_retries(panic.id)
+    return payload
+
+
+def acknowledge_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    if panic.status == PanicEventStatus.resolved:
+        raise AppException("Resolved panic events cannot be acknowledged.", status_code=400)
+
+    panic.acknowledged = True
+    panic.acknowledged_by_user_id = actor.id
+    panic.acknowledged_at = utc_now()
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.acknowledged",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={},
+    )
+    db.commit()
+    db.refresh(panic)
+    payload = _emit_panic_state(db, panic, event_name="panic_alert_update")
+    return payload
+
+
+def resolve_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    panic.status = PanicEventStatus.resolved
+    panic.acknowledged = True
+    panic.acknowledged_by_user_id = panic.acknowledged_by_user_id or actor.id
+    panic.acknowledged_at = panic.acknowledged_at or utc_now()
+    panic.resolved_by_user_id = actor.id
+    panic.resolved_at = utc_now()
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.resolved",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={},
+    )
+    db.commit()
+    db.refresh(panic)
+    return _emit_panic_state(db, panic, event_name="panic_alert_update")
+
+
+def list_active_panic_events(db: Session, *, actor: User) -> list[dict[str, Any]]:
+    rows = (
+        db.query(PanicEvent)
+        .filter(PanicEvent.status == PanicEventStatus.active)
+        .order_by(PanicEvent.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    visible = [panic for panic in rows if _can_access_panic(db, panic=panic, actor=actor)]
+    return [serialize_panic_event(db, panic) for panic in visible]
 
 
 def serialize_watchlist_entry(entry: WatchlistEntry, *, recent_reports: list[VisitorReport] | None = None) -> dict[str, Any]:

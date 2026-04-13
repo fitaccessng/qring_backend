@@ -13,7 +13,7 @@ from app.db.models.device_session import DeviceSession  # noqa: F401
 from app.db.models.homeowner_setting import HomeownerSetting  # noqa: F401
 from app.db.models.safety import EmergencyAlert, EmergencyAlertEvent, VisitorReport, WatchlistEntry  # noqa: F401
 from app.db.models.session import Notification, VisitorSession  # noqa: F401
-from app.services.safety_service import report_visitor, trigger_emergency_alert, update_emergency_alert_status
+from app.services.safety_service import report_visitor, trigger_emergency_alert, trigger_panic_event, update_emergency_alert_status
 
 
 class SafetyServiceTests(unittest.TestCase):
@@ -49,11 +49,20 @@ class SafetyServiceTests(unittest.TestCase):
             role=UserRole.security,
             email_verified=True,
         )
+        self.neighbor = User(
+            id=str(uuid.uuid4()),
+            full_name="Neighbor",
+            email="neighbor@example.com",
+            password_hash="hashed",
+            role=UserRole.homeowner,
+            email_verified=True,
+        )
         self.estate = Estate(id=str(uuid.uuid4()), name="Safe Estate", owner_id=self.estate_owner.id)
         self.home = Home(id=str(uuid.uuid4()), name="Unit B2", estate_id=self.estate.id, homeowner_id=self.homeowner.id)
+        self.neighbor_home = Home(id=str(uuid.uuid4()), name="Unit B3", estate_id=self.estate.id, homeowner_id=self.neighbor.id)
         self.guard.estate_id = self.estate.id
         self.estate_owner.estate_id = self.estate.id
-        self.db.add_all([self.estate_owner, self.homeowner, self.guard, self.estate, self.home])
+        self.db.add_all([self.estate_owner, self.homeowner, self.guard, self.neighbor, self.estate, self.home, self.neighbor_home])
         self.db.commit()
 
     def tearDown(self):
@@ -138,6 +147,23 @@ class SafetyServiceTests(unittest.TestCase):
         self.assertEqual(self.db.query(VisitorReport).count(), 1)
         self.assertEqual(self.db.query(WatchlistEntry).count(), 1)
         self.assertIn(result["watchlistEntry"]["riskLevel"], {"high", "critical"})
+
+    def test_trigger_panic_event_notifies_estate_manager_security_and_other_homeowners(self):
+        with patch("app.services.notification_service.send_push_fcm"), patch("app.services.safety_service.send_email_smtp") as send_email:
+            payload = trigger_panic_event(
+                self.db,
+                actor=self.homeowner,
+                trigger_mode="hold-security",
+                location={"address": "Unit B2"},
+            )
+
+        self.assertEqual(payload["status"], "active")
+        recipient_ids = set(payload["recipientUserIds"])
+        self.assertIn(self.estate_owner.id, recipient_ids)
+        self.assertIn(self.guard.id, recipient_ids)
+        self.assertIn(self.neighbor.id, recipient_ids)
+        self.assertEqual(self.db.query(Notification).count(), 3)
+        self.assertEqual(send_email.call_count, 3)
 
 
 if __name__ == "__main__":

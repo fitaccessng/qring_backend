@@ -55,7 +55,7 @@ def create_homeowner_access_pass(
     if clean_type not in {"qr", "pin"}:
         raise AppException("passType must be qr or pin", status_code=400)
     clean_label = (label or "").strip() or "Guest Access"
-    duration_hours = max(1, min(int(valid_for_hours or 24), 168))
+    duration_hours = max(1, min(int(valid_for_hours or 24), 744))
     allowed_uses = max(1, min(int(max_uses or 1), 100))
 
     home = (

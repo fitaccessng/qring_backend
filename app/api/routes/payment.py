@@ -117,6 +117,9 @@ def payment_paystack_initialize(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner", "estate")),
 ):
+    subscription = get_effective_subscription(db, user.id, user_role=user.role.value)
+    if user.role.value == "homeowner" and subscription.get("managedByEstate"):
+        raise AppException("Estate-managed homeowners cannot manage billing directly.", status_code=403)
     data = initialize_paystack_transaction_db(
         db=db,
         user_id=user.id,
@@ -144,6 +147,9 @@ def payment_request_subscription(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner", "estate")),
 ):
+    subscription = get_effective_subscription(db, user.id, user_role=user.role.value)
+    if user.role.value == "homeowner" and subscription.get("managedByEstate"):
+        raise AppException("Estate-managed homeowners cannot manage billing directly.", status_code=403)
     plan = get_plan_or_raise(db, payload.plan)
     if plan.get("audience") not in {"legacy", user.role.value}:
         raise AppException("Selected plan is not available for this account type", status_code=400)
