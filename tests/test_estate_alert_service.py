@@ -19,6 +19,7 @@ from app.db.models import Estate, Home, User, UserRole
 from app.services.estate_alert_service import (
     apply_alert_payment_webhook,
     create_estate_alert,
+    update_estate_alert,
 )
 from app.services.payment_service import handle_paystack_webhook
 
@@ -142,6 +143,33 @@ class EstateAlertsServiceTests(unittest.TestCase):
             result = handle_paystack_webhook(self.db, raw_body=raw_body, signature=signature)
             self.assertEqual(result["status"], "paid")
             self.assertEqual(result["homeownerId"], self.homeowner.id)
+
+    def test_poll_update_persists_due_date_when_closed(self):
+        created = create_estate_alert(
+            db=self.db,
+            estate_id=self.estate.id,
+            estate_admin_id=self.estate_owner.id,
+            title="Gate hours",
+            description="Choose the preferred closing time",
+            alert_type="poll",
+            amount_due=None,
+            due_date=None,
+            poll_options=["9 PM", "10 PM"],
+        )
+
+        ended_at = datetime.now(timezone.utc)
+        updated = update_estate_alert(
+            db=self.db,
+            alert_id=created["id"],
+            estate_admin_id=self.estate_owner.id,
+            title=created["title"],
+            description=created["description"],
+            due_date=ended_at,
+            poll_options=created["pollOptions"],
+        )
+
+        self.assertIsNotNone(updated["dueDate"])
+        self.assertEqual(updated["dueDate"], ended_at.isoformat())
 
 
 if __name__ == "__main__":

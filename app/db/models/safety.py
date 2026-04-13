@@ -59,6 +59,16 @@ class WatchlistRiskLevel(str, Enum):
     critical = "critical"
 
 
+class PanicMode(str, Enum):
+    personal = "personal"
+    estate = "estate"
+
+
+class PanicEventStatus(str, Enum):
+    active = "active"
+    resolved = "resolved"
+
+
 class EmergencyAlert(Base):
     __tablename__ = "emergency_alerts"
 
@@ -91,6 +101,38 @@ class EmergencyAlert(Base):
     last_known_source: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     triggered_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
+
+
+class PanicEvent(Base):
+    __tablename__ = "panic_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True, index=True)
+    home_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("homes.id"), nullable=True, index=True)
+    type: Mapped[str] = mapped_column(String(24), nullable=False, default="panic")
+    mode: Mapped[PanicMode] = mapped_column(SqlEnum(PanicMode), nullable=False, default=PanicMode.personal)
+    status: Mapped[PanicEventStatus] = mapped_column(
+        SqlEnum(PanicEventStatus),
+        nullable=False,
+        default=PanicEventStatus.active,
+        index=True,
+    )
+    acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    acknowledged_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    resolved_by_user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    unit_label: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    last_known_lat: Mapped[Optional[float]] = mapped_column(Numeric(10, 7), nullable=True)
+    last_known_lng: Mapped[Optional[float]] = mapped_column(Numeric(10, 7), nullable=True)
+    last_known_address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    last_known_source: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    recipient_user_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_dispatched_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 

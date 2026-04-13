@@ -4,8 +4,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from app.core.security import decode_token
-from app.db.models import User
-from app.db.session import SessionLocal
 
 PROTECTED_PREFIXES = (
     "/api/v1/dashboard",
@@ -43,16 +41,12 @@ class AccessControlMiddleware(BaseHTTPMiddleware):
         if payload.get("type") != "access":
             return JSONResponse(status_code=401, content={"detail": "Invalid token type"})
 
-        user_id = payload.get("sub")
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == user_id).first()
-            if not user or not user.is_active:
-                return JSONResponse(status_code=401, content={"detail": "User not found"})
-            request.state.authenticated_user_id = user.id
-            request.state.authenticated_user_role = user.role.value
-        finally:
-            db.close()
+        user_id = str(payload.get("sub") or "").strip()
+        user_role = str(payload.get("role") or "").strip()
+        if not user_id:
+            return JSONResponse(status_code=401, content={"detail": "Invalid token subject"})
+        request.state.authenticated_user_id = user_id
+        request.state.authenticated_user_role = user_role
 
         response = await call_next(request)
         response.headers["X-DB-Access-Mode"] = request.state.db_access_mode

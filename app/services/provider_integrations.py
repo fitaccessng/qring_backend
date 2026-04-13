@@ -160,6 +160,31 @@ def send_push_fcm(
     return {"status": status, "sent": ok, "failed": failed}
 
 
+def _send_email_via_transport(
+    *,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    message: EmailMessage,
+):
+    if port == 465:
+        with smtplib.SMTP_SSL(host=host, port=port, timeout=20) as server:
+            server.ehlo()
+            if username and password:
+                server.login(username, password)
+            server.send_message(message)
+        return
+
+    with smtplib.SMTP(host=host, port=port, timeout=20) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        if username and password:
+            server.login(username, password)
+        server.send_message(message)
+
+
 def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
     host = (settings.SMTP_HOST or "").strip()
     username = (settings.SMTP_USERNAME or "").strip()
@@ -183,23 +208,34 @@ def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
     port = int(settings.SMTP_PORT or 587)
 
     try:
-        if port == 465:
-            # Port 465 uses implicit TLS.
-            with smtplib.SMTP_SSL(host=host, port=port, timeout=20) as server:
-                if username and password:
-                    server.login(username, password)
-                server.send_message(message)
-        else:
-            # Port 587 (and similar) use STARTTLS after plain connection.
-            with smtplib.SMTP(host=host, port=port, timeout=20) as server:
-                server.starttls()
-                if username and password:
-                    server.login(username, password)
-                server.send_message(message)
+        _send_email_via_transport(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            message=message,
+        )
         return {"status": "sent", "messageId": message_id}
-    except Exception as exc:
+    except Exception as primary_exc:
+        if port != 465:
+            try:
+                _send_email_via_transport(
+                    host=host,
+                    port=465,
+                    username=username,
+                    password=password,
+                    message=message,
+                )
+                return {"status": "sent", "messageId": message_id}
+            except Exception as fallback_exc:
+                logger.exception("SMTP send failed to %s on ports %s and 465", to_email, port)
+                return {
+                    "status": "failed",
+                    "reason": f"{primary_exc} | fallback_465: {fallback_exc}",
+                    "messageId": message_id,
+                }
         logger.exception("SMTP send failed to %s", to_email)
-        return {"status": "failed", "reason": str(exc), "messageId": message_id}
+        return {"status": "failed", "reason": str(primary_exc), "messageId": message_id}
 
 
 def send_sms_provider(*, phone_number: str, message: str) -> dict:

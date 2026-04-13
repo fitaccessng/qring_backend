@@ -71,6 +71,11 @@ class HomeownerSettingsUpdate(BaseModel):
     smsFallbackEnabled: bool = False
 
 
+class HomeownerProfileUpdate(BaseModel):
+    fullName: str
+    phone: Optional[str] = None
+
+
 class JoinEstatePayload(BaseModel):
     joinToken: str
     unitName: str
@@ -381,6 +386,27 @@ def homeowner_update_settings(
         sms_fallback_enabled=payload.smsFallbackEnabled,
     )
     return {"data": updated}
+
+
+@router.put("/profile")
+def homeowner_update_profile(
+    payload: HomeownerProfileUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    user.full_name = (payload.fullName or "").strip() or user.full_name
+    user.phone = (payload.phone or "").strip() or None
+    db.commit()
+    db.refresh(user)
+    return {
+        "data": {
+            "id": user.id,
+            "fullName": user.full_name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+        }
+    }
 
 
 @router.get("/access-passes")

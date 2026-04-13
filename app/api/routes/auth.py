@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.models import User
 from app.db.session import get_db
+from app.middleware.request_context import get_client_ip
 from app.schemas.auth import (
     AdminSignupRequest,
     ChangePasswordRequest,
@@ -52,31 +53,34 @@ def admin_signup(payload: AdminSignupRequest, db: Session = Depends(get_db)):
 
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = getattr(request.state, "client_ip", "") or get_client_ip(request)
     data = auth_service.login(
         db=db,
         email=payload.email,
         password=payload.password,
         user_agent=request.headers.get("user-agent", ""),
-        ip_address=request.client.host if request.client else "",
+        ip_address=client_ip,
     )
     return {"data": data.model_dump()}
 
 
 @router.post("/google-signin")
 def google_signin(payload: GoogleSigninRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = getattr(request.state, "client_ip", "") or get_client_ip(request)
     data = auth_service.google_signin(
         db=db,
         id_token=payload.idToken,
         email=payload.email,
         display_name=payload.displayName,
         user_agent=request.headers.get("user-agent", ""),
-        ip_address=request.client.host if request.client else "",
+        ip_address=client_ip,
     )
     return {"data": data.model_dump()}
 
 
 @router.post("/google-signup")
 def google_signup(payload: GoogleSignupRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = getattr(request.state, "client_ip", "") or get_client_ip(request)
     data = auth_service.google_signup(
         db=db,
         id_token=payload.idToken,
@@ -85,19 +89,20 @@ def google_signup(payload: GoogleSignupRequest, request: Request, db: Session = 
         role=payload.role,
         referral_code=payload.referralCode,
         user_agent=request.headers.get("user-agent", ""),
-        ip_address=request.client.host if request.client else "",
+        ip_address=client_ip,
     )
     return {"data": data.model_dump()}
 
 
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = getattr(request.state, "client_ip", "") or get_client_ip(request)
     return {
         "data": auth_service.request_password_reset(
             db,
             payload.email,
             user_agent=request.headers.get("user-agent", ""),
-            ip_address=request.client.host if request.client else "",
+            ip_address=client_ip,
         )
     }
 
@@ -109,12 +114,13 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
 
 @router.post("/request-email-verification")
 def request_email_verification(payload: RequestEmailVerificationRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = getattr(request.state, "client_ip", "") or get_client_ip(request)
     return {
         "data": auth_service.request_email_verification(
             db,
             payload.email,
             user_agent=request.headers.get("user-agent", ""),
-            ip_address=request.client.host if request.client else "",
+            ip_address=client_ip,
         )
     }
 

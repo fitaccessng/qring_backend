@@ -639,20 +639,15 @@ def _validate_password_strength(password: str) -> None:
 
 def _login_rate_key(login_key: str, ip_address: str, scope: str) -> str:
     ip = (ip_address or "").strip() or "unknown"
-    email = (login_key or "").strip().lower()
     if scope == "ip":
         return f"ip:{ip}"
-    if scope == "email":
-        return f"email:{email}"
-    return f"ip_email:{ip}:{email}"
+    return f"ip:{ip}"
 
 
 def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
     now = datetime.utcnow().timestamp()
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
-        _login_rate_key(login_key, ip_address, "email"),
-        _login_rate_key(login_key, ip_address, "ip_email"),
     ]
     with _auth_lock:
         for key in keys:
@@ -665,8 +660,6 @@ def _record_login_failure(login_key: str, ip_address: str) -> None:
     now = datetime.utcnow().timestamp()
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
-        _login_rate_key(login_key, ip_address, "email"),
-        _login_rate_key(login_key, ip_address, "ip_email"),
     ]
     with _auth_lock:
         for key in keys:
@@ -681,8 +674,6 @@ def _record_login_failure(login_key: str, ip_address: str) -> None:
 def _clear_login_failures(login_key: str, ip_address: str) -> None:
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
-        _login_rate_key(login_key, ip_address, "email"),
-        _login_rate_key(login_key, ip_address, "ip_email"),
     ]
     with _auth_lock:
         for key in keys:

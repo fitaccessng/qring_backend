@@ -471,6 +471,7 @@ def list_estate_alerts(
         alert_id: {"attending": 0, "not_attending": 0, "maybe": 0}
         for alert_id in alert_ids
     }
+    meeting_attendees: dict[str, list[dict]] = {alert_id: [] for alert_id in alert_ids}
     poll_counts: dict[str, dict[int, int]] = {alert_id: {} for alert_id in alert_ids}
 
     meeting_rows = (
@@ -483,6 +484,41 @@ def list_estate_alerts(
         normalized = response.value if hasattr(response, "value") else str(response)
         if alert_id in meeting_counts and normalized in meeting_counts[alert_id]:
             meeting_counts[alert_id][normalized] = int(count or 0)
+
+    if actor_role == UserRole.estate:
+        attendee_rows = (
+            db.query(
+                EstateMeetingResponse.estate_alert_id,
+                EstateMeetingResponse.homeowner_id,
+                EstateMeetingResponse.response,
+                EstateMeetingResponse.updated_at,
+                User.full_name,
+                User.email,
+                Home.name,
+            )
+            .join(User, User.id == EstateMeetingResponse.homeowner_id)
+            .outerjoin(
+                Home,
+                and_(
+                    Home.estate_id == estate_id,
+                    Home.homeowner_id == EstateMeetingResponse.homeowner_id,
+                ),
+            )
+            .filter(EstateMeetingResponse.estate_alert_id.in_(alert_ids))
+            .order_by(EstateMeetingResponse.updated_at.desc())
+            .all()
+        )
+        for alert_id, homeowner_id, response, responded_at, full_name, email, home_name in attendee_rows:
+            meeting_attendees.setdefault(alert_id, []).append(
+                {
+                    "homeownerId": homeowner_id,
+                    "name": full_name or email or "Resident",
+                    "email": email or "",
+                    "homeName": home_name or "",
+                    "response": response.value if hasattr(response, "value") else str(response),
+                    "respondedAt": responded_at.isoformat() if responded_at else None,
+                }
+            )
 
     poll_rows = (
         db.query(EstatePollVote.estate_alert_id, EstatePollVote.option_index, func.count(EstatePollVote.id))
@@ -567,6 +603,8 @@ def list_estate_alerts(
             data["myPollVote"] = int(my_poll.option_index) if my_poll else None
         if row.alert_type == EstateAlertType.meeting:
             data["meetingResponses"] = meeting_counts.get(row.id, {"attending": 0, "not_attending": 0, "maybe": 0})
+            if actor_role == UserRole.estate:
+                data["meetingAttendees"] = meeting_attendees.get(row.id, [])
         if row.alert_type == EstateAlertType.poll:
             counts = poll_counts.get(row.id, {})
             total_votes = sum(counts.values())
@@ -632,6 +670,8 @@ def record_poll_vote(
         raise AppException("Poll not found", status_code=404)
     if not _is_homeowner_in_estate(db, estate_id=alert.estate_id, homeowner_id=homeowner_id):
         raise AppException("You are not linked to this estate", status_code=403)
+    if alert.due_date and alert.due_date <= utc_now():
+        raise AppException("This poll has already ended", status_code=400)
     options = []
     if alert.poll_options:
         try:
@@ -708,6 +748,7 @@ def update_estate_alert(
         if not poll_options or len([opt for opt in poll_options if str(opt).strip()]) < 2:
             raise AppException("poll_options must include at least 2 options", status_code=400)
         normalized_poll_options = [str(opt).strip() for opt in poll_options if str(opt).strip()]
+        alert.due_date = due_date
         alert.poll_options = json.dumps(normalized_poll_options)
         db.query(EstatePollVote).filter(EstatePollVote.estate_alert_id == alert_id).delete(synchronize_session=False)
 

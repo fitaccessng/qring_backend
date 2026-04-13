@@ -10,9 +10,9 @@ settings = get_settings()
 
 def _livekit_configured() -> bool:
     return bool(
-        settings.LIVEKIT_URL.strip()
-        and settings.LIVEKIT_API_KEY.strip()
-        and settings.LIVEKIT_API_SECRET.strip()
+        (settings.LIVEKIT_URL or "").strip()
+        and (settings.LIVEKIT_API_KEY or "").strip()
+        and (settings.LIVEKIT_API_SECRET or "").strip()
     )
 
 

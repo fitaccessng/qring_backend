@@ -17,6 +17,41 @@ settings = get_settings()
 FREE_ESTATE_LIMIT = 5
 
 
+def _build_estate_invite_email_body(
+    *,
+    estate_name: str,
+    resident_name: str,
+    unit_name: str,
+    email: str,
+    temporary_password: str | None,
+    login_link: str,
+    invite_token: str,
+) -> str:
+    lines = [
+        f"Hello {resident_name},",
+        "",
+        f"You have been added to {estate_name} on Qring as a homeowner resident.",
+        "",
+        "Your account details:",
+        f"Resident Name: {resident_name}",
+        f"Unit: {unit_name}",
+        f"Email: {email}",
+    ]
+    if temporary_password:
+        lines.append(f"Temporary Password: {temporary_password}")
+    lines.extend(
+        [
+            "",
+            f"Login URL: {login_link}",
+            f"Invite Token: {invite_token}",
+            "",
+            "Use these details to sign in to your estate homeowner account.",
+            "For security, please change your password after your first login.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _generate_estate_join_code(db: Session) -> str:
     # Short, human-shareable token. Not meant to be secret-grade, just unguessable enough for casual entry.
     # Example: QR-EST-8F3K2D
@@ -54,6 +89,50 @@ def _usage_for_owner(db: Session, owner_id: str) -> dict[str, int]:
         "doors": len(door_ids),
         "qr_codes": qr_count,
     }
+
+
+def _estate_plan_capacity(subscription: dict[str, Any]) -> dict[str, int]:
+    limits = (subscription or {}).get("limits") or {}
+    max_estates = int(limits.get("maxEstates") or 0)
+    max_homes = int(limits.get("maxHomes") or limits.get("maxDoors") or 0)
+    max_doors = int(limits.get("maxDoors") or 0)
+    max_qr_codes = int(limits.get("maxQrCodes") or 0)
+    if (subscription or {}).get("plan") == "free":
+        max_estates = max(max_estates, 1)
+        max_homes = max(max_homes, FREE_ESTATE_LIMIT)
+        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
+        max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
+    return {
+        "maxEstates": max_estates,
+        "maxHomes": max_homes,
+        "maxDoors": max_doors,
+        "maxQrCodes": max_qr_codes,
+    }
+
+
+def _enforce_estate_limit(db: Session, owner_id: str, subscription: dict[str, Any]) -> None:
+    max_estates = _estate_plan_capacity(subscription)["maxEstates"]
+    if max_estates <= 0:
+        return
+    used_estates = db.query(Estate).filter(Estate.owner_id == owner_id).count()
+    if used_estates >= max_estates:
+        raise AppException(
+            f"Your {subscription.get('planName') or subscription.get('plan') or 'current'} plan supports only {max_estates} estate"
+            f"{'' if max_estates == 1 else 's'}. Upgrade to add another estate.",
+            status_code=402,
+        )
+
+
+def _enforce_home_limit(db: Session, owner_id: str, subscription: dict[str, Any]) -> None:
+    max_homes = _estate_plan_capacity(subscription)["maxHomes"]
+    if max_homes <= 0:
+        return
+    used_homes = _estate_scope_homes_query(db, owner_id).count()
+    if used_homes >= max_homes:
+        raise AppException(
+            f"Your {subscription.get('planName') or subscription.get('plan') or 'current'} plan supports only {max_homes} homes. Upgrade to add more units.",
+            status_code=402,
+        )
 
 
 def _limited_log_cutoff(subscription: dict[str, Any]) -> datetime | None:
@@ -149,13 +228,15 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
 
     usage = _usage_for_owner(db, owner_id)
     effective_sub = get_effective_subscription(db, owner_id)
-    limits = effective_sub.get("limits", {})
-    max_doors = int(limits.get("maxDoors", 0) or 0)
-    max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
-    if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
-        max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
-    _notify_usage_threshold(db, user_id=owner_id, subscription=effective_sub, metric="doors", used=usage["doors"], limit=max_doors)
+    capacity = _estate_plan_capacity(effective_sub)
+    _notify_usage_threshold(
+        db,
+        user_id=owner_id,
+        subscription=effective_sub,
+        metric="doors",
+        used=usage["doors"],
+        limit=capacity["maxDoors"],
+    )
     session_rows = (
         db.query(VisitorSession)
         .filter(VisitorSession.estate_id.in_(estate_ids))
@@ -203,7 +284,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             {
                 "id": row.id,
                 "name": row.name,
-                "createdAt": row.created_at.isoformat(),
+                "createdAt": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
                 "reminderFrequencyDays": int(row.reminder_frequency_days or 1),
             }
             for row in estates
@@ -216,6 +297,11 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
                 "homeownerId": row.homeowner_id,
                 "homeownerName": homeowner_by_id[row.homeowner_id].full_name if row.homeowner_id in homeowner_by_id else "",
                 "homeownerEmail": homeowner_by_id[row.homeowner_id].email if row.homeowner_id in homeowner_by_id else "",
+                "homeownerRoleLabel": (
+                    "Estate Homeowner"
+                    if row.homeowner_id in homeowner_by_id and homeowner_by_id[row.homeowner_id].estate_id == row.estate_id
+                    else "Homeowner"
+                ),
             }
             for row in homes
         ],
@@ -243,7 +329,16 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             for row in doors
         ],
         "homeowners": [
-            {"id": row.id, "fullName": row.full_name, "email": row.email, "active": row.is_active}
+            {
+                "id": row.id,
+                "fullName": row.full_name,
+                "email": row.email,
+                "active": row.is_active,
+                "estateId": row.estate_id,
+                "accountType": "estate_homeowner" if row.estate_id else "homeowner",
+                "roleLabel": "Estate Homeowner" if row.estate_id else "Homeowner",
+                "managedByEstate": bool(row.estate_id),
+            }
             for row in homeowners
         ],
         "securityUsers": [
@@ -288,12 +383,18 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             ],
         },
         "planRestrictions": {
-            "maxDoors": max_doors,
-            "maxQrCodes": max_qr_codes,
+            "maxEstates": capacity["maxEstates"],
+            "maxHomes": capacity["maxHomes"],
+            "maxDoors": capacity["maxDoors"],
+            "maxQrCodes": capacity["maxQrCodes"],
+            "usedEstates": len(estates),
+            "usedHomes": usage["homes"],
             "usedDoors": usage["doors"],
             "usedQrCodes": usage["qr_codes"],
-            "remainingDoors": max(max_doors - usage["doors"], 0),
-            "remainingQrCodes": max(max_qr_codes - usage["qr_codes"], 0),
+            "remainingEstates": max(capacity["maxEstates"] - len(estates), 0) if capacity["maxEstates"] > 0 else 0,
+            "remainingHomes": max(capacity["maxHomes"] - usage["homes"], 0) if capacity["maxHomes"] > 0 else 0,
+            "remainingDoors": max(capacity["maxDoors"] - usage["doors"], 0),
+            "remainingQrCodes": max(capacity["maxQrCodes"] - usage["qr_codes"], 0),
         },
         "subscription": effective_sub,
     }
@@ -303,6 +404,8 @@ def create_estate(db: Session, name: str, owner_id: str) -> Estate:
     estate_name = (name or "").strip()
     if not estate_name:
         raise AppException("Estate name is required", status_code=400)
+    subscription = get_effective_subscription(db, owner_id, user_role="estate")
+    _enforce_estate_limit(db, owner_id, subscription)
     estate = Estate(name=estate_name, owner_id=owner_id, join_code=_generate_estate_join_code(db))
     db.add(estate)
     db.commit()
@@ -432,6 +535,8 @@ def create_estate_homeowner(
     password: str,
 ) -> User:
     _require_estate_owner(db, estate_id, owner_id)
+    subscription = get_effective_subscription(db, owner_id, user_role="estate")
+    _enforce_home_limit(db, owner_id, subscription)
 
     email_clean = (email or "").strip().lower()
     full_name_clean = (full_name or "").strip()
@@ -449,6 +554,7 @@ def create_estate_homeowner(
         role=UserRole.homeowner,
         email_verified=True,
         is_active=True,
+        estate_id=estate_id,
     )
     db.add(user)
     db.flush()
@@ -628,9 +734,13 @@ def add_home(
         raise AppException("Home name is required", status_code=400)
     if owner_id and estate_id:
         _require_estate_owner(db, estate_id, owner_id)
+        subscription = get_effective_subscription(db, owner_id, user_role="estate")
+        _enforce_home_limit(db, owner_id, subscription)
     homeowner = db.query(User).filter(User.id == homeowner_id, User.role == UserRole.homeowner).first()
     if not homeowner:
         raise AppException("Homeowner not found", status_code=404)
+    if estate_id:
+        homeowner.estate_id = estate_id
     home = Home(name=home_name, estate_id=estate_id, homeowner_id=homeowner_id)
     db.add(home)
     db.commit()
@@ -720,7 +830,7 @@ def provision_estate_door_with_homeowner(
         owner_id=owner_id,
         estate_id=estate_id,
         full_name=homeowner_full_name,
-        username=homeowner_username,
+        email=homeowner_username,  # Using username as email since function doesn't have email param
         password=homeowner_password,
     )
     home = add_home(
@@ -772,7 +882,14 @@ def assign_door_to_homeowner(db: Session, owner_id: str, door_id: str, homeowner
     return {"doorId": door_id, "homeownerId": homeowner_id, "homeId": home.id}
 
 
-def invite_homeowner(db: Session, owner_id: str, homeowner_id: str) -> dict[str, Any]:
+def invite_homeowner(
+    db: Session,
+    owner_id: str,
+    homeowner_id: str,
+    *,
+    temporary_password: str | None = None,
+    unit_name: str | None = None,
+) -> dict[str, Any]:
     homeowner = db.query(User).filter(User.id == homeowner_id, User.role == UserRole.homeowner).first()
     if not homeowner:
         raise AppException("Homeowner not found", status_code=404)
@@ -783,6 +900,19 @@ def invite_homeowner(db: Session, owner_id: str, homeowner_id: str) -> dict[str,
 
     token = f"invite-{uuid.uuid4().hex[:10]}"
     login_link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/login"
+    primary_home = homes[0] if homes else None
+    estate = db.query(Estate).filter(Estate.id == primary_home.estate_id).first() if primary_home and primary_home.estate_id else None
+    resident_name = homeowner.full_name or homeowner.email or "Resident"
+    resolved_unit_name = (unit_name or (primary_home.name if primary_home else "")).strip() or "Assigned unit"
+    estate_name = estate.name if estate else "your estate"
+    clean_temporary_password = (temporary_password or "").strip() or None
+
+    # If a temporary password is provided, update the homeowner's password hash
+    # so they can login with the temporary password sent in the email
+    if clean_temporary_password:
+        homeowner.password_hash = hash_password(clean_temporary_password)
+        db.add(homeowner)
+
     db.add(
         Notification(
             user_id=homeowner_id,
@@ -791,6 +921,8 @@ def invite_homeowner(db: Session, owner_id: str, homeowner_id: str) -> dict[str,
         )
     )
     db.commit()
+    db.refresh(homeowner)  # Ensure homeowner email is fresh after commit
+
     try:
         send_push_fcm(
             db,
@@ -802,22 +934,36 @@ def invite_homeowner(db: Session, owner_id: str, homeowner_id: str) -> dict[str,
     except Exception:
         pass
 
-    email_result = send_email_smtp(
+    # Send invitation email with same pattern as OTP verification
+    email_body = _build_estate_invite_email_body(
+        estate_name=estate_name,
+        resident_name=resident_name,
+        unit_name=resolved_unit_name,
+        email=homeowner.email,
+        temporary_password=clean_temporary_password,
+        login_link=login_link,
+        invite_token=token,
+    )
+
+    delivery = send_email_smtp(
         to_email=homeowner.email,
         subject="Qring Estate Access Invitation",
-        body=(
-            "You have been invited to access your estate dashboard on Qring.\n\n"
-            f"Invite Token: {token}\n"
-            f"Login URL: {login_link}\n\n"
-            "Use your assigned account credentials to sign in."
-        ),
-    )
+        body=email_body,
+    ) or {}
+
+    email_status = str(delivery.get("status") or "unknown")
+    email_reason = delivery.get("reason")
+    email_message_id = delivery.get("messageId")
+
     return {
         "inviteToken": token,
         "sentAt": datetime.utcnow().isoformat(),
-        "emailStatus": email_result.get("status", "unknown"),
-        "emailReason": email_result.get("reason"),
+        "emailStatus": email_status,
+        "emailReason": email_reason,
+        "emailMessageId": email_message_id,
         "loginLink": login_link,
+        "residentName": resident_name,
+        "unitName": resolved_unit_name,
     }
 
 
@@ -891,12 +1037,8 @@ def list_estate_access_logs(db: Session, owner_id: str, limit: int = 100) -> lis
 def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
     usage = _usage_for_owner(db, owner_id)
     effective_sub = get_effective_subscription(db, owner_id, user_role="estate")
-    limits = effective_sub.get("limits", {})
-    max_doors = int(limits.get("maxDoors", 0) or 0)
-    max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
-    if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
-        max_qr_codes = max(max_qr_codes, FREE_ESTATE_LIMIT)
+    capacity = _estate_plan_capacity(effective_sub)
+    used_estates = db.query(Estate).filter(Estate.owner_id == owner_id).count()
 
     return {
         "plan": effective_sub.get("plan", "free"),
@@ -909,13 +1051,19 @@ def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
         "expiresAt": effective_sub.get("expiresAt"),
         "expiresSoon": bool(effective_sub.get("expiresSoon")),
         "trialDaysRemaining": int(effective_sub.get("trialDaysRemaining") or 0),
-        "maxAdmins": int(limits.get("maxAdmins", 1) or 1),
-        "maxDoors": max_doors,
-        "maxQrCodes": max_qr_codes,
+        "maxAdmins": int((effective_sub.get("limits") or {}).get("maxAdmins", 1) or 1),
+        "maxEstates": capacity["maxEstates"],
+        "maxHomes": capacity["maxHomes"],
+        "maxDoors": capacity["maxDoors"],
+        "maxQrCodes": capacity["maxQrCodes"],
+        "usedEstates": used_estates,
+        "usedHomes": usage["homes"],
         "usedDoors": usage["doors"],
         "usedQrCodes": usage["qr_codes"],
-        "remainingDoors": max(max_doors - usage["doors"], 0),
-        "remainingQrCodes": max(max_qr_codes - usage["qr_codes"], 0),
+        "remainingEstates": max(capacity["maxEstates"] - used_estates, 0) if capacity["maxEstates"] > 0 else 0,
+        "remainingHomes": max(capacity["maxHomes"] - usage["homes"], 0) if capacity["maxHomes"] > 0 else 0,
+        "remainingDoors": max(capacity["maxDoors"] - usage["doors"], 0),
+        "remainingQrCodes": max(capacity["maxQrCodes"] - usage["qr_codes"], 0),
     }
 
 

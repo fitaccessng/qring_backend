@@ -32,12 +32,19 @@ def _resolve_env_files() -> list[str]:
     if explicit:
         return [explicit]
 
-    candidates = [
-        MONOREPO_ROOT / ".env.production",
-        BACKEND_ROOT / ".env.production",
-        MONOREPO_ROOT / ".env",
-        BACKEND_ROOT / ".env",
-    ]
+    runtime_env = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    if runtime_env in {"production", "staging"}:
+        candidates = [
+            MONOREPO_ROOT / ".env.production",
+            BACKEND_ROOT / ".env.production",
+            MONOREPO_ROOT / ".env",
+            BACKEND_ROOT / ".env",
+        ]
+    else:
+        candidates = [
+            MONOREPO_ROOT / ".env",
+            BACKEND_ROOT / ".env",
+        ]
     return [str(path) for path in candidates if path.exists()]
 
 

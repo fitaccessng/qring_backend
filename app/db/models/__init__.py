@@ -2,6 +2,27 @@ from __future__ import annotations
 
 from importlib import import_module
 
+_MODEL_MODULES = (
+    "app.db.models.access_pass",
+    "app.db.models.advanced",
+    "app.db.models.appointment",
+    "app.db.models.audit",
+    "app.db.models.device_session",
+    "app.db.models.estate",
+    "app.db.models.estate_alert",
+    "app.db.models.estate_engagement",
+    "app.db.models.homeowner_setting",
+    "app.db.models.maintenance_audit",
+    "app.db.models.payment",
+    "app.db.models.qr_code",
+    "app.db.models.referral_reward",
+    "app.db.models.safety",
+    "app.db.models.session",
+    "app.db.models.subscription_policy",
+    "app.db.models.user",
+    "app.db.models.user_token",
+)
+
 _EXPORT_MAP = {
     "CommunityPost": "app.db.models.advanced",
     "CommunityPostRead": "app.db.models.advanced",
@@ -49,6 +70,9 @@ _EXPORT_MAP = {
     "EmergencyAlertStatus": "app.db.models.safety",
     "EmergencyAlertType": "app.db.models.safety",
     "AlertDeliveryStatus": "app.db.models.safety",
+    "PanicEvent": "app.db.models.safety",
+    "PanicEventStatus": "app.db.models.safety",
+    "PanicMode": "app.db.models.safety",
     "Message": "app.db.models.session",
     "Notification": "app.db.models.session",
     "VisitorReport": "app.db.models.safety",
@@ -65,7 +89,6 @@ _EXPORT_MAP = {
 
 __all__ = list(_EXPORT_MAP.keys())
 
-
 def __getattr__(name: str):
     module_name = _EXPORT_MAP.get(name)
     if not module_name:
@@ -74,3 +97,10 @@ def __getattr__(name: str):
     value = getattr(module, name)
     globals()[name] = value
     return value
+
+
+# Define lazy export resolution before importing submodules so
+# `from app.db.models import SomeModel` keeps working even if another
+# import touches this package while it is still initializing.
+for _module_name in _MODEL_MODULES:
+    import_module(_module_name)

@@ -91,12 +91,15 @@ def _status_label(status: str) -> str:
     return status.title() or "Created"
 
 
-def _serialize_appointment(row: Appointment) -> dict[str, Any]:
+def _serialize_appointment(row: Appointment, *, door: Door | None = None, home: Home | None = None) -> dict[str, Any]:
     return {
         "id": row.id,
         "homeownerId": row.homeowner_id,
         "homeId": row.home_id,
         "doorId": row.door_id,
+        "doorName": door.name if door else None,
+        "entryPoint": (door.gate_label or door.name) if door else None,
+        "homeName": home.name if home else None,
         "visitorName": row.visitor_name,
         "visitorContact": row.visitor_contact,
         "purpose": row.purpose,
@@ -167,13 +170,15 @@ def ensure_appointment_visitor_session(
 
 def list_homeowner_appointments(db: Session, homeowner_id: str, limit: int = 100) -> list[dict[str, Any]]:
     rows = (
-        db.query(Appointment)
+        db.query(Appointment, Door, Home)
+        .join(Door, Door.id == Appointment.door_id)
+        .join(Home, Home.id == Appointment.home_id)
         .filter(Appointment.homeowner_id == homeowner_id)
         .order_by(Appointment.starts_at.desc(), Appointment.created_at.desc())
         .limit(limit)
         .all()
     )
-    return [_serialize_appointment(row) for row in rows]
+    return [_serialize_appointment(row, door=door, home=home) for row, door, home in rows]
 
 
 def create_appointment(
@@ -227,7 +232,7 @@ def create_appointment(
     db.add(appt)
     db.commit()
     db.refresh(appt)
-    return _serialize_appointment(appt)
+    return _serialize_appointment(appt, door=door, home=home)
 
 
 def create_appointment_share(
@@ -506,7 +511,9 @@ def report_appointment_arrival(
         },
     )
 
-    data = _serialize_appointment(appt)
+    door = db.query(Door).filter(Door.id == appt.door_id).first()
+    home = db.query(Home).filter(Home.id == appt.home_id).first()
+    data = _serialize_appointment(appt, door=door, home=home)
     data["sessionId"] = session.id
     data["visitorId"] = session.id
     return data

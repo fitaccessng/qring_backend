@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections import defaultdict
 from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.security import decode_token
-from app.db.models import Message, User, UserRole, VisitorSession, Estate
+from app.db.models import Estate, HomeownerSetting, Message, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
 from app.socket.manager import socket_state
 from app.services.visitor_session_auth import require_visitor_session_access
@@ -47,6 +48,40 @@ def _is_user_allowed_for_session(db, *, user: User, session: VisitorSession) -> 
         estate = db.query(Estate).filter(Estate.id == session.estate_id, Estate.owner_id == user.id).first()
         return bool(estate)
     return False
+
+
+def _normalize_name(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _normalize_phone(value: str | None) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits[-11:] if digits else ""
+
+
+def _user_matches_known_contact(user: User, line: str) -> bool:
+    line = str(line or "").strip()
+    if not line:
+        return False
+    normalized_line = line.lower()
+    return bool(
+        (user.email and user.email.strip().lower() in normalized_line)
+        or (_normalize_phone(user.phone) and _normalize_phone(user.phone) in _normalize_phone(line))
+        or (_normalize_name(user.full_name) and _normalize_name(user.full_name) in _normalize_name(line))
+    )
+
+
+def _contact_homeowner_ids_for_user(db, *, user: User) -> list[str]:
+    rows = db.query(HomeownerSetting).all()
+    homeowner_ids: list[str] = []
+    for row in rows:
+        try:
+            known_contacts = json.loads(row.known_contacts_json or "[]")
+        except Exception:
+            known_contacts = []
+        if any(_user_matches_known_contact(user, item) for item in known_contacts):
+            homeowner_ids.append(row.user_id)
+    return homeowner_ids
 
 
 def register_socket_events(sio):
@@ -141,6 +176,23 @@ def register_socket_events(sio):
         if user_id:
             socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"user:{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
+            await sio.enter_room(sid, f"user_{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    estate_id = user.estate_id
+                    if not estate_id and user.role == UserRole.estate:
+                        estate = db.query(Estate).filter(Estate.owner_id == user.id).order_by(Estate.created_at.desc()).first()
+                        estate_id = estate.id if estate else None
+                    if estate_id:
+                        await sio.enter_room(sid, f"estate_{estate_id}", namespace=settings.DASHBOARD_NAMESPACE)
+                        await sio.enter_room(sid, f"estate:{estate_id}:panic", namespace=settings.DASHBOARD_NAMESPACE)
+                    for homeowner_id in _contact_homeowner_ids_for_user(db, user=user):
+                        await sio.enter_room(sid, f"contacts_{homeowner_id}", namespace=settings.DASHBOARD_NAMESPACE)
+                        await sio.enter_room(sid, f"contacts:{homeowner_id}", namespace=settings.DASHBOARD_NAMESPACE)
+            finally:
+                db.close()
         await sio.emit(
             "dashboard.snapshot",
             {"data": {"message": "connected"}},

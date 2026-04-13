@@ -156,6 +156,11 @@ class EstatePaymentVerifyPayload(BaseModel):
     receiptUrl: Optional[str] = None
 
 
+class EstateInvitePayload(BaseModel):
+    temporaryPassword: Optional[str] = None
+    unitName: Optional[str] = None
+
+
 class EstateAlertUpdatePayload(BaseModel):
     title: str
     description: str = ""
@@ -483,10 +488,17 @@ def estate_update_door_admin_profile(
 @router.post("/homeowners/{homeowner_id}/invite")
 def estate_invite_homeowner(
     homeowner_id: str,
+    payload: EstateInvitePayload,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
-    data = invite_homeowner(db=db, owner_id=user.id, homeowner_id=homeowner_id)
+    data = invite_homeowner(
+        db=db,
+        owner_id=user.id,
+        homeowner_id=homeowner_id,
+        temporary_password=payload.temporaryPassword,
+        unit_name=payload.unitName,
+    )
     return {"data": data}
 
 

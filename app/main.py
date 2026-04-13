@@ -355,6 +355,7 @@ def _ensure_runtime_compatibility_schema() -> None:
 
         if "estates" in table_names:
             columns = {col["name"] for col in inspector.get_columns("estates")}
+            _add_column_if_missing(conn, columns, "estates", "join_code", "VARCHAR(24)")
             _add_column_if_missing(conn, columns, "estates", "reminder_frequency_days", "INTEGER DEFAULT 1")
             _add_column_if_missing(conn, columns, "estates", "security_can_approve_without_homeowner", "BOOLEAN DEFAULT 0")
             _add_column_if_missing(conn, columns, "estates", "security_must_notify_homeowner", "BOOLEAN DEFAULT 1")
@@ -364,6 +365,8 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "estates", "suspicious_visit_window_minutes", "INTEGER DEFAULT 20")
             _add_column_if_missing(conn, columns, "estates", "suspicious_house_threshold", "INTEGER DEFAULT 3")
             _add_column_if_missing(conn, columns, "estates", "suspicious_rejection_threshold", "INTEGER DEFAULT 2")
+            _add_column_if_missing(conn, columns, "estates", "created_at", datetime_sql)
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_estates_join_code ON estates (join_code)"))
 
         if "gate_logs" in table_names:
             columns = {col["name"] for col in inspector.get_columns("gate_logs")}
@@ -752,15 +755,4 @@ app = socketio.ASGIApp(
     sio,
     other_asgi_app=fastapi_app,
     socketio_path=settings.SOCKET_PATH.lstrip("/"),
-)
-
-# Apply CORS at the top-level ASGI app so CORS headers are present even when
-# requests are handled by the socket.io wrapper (or fail before reaching FastAPI).
-app = CORSMiddleware(
-    app,
-    allow_origins=settings.cors_origins,
-    allow_origin_regex=settings.cors_allow_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )

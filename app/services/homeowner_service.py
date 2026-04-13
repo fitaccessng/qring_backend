@@ -179,10 +179,17 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "id": session_id,
                 "name": session.visitor_label or "Visitor",
                 "door": door.name,
+                "gateLabel": door.gate_label or door.name,
                 "last": last_text,
+                "lastSenderType": latest.sender_type if latest else None,
                 "unread": unread_by_session.get(session_id, 0),
                 "time": thread_time.isoformat() if thread_time else datetime.utcnow().isoformat(),
                 "sessionStatus": session.status,
+                "visitorPhone": session.visitor_phone,
+                "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
+                "photoUrl": session.photo_url,
+                "appointmentId": session.appointment_id,
+                "homeName": door.home.name if getattr(door, "home", None) else None,
             }
         )
 
@@ -225,6 +232,7 @@ def list_homeowner_session_messages(
             "sessionId": row.session_id,
             "text": row.body,
             "senderType": row.sender_type,
+            "senderId": row.sender_id,
             "displayName": "Homeowner" if row.sender_type == "homeowner" else (session.visitor_label or "Visitor"),
             "at": row.created_at.isoformat(),
         }
@@ -311,6 +319,7 @@ def list_homeowner_doors(db: Session, homeowner_id: str) -> list[dict[str, Any]]
         {
             "id": door.id,
             "name": door.name,
+            "gateLabel": door.gate_label or door.name,
             "homeName": home_name_by_id.get(door.home_id, "Home"),
             "state": "Online" if door.is_active == "online" else "Offline",
             "qr": qr_by_door.get(door.id, []),

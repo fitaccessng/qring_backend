@@ -5,7 +5,7 @@ import logging
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.db.models import Estate, Home
+from app.db.models import Door, Estate, Home, User
 from app.db.models import HomeownerSetting
 from app.services.payment_service import get_effective_subscription
 
@@ -26,6 +26,10 @@ def get_or_create_homeowner_settings(db: Session, user_id: str) -> HomeownerSett
 
 def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
     row = get_or_create_homeowner_settings(db, user_id)
+    user = db.query(User).filter(User.id == user_id).first()
+    homes = db.query(Home).filter(Home.homeowner_id == user_id).order_by(Home.created_at.asc()).all()
+    home_ids = [home.id for home in homes]
+    doors = db.query(Door).filter(Door.home_id.in_(home_ids)).all() if home_ids else []
     estate_row = None
     try:
         estate_row = (
@@ -43,6 +47,7 @@ def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
     managed_by_estate = bool(estate_row)
     subscription_owner_id = estate_row[1].owner_id if estate_row else user_id
     subscription = get_effective_subscription(db, subscription_owner_id)
+    primary_home = homes[0] if homes else None
     return {
         "pushAlerts": row.push_alerts,
         "soundAlerts": row.sound_alerts,
@@ -56,6 +61,19 @@ def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
         "estateId": estate_row[1].id if estate_row else None,
         "estateName": estate_row[1].name if estate_row else None,
         "subscription": subscription,
+        "profile": {
+            "id": user.id if user else user_id,
+            "fullName": user.full_name if user else "",
+            "email": user.email if user else "",
+            "phone": user.phone if user else None,
+            "role": user.role.value if user and hasattr(user.role, "value") else (str(user.role) if user else "homeowner"),
+            "securityLevel": "Estate Linked" if managed_by_estate else "Platinum",
+        },
+        "home": {
+            "id": primary_home.id if primary_home else None,
+            "name": primary_home.name if primary_home else None,
+            "doorCount": len(doors),
+        },
     }
 
 

@@ -8,6 +8,8 @@ from collections import deque
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from app.middleware.request_context import get_client_ip
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
@@ -27,19 +29,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._lock = threading.Lock()
         self._buckets: dict[str, deque[float]] = {}
 
-    def _get_client_ip(self, request) -> str:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
-
     def _limit_for_path(self, path: str) -> tuple[int, int]:
         if path.startswith("/api/v1/auth"):
             return self.auth_window_seconds, self.auth_max_requests
         return self.window_seconds, self.max_requests
 
     def _get_bucket_key(self, request) -> str:
-        ip = self._get_client_ip(request)
+        ip = getattr(request.state, "client_ip", "") or get_client_ip(request)
         path = request.url.path or ""
         return f"{ip}:{path}"
 
