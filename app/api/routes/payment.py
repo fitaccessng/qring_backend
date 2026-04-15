@@ -115,11 +115,11 @@ def payment_plans(
 def payment_paystack_initialize(
     payload: PaystackInitializePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("homeowner", "estate")),
+    user: User = Depends(require_roles("resident", "estate")),
 ):
     subscription = get_effective_subscription(db, user.id, user_role=user.role.value)
-    if user.role.value == "homeowner" and subscription.get("managedByEstate"):
-        raise AppException("Estate-managed homeowners cannot manage billing directly.", status_code=403)
+    if user.role.value == "resident" and subscription.get("managedByEstate"):
+        raise AppException("Estate-managed residents cannot manage billing directly.", status_code=403)
     data = initialize_paystack_transaction_db(
         db=db,
         user_id=user.id,

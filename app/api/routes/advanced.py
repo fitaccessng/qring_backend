@@ -38,7 +38,7 @@ router = APIRouter()
 
 
 class RecognitionPayload(BaseModel):
-    homeownerId: str
+    residentId: str
     displayName: str
     identifier: str = Field(min_length=6)
     encryptedTemplate: Optional[str] = None

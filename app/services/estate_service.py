@@ -30,7 +30,7 @@ def _build_estate_invite_email_body(
     lines = [
         f"Hello {resident_name},",
         "",
-        f"You have been added to {estate_name} on Qring as a homeowner resident.",
+        f"You have been added to {estate_name} on Qring as a resident.",
         "",
         "Your account details:",
         f"Resident Name: {resident_name}",
@@ -45,7 +45,7 @@ def _build_estate_invite_email_body(
             f"Login URL: {login_link}",
             f"Invite Token: {invite_token}",
             "",
-            "Use these details to sign in to your estate homeowner account.",
+            "Use these details to sign in to your estate resident account.",
             "For security, please change your password after your first login.",
         ]
     )
@@ -204,11 +204,11 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
     home_ids = [home.id for home in homes]
     doors = db.query(Door).filter(Door.home_id.in_(home_ids)).order_by(Door.name.asc()).all() if home_ids else []
 
-    homeowner_ids = sorted({home.homeowner_id for home in homes if home.homeowner_id})
-    homeowners = (
-        db.query(User).filter(User.id.in_(homeowner_ids), User.role == UserRole.homeowner).all() if homeowner_ids else []
+    resident_ids = sorted({home.resident_id for home in homes if home.resident_id})
+    residents = (
+        db.query(User).filter(User.id.in_(resident_ids), User.role == UserRole.resident).all() if resident_ids else []
     )
-    homeowner_by_id = {user.id: user for user in homeowners}
+    resident_by_id = {user.id: user for user in residents}
     home_by_id = {home.id: home for home in homes}
     estate_ids = [estate.id for estate in estates]
     security_users = (

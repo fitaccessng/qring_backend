@@ -18,7 +18,7 @@ class SubscriptionPlan(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     amount: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(10), default="NGN")
-    audience: Mapped[str] = mapped_column(String(30), default="homeowner")
+    audience: Mapped[str] = mapped_column(String(30), default="resident")
     max_doors: Mapped[int] = mapped_column(Integer, default=1)
     max_qr_codes: Mapped[int] = mapped_column(Integer, default=1)
     max_admins: Mapped[int] = mapped_column(Integer, default=1)
@@ -57,9 +57,9 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(30), default="inactive")
     payment_status: Mapped[str] = mapped_column(String(30), default="unpaid")
     billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly")
-    tenant_type: Mapped[str] = mapped_column(String(20), default="homeowner")
+    tenant_type: Mapped[str] = mapped_column(String(20), default="resident")
     tenant_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
-    billing_scope: Mapped[str] = mapped_column(String(20), default="homeowner")
+    billing_scope: Mapped[str] = mapped_column(String(20), default="resident")
     auto_renew: Mapped[bool] = mapped_column(Boolean, default=True)
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
     grace_days: Mapped[int] = mapped_column(Integer, default=5)
@@ -77,8 +77,8 @@ class Subscription(Base):
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
-class HomeownerWallet(Base):
-    __tablename__ = "homeowner_wallets"
+class ResidentWallet(Base):
+    __tablename__ = "resident_wallets"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, unique=True, index=True)
@@ -92,8 +92,8 @@ class HomeownerWallet(Base):
     )
 
 
-class HomeownerWalletTransaction(Base):
-    __tablename__ = "homeowner_wallet_transactions"
+class ResidentWalletTransaction(Base):
+    __tablename__ = "resident_wallet_transactions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)

@@ -8,7 +8,7 @@ from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.security import decode_token
-from app.db.models import Estate, HomeownerSetting, Message, User, UserRole, VisitorSession
+from app.db.models import Estate, ResidentSetting, Message, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
 from app.socket.manager import socket_state
 from app.services.visitor_session_auth import require_visitor_session_access
@@ -38,8 +38,8 @@ def _resolve_user_id(auth: dict | None) -> tuple[str | None, str | None]:
 def _is_user_allowed_for_session(db, *, user: User, session: VisitorSession) -> bool:
     if user.role == UserRole.admin:
         return True
-    if user.role == UserRole.homeowner:
-        return session.homeowner_id == user.id
+    if user.role == UserRole.resident:
+        return session.resident_id == user.id
     if user.role == UserRole.security:
         return bool(user.estate_id) and bool(session.estate_id) and user.estate_id == session.estate_id
     if user.role == UserRole.estate:
@@ -71,17 +71,17 @@ def _user_matches_known_contact(user: User, line: str) -> bool:
     )
 
 
-def _contact_homeowner_ids_for_user(db, *, user: User) -> list[str]:
-    rows = db.query(HomeownerSetting).all()
-    homeowner_ids: list[str] = []
+def _contact_resident_ids_for_user(db, *, user: User) -> list[str]:
+    rows = db.query(ResidentSetting).all()
+    resident_ids: list[str] = []
     for row in rows:
         try:
             known_contacts = json.loads(row.known_contacts_json or "[]")
         except Exception:
             known_contacts = []
         if any(_user_matches_known_contact(user, item) for item in known_contacts):
-            homeowner_ids.append(row.user_id)
-    return homeowner_ids
+            resident_ids.append(row.user_id)
+    return resident_ids
 
 
 def register_socket_events(sio):
@@ -109,8 +109,8 @@ def register_socket_events(sio):
 
                 resolved_sender_type = "visitor"
                 if sender_user_id:
-                    if sender_user_id == session.homeowner_id:
-                        resolved_sender_type = "homeowner"
+                    if sender_user_id == session.resident_id:
+                        resolved_sender_type = "resident"
                     else:
                         from app.db.models import User
 
@@ -122,7 +122,7 @@ def register_socket_events(sio):
                     session_id=session_id,
                     sender_type=resolved_sender_type,
                     sender_id=sender_user_id,
-                    receiver_id=session.homeowner_id if resolved_sender_type != "homeowner" else None,
+                    receiver_id=session.resident_id if resolved_sender_type != "resident" else None,
                     body=body,
                     created_at=datetime.fromisoformat(created_at_iso),
                 )
@@ -188,9 +188,9 @@ def register_socket_events(sio):
                     if estate_id:
                         await sio.enter_room(sid, f"estate_{estate_id}", namespace=settings.DASHBOARD_NAMESPACE)
                         await sio.enter_room(sid, f"estate:{estate_id}:panic", namespace=settings.DASHBOARD_NAMESPACE)
-                    for homeowner_id in _contact_homeowner_ids_for_user(db, user=user):
-                        await sio.enter_room(sid, f"contacts_{homeowner_id}", namespace=settings.DASHBOARD_NAMESPACE)
-                        await sio.enter_room(sid, f"contacts:{homeowner_id}", namespace=settings.DASHBOARD_NAMESPACE)
+                    for resident_id in _contact_resident_ids_for_user(db, user=user):
+                        await sio.enter_room(sid, f"contacts_{resident_id}", namespace=settings.DASHBOARD_NAMESPACE)
+                        await sio.enter_room(sid, f"contacts:{resident_id}", namespace=settings.DASHBOARD_NAMESPACE)
             finally:
                 db.close()
         await sio.emit(
@@ -215,7 +215,7 @@ def register_socket_events(sio):
         user_id, _role = _resolve_user_id(auth)
         if user_id:
             socket_state.bind(user_id, sid)
-            await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+            await sio.enter_room(sid, f"resident:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def disconnect(sid):  # type: ignore[no-redef]
