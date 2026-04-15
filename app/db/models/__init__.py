@@ -50,6 +50,7 @@ _EXPORT_MAP = {
     "Estate": "app.db.models.estate",
     "Home": "app.db.models.estate",
     "HomeownerSetting": "app.db.models.homeowner_setting",
+    "ResidentSetting": "app.db.models.homeowner_setting",
     "AuditLog": "app.db.models.audit",
     "GateLog": "app.db.models.audit",
     "HomeownerWallet": "app.db.models.payment",

@@ -38,6 +38,7 @@ from app.services.subscription_policy_service import (
 settings = get_settings()
 REFERRAL_REWARD_AMOUNT = 2000
 DEFAULT_GRACE_DAYS = 5
+SIGNUP_TRIAL_DAYS = 30
 
 DEFAULT_PLAN_CATALOG = [
     {
@@ -518,12 +519,26 @@ def _encode_json_list(values: list[str] | None) -> str:
     return json.dumps([str(item).strip() for item in (values or []) if str(item).strip()])
 
 
-def _build_feature_flags(features: list[str]) -> dict[str, bool]:
+def _is_user_in_signup_trial(user: User, *, now: datetime | None = None) -> bool:
+    """Check if user is within 30 days of signup to grant all features."""
+    if not user or not user.created_at:
+        return False
+    current_time = now or utc_now()
+    created_at = ensure_utc(user.created_at)
+    days_since_signup = (current_time - created_at).days
+    return 0 <= days_since_signup < SIGNUP_TRIAL_DAYS
+
+
+def _build_feature_flags(features: list[str], user: User | None = None, *, now: datetime | None = None) -> dict[str, bool]:
+    # If user is within 30-day signup trial, grant all features
+    if _is_user_in_signup_trial(user, now=now):
+        return {feature: True for feature in sorted(ALL_FEATURE_FLAGS)}
+    
     enabled = {str(item).strip() for item in (features or []) if str(item).strip()}
     return {feature: feature in enabled for feature in sorted(ALL_FEATURE_FLAGS)}
 
 
-def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any]) -> dict[str, Any]:
+def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any], user: User | None = None, *, now: datetime | None = None) -> dict[str, Any]:
     features = _decode_json_list(getattr(row, "enabled_features", "[]")) or list(catalog_row.get("enabledFeatures") or [])
     restrictions = _decode_json_list(getattr(row, "restrictions", "[]")) or list(catalog_row.get("restrictions") or [])
     monthly_amount = int(row.amount or 0)
@@ -553,7 +568,7 @@ def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any]) -> dict[st
         "description": catalog_row.get("description", ""),
         "enabledFeatures": features,
         "restrictions": restrictions,
-        "featureFlags": _build_feature_flags(features),
+        "featureFlags": _build_feature_flags(features, user=user, now=now),
         "billingCycles": {
             "monthly": {
                 "amount": monthly_amount,
@@ -1172,14 +1187,14 @@ def list_subscription_plans(db: Session, include_inactive: bool = False):
     return [_plan_payload(row, _catalog_row_by_id(row.id)) for row in rows]
 
 
-def get_plan_or_raise(db: Session, plan_id: str, include_inactive: bool = False):
+def get_plan_or_raise(db: Session, plan_id: str, include_inactive: bool = False, user: User | None = None, *, now: datetime | None = None):
     _ensure_default_plans(db)
     q = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == plan_id)
     if not include_inactive:
         q = q.filter(SubscriptionPlan.active == True)  # noqa: E712
     row = q.first()
     if row:
-        return _plan_payload(row, _catalog_row_by_id(row.id))
+        return _plan_payload(row, _catalog_row_by_id(row.id), user=user, now=now)
     raise AppException("Invalid plan selected", status_code=400)
 
 
@@ -1263,7 +1278,8 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
     if not row:
         # Avoid depending on subscription-plan tables for the free baseline.
         free_plan = _catalog_row_by_id(_default_plan_id_for_audience(audience)) or {"id": "free", "name": "Free", "audience": audience}
-        free_feature_flags = _build_feature_flags(list(free_plan.get("enabledFeatures") or []))
+        now = utc_now()
+        free_feature_flags = _build_feature_flags(list(free_plan.get("enabledFeatures") or []), user=user, now=now)
         summary = {
             "status": "active",
             "days_to_expiry": None,
@@ -1328,16 +1344,17 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         result["subscriptionOwnerId"] = subscription_owner_id
         result["estateId"] = estate_id
         result["estateName"] = estate_name
+        result["inSignupTrial"] = _is_user_in_signup_trial(user, now=now)
         return result
 
     try:
-        plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True)
+        now = utc_now()
+        plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True, user=user, now=now)
     except AppException:
-        plan_meta = get_plan_or_raise(db, _default_plan_id_for_audience(audience))
+        now = utc_now()
+        plan_meta = get_plan_or_raise(db, _default_plan_id_for_audience(audience), user=user, now=now)
         row.plan = plan_meta["id"]
         db.commit()
-
-    now = utc_now()
     _apply_subscription_lifecycle(row, now=now)
     db.commit()
     db.refresh(row)
@@ -1386,6 +1403,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
     result["subscriptionOwnerId"] = subscription_owner_id
     result["estateId"] = estate_id
     result["estateName"] = estate_name
+    result["inSignupTrial"] = _is_user_in_signup_trial(user, now=now)
     _notify_trial_and_expiry_windows(db, user_id=user_id, subscription=result)
     return result
 

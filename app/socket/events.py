@@ -8,7 +8,7 @@ from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.security import decode_token
-from app.db.models import Estate, ResidentSetting, Message, User, UserRole, VisitorSession
+from app.db.models import Estate, HomeownerSetting, Message, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
 from app.socket.manager import socket_state
 from app.services.visitor_session_auth import require_visitor_session_access
@@ -72,7 +72,7 @@ def _user_matches_known_contact(user: User, line: str) -> bool:
 
 
 def _contact_resident_ids_for_user(db, *, user: User) -> list[str]:
-    rows = db.query(ResidentSetting).all()
+    rows = db.query(HomeownerSetting).all()
     resident_ids: list[str] = []
     for row in rows:
         try:
