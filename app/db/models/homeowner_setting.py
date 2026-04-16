@@ -24,3 +24,7 @@ class ResidentSetting(Base):
     sms_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# Alias for backward compatibility
+HomeownerSetting = ResidentSetting
