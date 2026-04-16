@@ -77,7 +77,7 @@ class Subscription(Base):
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
-class ResidentWallet(Base):
+class HomeownerWallet(Base):
     __tablename__ = "resident_wallets"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -92,7 +92,7 @@ class ResidentWallet(Base):
     )
 
 
-class ResidentWalletTransaction(Base):
+class HomeownerWalletTransaction(Base):
     __tablename__ = "resident_wallet_transactions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
