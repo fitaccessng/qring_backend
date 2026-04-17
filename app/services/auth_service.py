@@ -235,15 +235,17 @@ def signup(
         password_hash=hash_password(password),
         role=user_role,
         referred_by_user_id=referrer.id if referrer else None,
+        email_verified=settings.ENVIRONMENT == "development",  # Auto-verify in development
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     # Send email verification (best-effort). Do not block signup on SMTP.
-    try:
-        request_email_verification(db, user.email)
-    except Exception:
-        logger.exception("Unable to send verification email for user=%s", user.id)
+    if not user.email_verified:
+        try:
+            request_email_verification(db, user.email)
+        except Exception:
+            logger.exception("Unable to send verification email for user=%s", user.id)
     return {"id": user.id, "email": user.email}
 
 

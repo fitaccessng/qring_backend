@@ -204,11 +204,11 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
     home_ids = [home.id for home in homes]
     doors = db.query(Door).filter(Door.home_id.in_(home_ids)).order_by(Door.name.asc()).all() if home_ids else []
 
-    resident_ids = sorted({home.resident_id for home in homes if home.resident_id})
-    residents = (
-        db.query(User).filter(User.id.in_(resident_ids), User.role == UserRole.resident).all() if resident_ids else []
+    homeowner_ids = sorted({home.homeowner_id for home in homes if home.homeowner_id})
+    homeowners = (
+        db.query(User).filter(User.id.in_(homeowner_ids)).all() if homeowner_ids else []
     )
-    resident_by_id = {user.id: user for user in residents}
+    homeowner_by_id = {user.id: user for user in homeowners}
     home_by_id = {home.id: home for home in homes}
     estate_ids = [estate.id for estate in estates]
     security_users = (
@@ -294,12 +294,12 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
                 "id": row.id,
                 "name": row.name,
                 "estateId": row.estate_id,
-                "homeownerId": row.homeowner_id,
-                "homeownerName": homeowner_by_id[row.homeowner_id].full_name if row.homeowner_id in homeowner_by_id else "",
-                "homeownerEmail": homeowner_by_id[row.homeowner_id].email if row.homeowner_id in homeowner_by_id else "",
+                "homeownerId": row.resident_id,
+                "homeownerName": homeowner_by_id[row.resident_id].full_name if row.resident_id in homeowner_by_id else "",
+                "homeownerEmail": homeowner_by_id[row.resident_id].email if row.resident_id in homeowner_by_id else "",
                 "homeownerRoleLabel": (
                     "Estate Homeowner"
-                    if row.homeowner_id in homeowner_by_id and homeowner_by_id[row.homeowner_id].estate_id == row.estate_id
+                    if row.resident_id in homeowner_by_id and homeowner_by_id[row.resident_id].estate_id == row.estate_id
                     else "Homeowner"
                 ),
             }
