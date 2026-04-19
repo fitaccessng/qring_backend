@@ -294,7 +294,15 @@ def homeowner_doors(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    return {"data": get_homeowner_doors_data(db, homeowner_id=user.id)}
+    # Always return a 'doors' key with a list, matching frontend expectations
+    data = get_homeowner_doors_data(db, homeowner_id=user.id)
+    # If data is a dict with 'doors', return as is; else wrap in 'doors'
+    if isinstance(data, dict) and "doors" in data:
+        return {"doors": data["doors"]}
+    elif isinstance(data, list):
+        return {"doors": data}
+    else:
+        return {"doors": []}
 
 
 @router.post("/doors")

@@ -1,3 +1,18 @@
+@fastapi_app.middleware("http")
+async def remove_coop_header(request: Request, call_next):
+    response = await call_next(request)
+    # Remove Cross-Origin-Opener-Policy header if present
+    if "cross-origin-opener-policy" in response.headers:
+        del response.headers["cross-origin-opener-policy"]
+    return response
+from fastapi import Request
+@fastapi_app.middleware("http")
+async def log_origin_and_cors(request: Request, call_next):
+    origin = request.headers.get("origin")
+    response = await call_next(request)
+    cors_header = response.headers.get("access-control-allow-origin")
+    logging.info(f"[CORS] Incoming Origin: {origin} | CORS Decision: {cors_header}")
+    return response
 from __future__ import annotations
 
 import logging
