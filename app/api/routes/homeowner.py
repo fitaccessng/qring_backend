@@ -114,6 +114,7 @@ class AppointmentCreatePayload(BaseModel):
     doorId: str
     visitorName: str
     visitorContact: str = ""
+    visitorEmail: Optional[str] = None
     purpose: str = ""
     startsAt: str
     endsAt: str
@@ -150,6 +151,7 @@ def homeowner_create_appointment(
         door_id=payload.doorId,
         visitor_name=payload.visitorName,
         visitor_contact=payload.visitorContact,
+        visitor_email=payload.visitorEmail,
         purpose=payload.purpose,
         starts_at_iso=payload.startsAt,
         ends_at_iso=payload.endsAt,

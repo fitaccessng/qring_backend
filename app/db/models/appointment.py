@@ -20,6 +20,7 @@ class Appointment(Base):
     door_id: Mapped[str] = mapped_column(String(36), ForeignKey("doors.id"), nullable=False, index=True)
     visitor_name: Mapped[str] = mapped_column(String(120), default="Visitor")
     visitor_contact: Mapped[str] = mapped_column(String(120), default="")
+    visitor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     purpose: Mapped[str] = mapped_column(Text, default="")
     starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)

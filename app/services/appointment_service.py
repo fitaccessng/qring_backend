@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import Appointment, Door, Home, VisitorSession
+from app.db.models import Appointment, Door, Home, User, VisitorSession
 from app.services.payment_service import require_subscription_feature
 from app.services.notification_service import create_notification
+from app.services.provider_integrations import send_email_smtp
 from app.services.qr_token_service import (
     build_qr_token_payload,
     build_secure_token,
@@ -102,6 +103,7 @@ def _serialize_appointment(row: Appointment, *, door: Door | None = None, home: 
         "homeName": home.name if home else None,
         "visitorName": row.visitor_name,
         "visitorContact": row.visitor_contact,
+        "visitorEmail": row.visitor_email,
         "purpose": row.purpose,
         "startsAt": row.starts_at.isoformat() if row.starts_at else None,
         "endsAt": row.ends_at.isoformat() if row.ends_at else None,
@@ -188,6 +190,7 @@ def create_appointment(
     door_id: str,
     visitor_name: str,
     visitor_contact: str,
+    visitor_email: str | None,
     purpose: str,
     starts_at_iso: str,
     ends_at_iso: str,
@@ -221,6 +224,7 @@ def create_appointment(
         door_id=door.id,
         visitor_name=(visitor_name or "Visitor").strip() or "Visitor",
         visitor_contact=(visitor_contact or "").strip(),
+        visitor_email=(visitor_email or "").strip().lower() or None,
         purpose=(purpose or "").strip(),
         starts_at=starts_at,
         ends_at=ends_at,
@@ -232,7 +236,42 @@ def create_appointment(
     db.add(appt)
     db.commit()
     db.refresh(appt)
-    return _serialize_appointment(appt, door=door, home=home)
+    payload = _serialize_appointment(appt, door=door, home=home)
+
+    if appt.visitor_email:
+        share_data = create_appointment_share(db, homeowner_id=homeowner_id, appointment_id=appt.id)
+        payload.update(
+            {
+                "shareToken": share_data.get("shareToken"),
+                "shareUrl": share_data.get("shareUrl"),
+                "shareExpiresAt": share_data.get("expiresAt"),
+            }
+        )
+
+        homeowner = db.query(User).filter(User.id == homeowner_id).first()
+        homeowner_name = (homeowner.full_name if homeowner else "Homeowner").strip() or "Homeowner"
+        entry_point = (door.gate_label or door.name or "your entry point").strip()
+        start_label = starts_at.strftime("%b %d, %Y %I:%M %p")
+        end_label = ends_at.strftime("%b %d, %Y %I:%M %p")
+        email_body = (
+            f"Hello {appt.visitor_name},\n\n"
+            f"{homeowner_name} scheduled a QRing visit for you.\n\n"
+            f"Entry point: {entry_point}\n"
+            f"Visit window: {start_label} to {end_label}\n"
+            f"Purpose: {appt.purpose or 'Scheduled visit'}\n\n"
+            "Open this secure QRing link to confirm the visit and enable location updates:\n"
+            f"{share_data.get('shareUrl')}\n\n"
+            "When you get close to the property after accepting, QRing will notify the homeowner automatically."
+        )
+        delivery = send_email_smtp(
+            to_email=appt.visitor_email,
+            subject=f"QRing appointment invitation for {start_label}",
+            body=email_body,
+        ) or {}
+        payload["inviteEmailStatus"] = delivery.get("status") or "unknown"
+        payload["inviteEmailReason"] = delivery.get("reason")
+
+    return payload
 
 
 def create_appointment_share(
@@ -513,6 +552,25 @@ def report_appointment_arrival(
 
     door = db.query(Door).filter(Door.id == appt.door_id).first()
     home = db.query(Home).filter(Home.id == appt.home_id).first()
+    homeowner = db.query(User).filter(User.id == appt.homeowner_id).first()
+    homeowner_email = str(homeowner.email or "").strip().lower() if homeowner else ""
+    if homeowner_email:
+        entry_point = ((door.gate_label or door.name) if door else "your property").strip()
+        arrival_label = appt.arrived_at.strftime("%b %d, %Y %I:%M %p") if appt.arrived_at else datetime.utcnow().strftime("%b %d, %Y %I:%M %p")
+        try:
+            send_email_smtp(
+                to_email=homeowner_email,
+                subject="QRing arrival alert",
+                body=(
+                    f"Hello {(homeowner.full_name if homeowner else 'Homeowner')},\n\n"
+                    f"{appt.visitor_name or 'Your visitor'} entered the geofence and is approaching {entry_point}.\n\n"
+                    f"Purpose: {appt.purpose or 'Scheduled visit'}\n"
+                    f"Arrival time: {arrival_label}\n\n"
+                    "Open your QRing dashboard to review the appointment and respond if needed."
+                ),
+            )
+        except Exception:
+            pass
     data = _serialize_appointment(appt, door=door, home=home)
     data["sessionId"] = session.id
     data["visitorId"] = session.id
