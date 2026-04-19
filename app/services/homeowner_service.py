@@ -12,7 +12,9 @@ from app.db.models import Appointment, Door, Home, Message, Notification, QRCode
 from app.core.exceptions import AppException
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
-FREE_RESIDENT_LIMIT = 1
+FREE_HOMEOWNER_LIMIT = 1
+# Backwards-compatible alias (older code paths used "resident").
+FREE_RESIDENT_LIMIT = FREE_HOMEOWNER_LIMIT
 FREE_ESTATE_MANAGED_LIMIT = 5
 
 STATUS_LABELS = {
@@ -31,10 +33,10 @@ STATUS_LABELS = {
 }
 
 
-def get_resident_context(db: Session, resident_id: str) -> dict[str, Any]:
+def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
     row = (
         db.query(Home)
-        .filter(Home.resident_id == resident_id, Home.estate_id.is_not(None))
+        .filter(Home.homeowner_id == homeowner_id, Home.estate_id.is_not(None))
         .order_by(Home.created_at.desc())
         .first()
     )
@@ -57,12 +59,17 @@ def get_resident_context(db: Session, resident_id: str) -> dict[str, Any]:
     }
 
 
-def _resolve_subscription_owner_id(db: Session, resident_id: str) -> str:
-    context = get_resident_context(db, resident_id)
-    return context.get("estateOwnerId") or resident_id
+def get_resident_context(db: Session, resident_id: str) -> dict[str, Any]:
+    # Backwards-compatible wrapper for older callers.
+    return get_homeowner_context(db, homeowner_id=resident_id)
 
 
-def list_resident_visits(db: Session, resident_id: str, limit: int = 50) -> list[dict[str, Any]]:
+def _resolve_subscription_owner_id(db: Session, homeowner_id: str) -> str:
+    context = get_homeowner_context(db, homeowner_id)
+    return context.get("estateOwnerId") or homeowner_id
+
+
+def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     effective_sub = get_effective_subscription(db, homeowner_id, user_role="homeowner")
     retention_days = int(((effective_sub or {}).get("limits") or {}).get("logRetentionDays") or 0)
     cutoff = datetime.utcnow() - timedelta(days=retention_days) if retention_days > 0 else None
@@ -114,6 +121,11 @@ def list_resident_visits(db: Session, resident_id: str, limit: int = 50) -> list
         }
         for session, door in rows
     ]
+
+
+def list_resident_visits(db: Session, resident_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    # Backwards-compatible wrapper for older callers.
+    return list_homeowner_visits(db, homeowner_id=resident_id, limit=limit)
 
 
 def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 50) -> list[dict[str, Any]]:

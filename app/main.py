@@ -609,12 +609,21 @@ def _ensure_homeowner_payment_schema() -> None:
 
 
 def _ensure_wallet_schema() -> None:
+    # Wallet models are defined in app.db.models.payment but the table names
+    # were renamed from "homeowner_*" to "resident_*". Avoid hard-coding the
+    # old names to prevent KeyError on startup.
+    from app.db.models.payment import HomeownerWallet, HomeownerWalletTransaction
+
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
-    if "homeowner_wallets" in table_names and "homeowner_wallet_transactions" in table_names:
+    wallet_table = HomeownerWallet.__tablename__
+    transaction_table = HomeownerWalletTransaction.__tablename__
+
+    if wallet_table in table_names and transaction_table in table_names:
         return
-    Base.metadata.tables["homeowner_wallets"].create(bind=engine, checkfirst=True)
-    Base.metadata.tables["homeowner_wallet_transactions"].create(bind=engine, checkfirst=True)
+
+    Base.metadata.tables[wallet_table].create(bind=engine, checkfirst=True)
+    Base.metadata.tables[transaction_table].create(bind=engine, checkfirst=True)
 
 
 def _ensure_subscription_schema() -> None:

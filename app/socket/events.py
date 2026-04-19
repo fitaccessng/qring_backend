@@ -38,8 +38,8 @@ def _resolve_user_id(auth: dict | None) -> tuple[str | None, str | None]:
 def _is_user_allowed_for_session(db, *, user: User, session: VisitorSession) -> bool:
     if user.role == UserRole.admin:
         return True
-    if user.role == UserRole.resident:
-        return session.resident_id == user.id
+    if user.role == UserRole.homeowner:
+        return session.homeowner_id == user.id
     if user.role == UserRole.security:
         return bool(user.estate_id) and bool(session.estate_id) and user.estate_id == session.estate_id
     if user.role == UserRole.estate:
@@ -109,8 +109,8 @@ def register_socket_events(sio):
 
                 resolved_sender_type = "visitor"
                 if sender_user_id:
-                    if sender_user_id == session.resident_id:
-                        resolved_sender_type = "resident"
+                    if sender_user_id == session.homeowner_id:
+                        resolved_sender_type = "homeowner"
                     else:
                         from app.db.models import User
 
@@ -122,7 +122,7 @@ def register_socket_events(sio):
                     session_id=session_id,
                     sender_type=resolved_sender_type,
                     sender_id=sender_user_id,
-                    receiver_id=session.resident_id if resolved_sender_type != "resident" else None,
+                    receiver_id=session.homeowner_id if resolved_sender_type != "homeowner" else None,
                     body=body,
                     created_at=datetime.fromisoformat(created_at_iso),
                 )
@@ -216,6 +216,7 @@ def register_socket_events(sio):
         if user_id:
             socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"resident:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+            await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def disconnect(sid):  # type: ignore[no-redef]

@@ -294,12 +294,12 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
                 "id": row.id,
                 "name": row.name,
                 "estateId": row.estate_id,
-                "homeownerId": row.resident_id,
-                "homeownerName": homeowner_by_id[row.resident_id].full_name if row.resident_id in homeowner_by_id else "",
-                "homeownerEmail": homeowner_by_id[row.resident_id].email if row.resident_id in homeowner_by_id else "",
+                "homeownerId": row.homeowner_id,
+                "homeownerName": homeowner_by_id[row.homeowner_id].full_name if row.homeowner_id in homeowner_by_id else "",
+                "homeownerEmail": homeowner_by_id[row.homeowner_id].email if row.homeowner_id in homeowner_by_id else "",
                 "homeownerRoleLabel": (
                     "Estate Homeowner"
-                    if row.resident_id in homeowner_by_id and homeowner_by_id[row.resident_id].estate_id == row.estate_id
+                    if row.homeowner_id in homeowner_by_id and homeowner_by_id[row.homeowner_id].estate_id == row.estate_id
                     else "Homeowner"
                 ),
             }
@@ -533,13 +533,17 @@ def create_estate_homeowner(
     full_name: str,
     email: str,
     password: str,
-) -> User:
+    unit_name: str | None = None,
+    door_name: str | None = None,
+) -> dict[str, Any]:
     _require_estate_owner(db, estate_id, owner_id)
     subscription = get_effective_subscription(db, owner_id, user_role="estate")
     _enforce_home_limit(db, owner_id, subscription)
 
     email_clean = (email or "").strip().lower()
     full_name_clean = (full_name or "").strip()
+    unit_name_clean = (unit_name or "").strip()
+    door_name_clean = (door_name or "").strip()
     if not email_clean or not password or not full_name_clean:
         raise AppException("fullName, email and password are required", status_code=400)
 
@@ -559,19 +563,63 @@ def create_estate_homeowner(
     db.add(user)
     db.flush()
 
-    # Ensure each created homeowner is persisted under the estate scope immediately.
-    # This guarantees they appear in estate listings even before door assignment.
-    base_home_name = f"{full_name_clean} Home"
+    # Keep home/door records behind the scenes because the rest of the platform routes
+    # visits, QR scans, alerts, and access logs through them.
+    base_home_name = unit_name_clean or f"{full_name_clean} Home"
     home_name = base_home_name
     suffix = 2
     while db.query(Home).filter(Home.estate_id == estate_id, Home.name == home_name).first():
         home_name = f"{base_home_name} {suffix}"
         suffix += 1
-    db.add(Home(name=home_name, estate_id=estate_id, homeowner_id=user.id))
+
+    effective_sub = get_effective_subscription(db, owner_id, user_role="estate")
+    capacity = _estate_plan_capacity(effective_sub)
+    usage = _usage_for_owner(db, owner_id)
+
+    max_doors = int(capacity.get("maxDoors") or 0)
+    max_qr_codes = int(capacity.get("maxQrCodes") or 0)
+    if max_doors and usage["doors"] >= max_doors:
+        raise AppException(
+            f"Your {effective_sub.get('planName') or effective_sub.get('plan') or 'current'} plan supports only {max_doors} doors. Upgrade to add another resident access point.",
+            status_code=402,
+        )
+    if max_qr_codes and usage["qr_codes"] >= max_qr_codes:
+        raise AppException(
+            f"Your {effective_sub.get('planName') or effective_sub.get('plan') or 'current'} plan supports only {max_qr_codes} QR codes. Upgrade to add another resident access point.",
+            status_code=402,
+        )
+
+    home = Home(name=home_name, estate_id=estate_id, homeowner_id=user.id)
+    db.add(home)
+    db.flush()
+
+    resolved_door_name = door_name_clean or "Main Door"
+    door = Door(name=resolved_door_name, home_id=home.id, is_active="online")
+    db.add(door)
+    db.flush()
+
+    qr = QRCode(
+        qr_id=f"qr-{uuid.uuid4().hex[:12]}",
+        plan="single",
+        home_id=home.id,
+        doors_csv=door.id,
+        mode="direct",
+        estate_id=estate_id,
+        active=True,
+    )
+    db.add(qr)
 
     db.commit()
     db.refresh(user)
-    return user
+    db.refresh(home)
+    db.refresh(door)
+    db.refresh(qr)
+    return {
+        "homeowner": user,
+        "home": home,
+        "door": door,
+        "qr": qr,
+    }
 
 
 def create_estate_security_user(
@@ -825,33 +873,31 @@ def provision_estate_door_with_homeowner(
     homeowner_username: str,
     homeowner_password: str,
 ) -> dict[str, Any]:
-    homeowner = create_estate_homeowner(
+    created = create_estate_homeowner(
         db=db,
         owner_id=owner_id,
         estate_id=estate_id,
         full_name=homeowner_full_name,
         email=homeowner_username,  # Using username as email since function doesn't have email param
         password=homeowner_password,
-    )
-    home = add_home(
-        db=db,
-        name=home_name,
-        estate_id=estate_id,
-        homeowner_id=homeowner.id,
-        owner_id=owner_id,
-    )
-    created = add_estate_door(
-        db=db,
-        owner_id=owner_id,
-        estate_id=estate_id,
-        home_id=home.id,
+        unit_name=home_name,
         door_name=door_name,
-        generate_qr=True,
     )
+    homeowner = created["homeowner"]
+    home = created["home"]
+    door = created["door"]
+    qr = created["qr"]
     return {
         "homeowner": {"id": homeowner.id, "fullName": homeowner.full_name, "username": homeowner_username},
         "home": {"id": home.id, "name": home.name},
-        **created,
+        "door": {"id": door.id, "name": door.name, "homeId": door.home_id, "state": "Online"},
+        "qr": {
+            "id": qr.id,
+            "qrId": qr.qr_id,
+            "scanUrl": f"/scan/{qr.qr_id}",
+            "mode": qr.mode,
+            "plan": qr.plan,
+        },
     }
 
 

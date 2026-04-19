@@ -66,6 +66,8 @@ class EstateHomeownerCreate(BaseModel):
     fullName: str
     email: str
     password: str
+    unitName: Optional[str] = None
+    doorName: Optional[str] = None
 
 
 class EstateDoorCreate(BaseModel):
@@ -239,19 +241,41 @@ def estate_create_homeowner(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
-    homeowner = create_estate_homeowner(
+    created = create_estate_homeowner(
         db=db,
         owner_id=user.id,
         estate_id=payload.estateId,
         full_name=payload.fullName,
         email=payload.email,
         password=payload.password,
+        unit_name=payload.unitName,
+        door_name=payload.doorName,
     )
+    homeowner = created["homeowner"]
+    home = created["home"]
+    door = created["door"]
+    qr = created["qr"]
     return {
         "data": {
             "id": homeowner.id,
             "fullName": homeowner.full_name,
             "email": homeowner.email,
+            "home": {
+                "id": home.id,
+                "name": home.name,
+            },
+            "door": {
+                "id": door.id,
+                "name": door.name,
+                "homeId": door.home_id,
+            },
+            "qr": {
+                "id": qr.id,
+                "qrId": qr.qr_id,
+                "scanUrl": f"/scan/{qr.qr_id}",
+                "mode": qr.mode,
+                "plan": qr.plan,
+            },
         }
     }
 

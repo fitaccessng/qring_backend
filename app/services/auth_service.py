@@ -220,8 +220,12 @@ def signup(
 
     _validate_password_strength(password)
 
+    normalized_role = (role or "").strip().lower()
+    if normalized_role == "resident":
+        normalized_role = "homeowner"
+
     try:
-        user_role = UserRole(role)
+        user_role = UserRole(normalized_role)
     except ValueError as exc:
         raise AppException("Invalid role", status_code=400) from exc
     if user_role == UserRole.admin:
@@ -346,8 +350,12 @@ def google_signup(
     if existing:
         raise AppException("Email already exists", status_code=409)
 
+    normalized_role = (role or "").strip().lower()
+    if normalized_role == "resident":
+        normalized_role = "homeowner"
+
     try:
-        user_role = UserRole(role)
+        user_role = UserRole(normalized_role)
     except ValueError as exc:
         raise AppException("Invalid role", status_code=400) from exc
 

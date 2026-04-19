@@ -24,12 +24,12 @@ def alert_pay(
     alert_id: str,
     payload: AlertPayPayload,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("resident")),
+    user: User = Depends(require_roles("homeowner")),
 ):
     data = initialize_alert_payment(
         db=db,
         alert_id=alert_id,
-        resident_id=user.id,
+        homeowner_id=user.id,
         payment_method=payload.paymentMethod,
         reference=payload.reference,
         callback_url=payload.callbackUrl,

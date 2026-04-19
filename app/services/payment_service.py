@@ -538,6 +538,90 @@ def _build_feature_flags(features: list[str], user: User | None = None, *, now: 
     return {feature: feature in enabled for feature in sorted(ALL_FEATURE_FLAGS)}
 
 
+def _signup_trial_days_remaining(user: User | None, *, now: datetime | None = None) -> int:
+    if not user or not user.created_at:
+        return 0
+    current_time = now or utc_now()
+    created_at = ensure_utc(user.created_at)
+    trial_ends_at = created_at + timedelta(days=SIGNUP_TRIAL_DAYS)
+    if current_time >= trial_ends_at:
+        return 0
+    return max((trial_ends_at - current_time).days, 0)
+
+
+def _apply_signup_trial_overrides(
+    subscription: dict[str, Any],
+    *,
+    user: User | None,
+    audience: str,
+    managed_by_estate: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if not _is_user_in_signup_trial(user, now=now):
+        subscription["inSignupTrial"] = False
+        return subscription
+
+    days_remaining = _signup_trial_days_remaining(user, now=now)
+    trial_status = "trial"
+    allowed_actions = dict(subscription.get("allowed_actions") or {})
+    for action_key in [
+        "view_dashboard",
+        "renew_subscription",
+        "view_logs",
+        "view_messages",
+        "respond_to_visitor",
+        "scan_qr",
+        "approve_entry",
+        "deny_entry",
+        "start_call",
+        "send_message",
+        "create_qr",
+        "create_visitor_request",
+        "add_home",
+        "add_user",
+        "edit_settings",
+        "edit_automation",
+        "send_broadcast",
+        "export_reports",
+        "manage_billing",
+    ]:
+        allowed_actions[action_key] = True
+
+    unlimited_limits = {
+        "maxEstates": 0 if audience == "estate" else int((subscription.get("limits") or {}).get("maxEstates") or 0),
+        "maxHomes": 0 if audience == "estate" else 0,
+        "maxDoors": 0,
+        "maxQrCodes": 0,
+        "maxAdmins": 0 if audience == "estate" else int((subscription.get("limits") or {}).get("maxAdmins") or 1),
+        "logRetentionDays": 0,
+    }
+
+    subscription["status"] = trial_status
+    subscription["paymentStatus"] = "trialing"
+    subscription["isTrial"] = True
+    subscription["trialStatus"] = "active"
+    subscription["trialDaysRemaining"] = days_remaining
+    subscription["expiresSoon"] = days_remaining <= 3
+    subscription["limits"] = unlimited_limits
+    subscription["features"] = sorted(ALL_FEATURE_FLAGS)
+    subscription["featureFlags"] = {feature: True for feature in sorted(ALL_FEATURE_FLAGS)}
+    subscription["restrictions"] = []
+    subscription["allowed_actions"] = allowed_actions
+    subscription["inSignupTrial"] = True
+    subscription["current_period_end"] = None
+    subscription["grace_ends_at"] = None
+    subscription["days_to_expiry"] = None
+    subscription["grace_days_left"] = 0
+    subscription["warning_phase"] = None
+    subscription["billing_scope"] = "estate" if audience == "estate" else "homeowner"
+    if user and user.created_at:
+        trial_ends_at = ensure_utc(user.created_at) + timedelta(days=SIGNUP_TRIAL_DAYS)
+        subscription["expiresAt"] = trial_ends_at.isoformat()
+        subscription["signupTrialEndsAt"] = trial_ends_at.isoformat()
+        subscription["startsAt"] = ensure_utc(user.created_at).isoformat()
+    return subscription
+
+
 def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any], user: User | None = None, *, now: datetime | None = None) -> dict[str, Any]:
     features = _decode_json_list(getattr(row, "enabled_features", "[]")) or list(catalog_row.get("enabledFeatures") or [])
     restrictions = _decode_json_list(getattr(row, "restrictions", "[]")) or list(catalog_row.get("restrictions") or [])
@@ -1261,6 +1345,12 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             estate_name = estate_row[1].name
             subscription_owner_id = estate_row[1].owner_id or user_id
             audience = "estate"
+    trial_user = user
+    if managed_by_estate and subscription_owner_id and subscription_owner_id != user_id:
+        try:
+            trial_user = db.query(User).filter(User.id == subscription_owner_id).first() or user
+        except Exception:
+            trial_user = user
     try:
         row = get_user_subscription(db, subscription_owner_id)
     except Exception:
@@ -1279,7 +1369,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         # Avoid depending on subscription-plan tables for the free baseline.
         free_plan = _catalog_row_by_id(_default_plan_id_for_audience(audience)) or {"id": "free", "name": "Free", "audience": audience}
         now = utc_now()
-        free_feature_flags = _build_feature_flags(list(free_plan.get("enabledFeatures") or []), user=user, now=now)
+        free_feature_flags = _build_feature_flags(list(free_plan.get("enabledFeatures") or []), user=trial_user, now=now)
         summary = {
             "status": "active",
             "days_to_expiry": None,
@@ -1344,15 +1434,22 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         result["subscriptionOwnerId"] = subscription_owner_id
         result["estateId"] = estate_id
         result["estateName"] = estate_name
-        result["inSignupTrial"] = _is_user_in_signup_trial(user, now=now)
+        result["inSignupTrial"] = _is_user_in_signup_trial(trial_user, now=now)
+        result = _apply_signup_trial_overrides(
+            result,
+            user=trial_user,
+            audience=audience,
+            managed_by_estate=managed_by_estate,
+            now=now,
+        )
         return result
 
     try:
         now = utc_now()
-        plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True, user=user, now=now)
+        plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True, user=trial_user, now=now)
     except AppException:
         now = utc_now()
-        plan_meta = get_plan_or_raise(db, _default_plan_id_for_audience(audience), user=user, now=now)
+        plan_meta = get_plan_or_raise(db, _default_plan_id_for_audience(audience), user=trial_user, now=now)
         row.plan = plan_meta["id"]
         db.commit()
     _apply_subscription_lifecycle(row, now=now)
@@ -1403,13 +1500,22 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
     result["subscriptionOwnerId"] = subscription_owner_id
     result["estateId"] = estate_id
     result["estateName"] = estate_name
-    result["inSignupTrial"] = _is_user_in_signup_trial(user, now=now)
+    result["inSignupTrial"] = _is_user_in_signup_trial(trial_user, now=now)
+    result = _apply_signup_trial_overrides(
+        result,
+        user=trial_user,
+        audience=audience,
+        managed_by_estate=managed_by_estate,
+        now=now,
+    )
     _notify_trial_and_expiry_windows(db, user_id=user_id, subscription=result)
     return result
 
 
 def is_paid_subscription_expired(db: Session, user_id: str) -> bool:
     subscription = get_effective_subscription(db, user_id)
+    if subscription.get("inSignupTrial"):
+        return False
     if subscription.get("plan") in {"free", "estate_starter"} and subscription.get("status") in {"active", "expiring_soon", "trial"}:
         return False
     return subscription.get("status") == "suspended"

@@ -32,10 +32,40 @@ from app.db.models import (
     UserRole,
 )
 from app.socket.server import sio
-from app.services.provider_integrations import send_push_fcm
+from app.services.provider_integrations import send_email_smtp, send_push_fcm
 from app.services.payment_proof_service import save_payment_proof
 
 settings = get_settings()
+
+
+def _build_estate_due_reminder_email_body(
+    *,
+    homeowner_name: str,
+    estate_name: str,
+    alert_title: str,
+    amount_due: float | None,
+    due_date: datetime | None,
+    payment_method: str | None,
+) -> str:
+    amount_line = f"Amount Due: NGN {amount_due:,.2f}" if amount_due is not None else "Amount Due: Pending confirmation"
+    due_date_line = f"Due Date: {due_date.strftime('%d %b %Y %I:%M %p')}" if due_date else "Due Date: Not specified"
+    payment_line = f"Payment Method: {payment_method}" if payment_method else "Payment Method: Follow the estate payment instructions in Qring"
+    return "\n".join(
+        [
+            f"Hello {homeowner_name},",
+            "",
+            f"This is a payment reminder from {estate_name}.",
+            "",
+            f"Levy / Due: {alert_title}",
+            amount_line,
+            due_date_line,
+            payment_line,
+            "",
+            "Please check your Qring estate dues dashboard and complete payment as soon as possible.",
+            "",
+            "If you have already paid, you can ignore this reminder.",
+        ]
+    )
 
 
 def _extract_paystack_error(detail: str) -> tuple[str | None, str]:
@@ -473,41 +503,51 @@ def list_estate_alerts(
     }
     meeting_attendees: dict[str, list[dict]] = {alert_id: [] for alert_id in alert_ids}
     poll_counts: dict[str, dict[int, int]] = {alert_id: {} for alert_id in alert_ids}
+    summary_map: dict[str, dict[str, int]] = {
+        alert_id: {"paid": 0, "pending": 0, "failed": 0}
+        for alert_id in alert_ids
+    }
 
-    meeting_rows = (
-        db.query(EstateMeetingResponse.estate_alert_id, EstateMeetingResponse.response, func.count(EstateMeetingResponse.id))
-        .filter(EstateMeetingResponse.estate_alert_id.in_(alert_ids))
-        .group_by(EstateMeetingResponse.estate_alert_id, EstateMeetingResponse.response)
-        .all()
-    )
+    try:
+        meeting_rows = (
+            db.query(EstateMeetingResponse.estate_alert_id, EstateMeetingResponse.response, func.count(EstateMeetingResponse.id))
+            .filter(EstateMeetingResponse.estate_alert_id.in_(alert_ids))
+            .group_by(EstateMeetingResponse.estate_alert_id, EstateMeetingResponse.response)
+            .all()
+        )
+    except Exception:
+        meeting_rows = []
     for alert_id, response, count in meeting_rows:
         normalized = response.value if hasattr(response, "value") else str(response)
         if alert_id in meeting_counts and normalized in meeting_counts[alert_id]:
             meeting_counts[alert_id][normalized] = int(count or 0)
 
     if actor_role == UserRole.estate:
-        attendee_rows = (
-            db.query(
-                EstateMeetingResponse.estate_alert_id,
-                EstateMeetingResponse.homeowner_id,
-                EstateMeetingResponse.response,
-                EstateMeetingResponse.updated_at,
-                User.full_name,
-                User.email,
-                Home.name,
+        try:
+            attendee_rows = (
+                db.query(
+                    EstateMeetingResponse.estate_alert_id,
+                    EstateMeetingResponse.homeowner_id,
+                    EstateMeetingResponse.response,
+                    EstateMeetingResponse.updated_at,
+                    User.full_name,
+                    User.email,
+                    Home.name,
+                )
+                .join(User, User.id == EstateMeetingResponse.homeowner_id)
+                .outerjoin(
+                    Home,
+                    and_(
+                        Home.estate_id == estate_id,
+                        Home.homeowner_id == EstateMeetingResponse.homeowner_id,
+                    ),
+                )
+                .filter(EstateMeetingResponse.estate_alert_id.in_(alert_ids))
+                .order_by(EstateMeetingResponse.updated_at.desc())
+                .all()
             )
-            .join(User, User.id == EstateMeetingResponse.homeowner_id)
-            .outerjoin(
-                Home,
-                and_(
-                    Home.estate_id == estate_id,
-                    Home.homeowner_id == EstateMeetingResponse.homeowner_id,
-                ),
-            )
-            .filter(EstateMeetingResponse.estate_alert_id.in_(alert_ids))
-            .order_by(EstateMeetingResponse.updated_at.desc())
-            .all()
-        )
+        except Exception:
+            attendee_rows = []
         for alert_id, homeowner_id, response, responded_at, full_name, email, home_name in attendee_rows:
             meeting_attendees.setdefault(alert_id, []).append(
                 {
@@ -520,28 +560,30 @@ def list_estate_alerts(
                 }
             )
 
-    poll_rows = (
-        db.query(EstatePollVote.estate_alert_id, EstatePollVote.option_index, func.count(EstatePollVote.id))
-        .filter(EstatePollVote.estate_alert_id.in_(alert_ids))
-        .group_by(EstatePollVote.estate_alert_id, EstatePollVote.option_index)
-        .all()
-    )
+    try:
+        poll_rows = (
+            db.query(EstatePollVote.estate_alert_id, EstatePollVote.option_index, func.count(EstatePollVote.id))
+            .filter(EstatePollVote.estate_alert_id.in_(alert_ids))
+            .group_by(EstatePollVote.estate_alert_id, EstatePollVote.option_index)
+            .all()
+        )
+    except Exception:
+        poll_rows = []
     for alert_id, option_index, count in poll_rows:
         poll_counts.setdefault(alert_id, {})[int(option_index)] = int(count or 0)
-    aggregates = (
-        db.query(
-            HomeownerPayment.estate_alert_id,
-            HomeownerPayment.status,
-            func.count(HomeownerPayment.id),
+    try:
+        aggregates = (
+            db.query(
+                HomeownerPayment.estate_alert_id,
+                HomeownerPayment.status,
+                func.count(HomeownerPayment.id),
+            )
+            .filter(HomeownerPayment.estate_alert_id.in_(alert_ids))
+            .group_by(HomeownerPayment.estate_alert_id, HomeownerPayment.status)
+            .all()
         )
-        .filter(HomeownerPayment.estate_alert_id.in_(alert_ids))
-        .group_by(HomeownerPayment.estate_alert_id, HomeownerPayment.status)
-        .all()
-    )
-    summary_map: dict[str, dict[str, int]] = {
-        alert_id: {"paid": 0, "pending": 0, "failed": 0}
-        for alert_id in alert_ids
-    }
+    except Exception:
+        aggregates = []
     for alert_id, status, count in aggregates:
         normalized_status = status.value if hasattr(status, "value") else str(status)
         if normalized_status in summary_map[alert_id]:
@@ -551,32 +593,41 @@ def list_estate_alerts(
     my_meeting_map: dict[str, EstateMeetingResponse] = {}
     my_poll_map: dict[str, EstatePollVote] = {}
     if actor_role == UserRole.homeowner:
-        my_rows = (
-            db.query(HomeownerPayment)
-            .filter(
-                HomeownerPayment.estate_alert_id.in_(alert_ids),
-                HomeownerPayment.homeowner_id == actor_id,
+        try:
+            my_rows = (
+                db.query(HomeownerPayment)
+                .filter(
+                    HomeownerPayment.estate_alert_id.in_(alert_ids),
+                    HomeownerPayment.homeowner_id == actor_id,
+                )
+                .all()
             )
-            .all()
-        )
+        except Exception:
+            my_rows = []
         my_payment_map = {row.estate_alert_id: row for row in my_rows}
-        my_meeting_rows = (
-            db.query(EstateMeetingResponse)
-            .filter(
-                EstateMeetingResponse.estate_alert_id.in_(alert_ids),
-                EstateMeetingResponse.homeowner_id == actor_id,
+        try:
+            my_meeting_rows = (
+                db.query(EstateMeetingResponse)
+                .filter(
+                    EstateMeetingResponse.estate_alert_id.in_(alert_ids),
+                    EstateMeetingResponse.homeowner_id == actor_id,
+                )
+                .all()
             )
-            .all()
-        )
+        except Exception:
+            my_meeting_rows = []
         my_meeting_map = {row.estate_alert_id: row for row in my_meeting_rows}
-        my_poll_rows = (
-            db.query(EstatePollVote)
-            .filter(
-                EstatePollVote.estate_alert_id.in_(alert_ids),
-                EstatePollVote.homeowner_id == actor_id,
+        try:
+            my_poll_rows = (
+                db.query(EstatePollVote)
+                .filter(
+                    EstatePollVote.estate_alert_id.in_(alert_ids),
+                    EstatePollVote.homeowner_id == actor_id,
+                )
+                .all()
             )
-            .all()
-        )
+        except Exception:
+            my_poll_rows = []
         my_poll_map = {row.estate_alert_id: row for row in my_poll_rows}
 
     response: list[dict] = []
@@ -1391,8 +1442,11 @@ def send_payment_reminders(db: Session, *, alert_id: str, estate_admin_id: str) 
         .all()
     )
     by_homeowner = {row.homeowner_id: row for row in payments}
+    homeowners = db.query(User).filter(User.id.in_(homeowner_ids)).all() if homeowner_ids else []
+    homeowner_by_id = {row.id: row for row in homeowners}
 
     reminded = 0
+    emailed = 0
     for homeowner_id in homeowner_ids:
         payment = by_homeowner.get(homeowner_id)
         status = payment.status.value if payment and hasattr(payment.status, "value") else (payment.status if payment else "pending")
@@ -1427,10 +1481,26 @@ def send_payment_reminders(db: Session, *, alert_id: str, estate_admin_id: str) 
             )
         except Exception:
             pass
+        homeowner = homeowner_by_id.get(homeowner_id)
+        if homeowner and str(homeowner.email or "").strip():
+            delivery = send_email_smtp(
+                to_email=homeowner.email,
+                subject=f"Payment Reminder: {alert.title}",
+                body=_build_estate_due_reminder_email_body(
+                    homeowner_name=homeowner.full_name or homeowner.email or "Resident",
+                    estate_name=estate.name or "your estate",
+                    alert_title=alert.title,
+                    amount_due=_to_money(alert.amount_due) if alert.amount_due is not None else None,
+                    due_date=alert.due_date,
+                    payment_method=(payment.payment_method if payment else None),
+                ),
+            ) or {}
+            if str(delivery.get("status") or "").lower() == "sent":
+                emailed += 1
         reminded += 1
 
     db.commit()
-    return {"status": "ok", "reminded": reminded}
+    return {"status": "ok", "reminded": reminded, "emailed": emailed}
 
 
 def verify_estate_alert_payment(
@@ -1557,8 +1627,10 @@ def run_scheduled_payment_reminders(db: Session) -> dict:
     reminder_frequency_by_estate = {
         row.id: max(int(row.reminder_frequency_days or 1), 1) for row in estates
     }
+    estate_by_id = {row.id: row for row in estates}
 
     reminded = 0
+    emailed = 0
     for alert in alerts:
         if alert.due_date and alert.due_date > now:
             continue
@@ -1569,6 +1641,8 @@ def run_scheduled_payment_reminders(db: Session) -> dict:
         homeowner_ids = _homeowner_ids_for_estate(db, estate_id=alert.estate_id)
         if not homeowner_ids:
             continue
+        homeowners = db.query(User).filter(User.id.in_(homeowner_ids)).all() if homeowner_ids else []
+        homeowner_by_id = {row.id: row for row in homeowners}
 
         payments = (
             db.query(HomeownerPayment)
@@ -1614,7 +1688,24 @@ def run_scheduled_payment_reminders(db: Session) -> dict:
                 )
             except Exception:
                 pass
+            homeowner = homeowner_by_id.get(homeowner_id)
+            estate = estate_by_id.get(alert.estate_id)
+            if homeowner and estate and str(homeowner.email or "").strip():
+                delivery = send_email_smtp(
+                    to_email=homeowner.email,
+                    subject=f"Payment Reminder: {alert.title}",
+                    body=_build_estate_due_reminder_email_body(
+                        homeowner_name=homeowner.full_name or homeowner.email or "Resident",
+                        estate_name=estate.name or "your estate",
+                        alert_title=alert.title,
+                        amount_due=_to_money(alert.amount_due) if alert.amount_due is not None else None,
+                        due_date=alert.due_date,
+                        payment_method=(payment.payment_method if payment else None),
+                    ),
+                ) or {}
+                if str(delivery.get("status") or "").lower() == "sent":
+                    emailed += 1
             reminded += 1
 
     db.commit()
-    return {"status": "ok", "reminded": reminded}
+    return {"status": "ok", "reminded": reminded, "emailed": emailed}

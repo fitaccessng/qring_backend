@@ -21,12 +21,12 @@ from app.services.homeowner_service import (
     create_homeowner_session_message,
     create_homeowner_door,
     delete_homeowner_session_message,
-    get_resident_context,
+    get_homeowner_context,
     get_homeowner_doors_data,
     generate_homeowner_door_qr,
     list_homeowner_session_messages,
     list_homeowner_message_threads,
-    list_resident_visits,
+    list_homeowner_visits,
 )
 from app.services.appointment_service import (
     create_appointment,
@@ -127,7 +127,7 @@ def homeowner_visits(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    return {"data": list_resident_visits(db, resident_id=user.id)}
+    return {"data": list_homeowner_visits(db, homeowner_id=user.id)}
 
 
 @router.get("/appointments")
@@ -174,7 +174,7 @@ def homeowner_context(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    return {"data": get_resident_context(db, resident_id=user.id)}
+    return {"data": get_homeowner_context(db, homeowner_id=user.id)}
 
 
 @router.get("/messages")

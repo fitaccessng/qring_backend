@@ -13,7 +13,7 @@ class SignupRequest(BaseModel):
     fullName: str
     email: EmailStr
     password: str
-    role: str = "resident"
+    role: str = "homeowner"
     referralCode: Optional[str] = None
 
 
@@ -83,5 +83,5 @@ class GoogleSignupRequest(BaseModel):
     email: Optional[EmailStr] = None
     displayName: Optional[str] = None
     photoURL: Optional[str] = None
-    role: str = "resident"
+    role: str = "homeowner"
     referralCode: Optional[str] = None
