@@ -393,8 +393,6 @@ def create_homeowner_door(
     qr_plan: str = "single",
 ) -> dict[str, Any]:
     context = get_homeowner_context(db, homeowner_id)
-    if context.get("managedByEstate"):
-        raise AppException("Estate-managed homeowners cannot create doors. Contact estate admin.", status_code=403)
 
     door_name = (name or "").strip()
     if not door_name:
@@ -410,13 +408,15 @@ def create_homeowner_door(
         homes = [home]
 
     home_ids = [row.id for row in homes]
-    effective_sub = get_effective_subscription(db, homeowner_id)
+    subscription_owner_id = _resolve_subscription_owner_id(db, homeowner_id)
+    effective_sub = get_effective_subscription(db, subscription_owner_id)
     limits = effective_sub.get("limits", {})
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
     if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, FREE_HOMEOWNER_LIMIT)
-        max_qr_codes = max(max_qr_codes, FREE_HOMEOWNER_LIMIT)
+        floor = FREE_ESTATE_MANAGED_LIMIT if context.get("managedByEstate") else FREE_HOMEOWNER_LIMIT
+        max_doors = max(max_doors, floor)
+        max_qr_codes = max(max_qr_codes, floor)
 
     total_doors = db.query(Door).filter(Door.home_id.in_(home_ids)).count() if home_ids else 0
     if max_doors and total_doors >= max_doors:
@@ -469,6 +469,7 @@ def create_homeowner_door(
         "door": {
             "id": door.id,
             "name": door.name,
+            "gateLabel": door.gate_label or door.name,
             "homeName": home.name,
             "state": "Online",
             "qr": [created_qr["qr_id"]] if created_qr else [],
@@ -485,13 +486,15 @@ def generate_homeowner_door_qr(
     plan: str = "single",
 ) -> dict[str, Any]:
     context = get_homeowner_context(db, homeowner_id)
-    if context.get("managedByEstate"):
-        raise AppException("Estate-managed homeowners cannot create QR codes. Contact estate admin.", status_code=403)
-
-    effective_sub = get_effective_subscription(db, homeowner_id)
+    subscription_owner_id = _resolve_subscription_owner_id(db, homeowner_id)
+    effective_sub = get_effective_subscription(db, subscription_owner_id)
     limits = effective_sub.get("limits", {})
     max_doors = int(limits.get("maxDoors", 0) or 0)
     max_qr_codes = int(limits.get("maxQrCodes", 0) or 0)
+    if effective_sub.get("plan") == "free":
+        floor = FREE_ESTATE_MANAGED_LIMIT if context.get("managedByEstate") else FREE_HOMEOWNER_LIMIT
+        max_doors = max(max_doors, floor)
+        max_qr_codes = max(max_qr_codes, floor)
 
     homes = db.query(Home).filter(Home.homeowner_id == homeowner_id).all()
     home_ids = [home.id for home in homes]

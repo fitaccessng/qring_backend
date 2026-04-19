@@ -104,18 +104,19 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 20
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 14
 
+    # CORS_ORIGINS must include all local dev and production domains for frontend access
     CORS_ORIGINS: str = (
-        "http://localhost:5173,"
-        "http://localhost:5174,"
-        "http://localhost:5175,"
-        "http://127.0.0.1:5173,"
-        "http://127.0.0.1:5174,"
-        "http://127.0.0.1:5175,"
-        "capacitor://localhost,"
-        "ionic://localhost,"
-        "https://qring.io,"
-        "https://www.qring.io,"
-        "https://useqring.online,"
+        "http://localhost:5173,"  # Vite/React dev server
+        "http://localhost:5174," 
+        "http://localhost:5175," 
+        "http://127.0.0.1:5173,"  # Vite/React dev server (IP)
+        "http://127.0.0.1:5174," 
+        "http://127.0.0.1:5175," 
+        "capacitor://localhost," 
+        "ionic://localhost," 
+        "https://qring.io," 
+        "https://www.qring.io," 
+        "https://useqring.online," 
         "https://www.useqring.online"
     )
     # Dev-friendly default: allow localhost + RFC1918 private LAN ranges so phones/tablets on the same Wi-Fi can reach the API.

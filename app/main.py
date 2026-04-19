@@ -434,6 +434,7 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "appointments", "door_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "appointments", "visitor_name", "VARCHAR(120) DEFAULT 'Visitor'")
             _add_column_if_missing(conn, columns, "appointments", "visitor_contact", "VARCHAR(120) DEFAULT ''")
+            _add_column_if_missing(conn, columns, "appointments", "visitor_email", "VARCHAR(255)")
             _add_column_if_missing(conn, columns, "appointments", "purpose", "TEXT DEFAULT ''")
             _add_column_if_missing(conn, columns, "appointments", "starts_at", datetime_sql)
             _add_column_if_missing(conn, columns, "appointments", "ends_at", datetime_sql)
