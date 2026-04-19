@@ -38,6 +38,15 @@ setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+# CORS middleware must be added before any custom middleware that modifies headers
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 fastapi_app.add_middleware(RequestContextMiddleware)
 fastapi_app.add_middleware(
     RateLimitMiddleware,
@@ -48,14 +57,6 @@ fastapi_app.add_middleware(
 )
 fastapi_app.add_middleware(InputSanitizationMiddleware)
 fastapi_app.add_middleware(AccessControlMiddleware)
-fastapi_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_origin_regex=settings.cors_allow_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 register_exception_handlers(fastapi_app)
 
 # --- Custom middleware must be defined after fastapi_app is created ---
@@ -65,6 +66,9 @@ async def remove_coop_header(request: Request, call_next):
     # Remove Cross-Origin-Opener-Policy header if present
     if "cross-origin-opener-policy" in response.headers:
         del response.headers["cross-origin-opener-policy"]
+        logging.info("[COOP] Removed cross-origin-opener-policy header from response.")
+    else:
+        logging.info("[COOP] No cross-origin-opener-policy header present in response.")
     return response
 
 @fastapi_app.middleware("http")
@@ -72,7 +76,9 @@ async def log_origin_and_cors(request: Request, call_next):
     origin = request.headers.get("origin")
     response = await call_next(request)
     cors_header = response.headers.get("access-control-allow-origin")
-    logging.info(f"[CORS] Incoming Origin: {origin} | CORS Decision: {cors_header}")
+    coop_header = response.headers.get("cross-origin-opener-policy")
+    logging.info(f"[CORS] Incoming Origin: {origin} | CORS Decision: {cors_header} | COOP: {coop_header}")
+    logging.info(f"[HEADERS] Response headers: {dict(response.headers)}")
     return response
 
 
