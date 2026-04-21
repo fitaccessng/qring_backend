@@ -9,7 +9,16 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_roles
 from app.db.models import User
 from app.db.session import get_db
-from app.services.safety_service import acknowledge_panic_event, list_active_panic_events, resolve_panic_event, trigger_panic_event
+from app.services.safety_service import (
+    acknowledge_panic_event,
+    ignore_panic_event,
+    list_active_panic_events,
+    report_false_panic_event,
+    resolve_panic_event,
+    respond_to_panic_event,
+    trigger_panic_event,
+    update_panic_event_notes,
+)
 
 router = APIRouter()
 
@@ -27,6 +36,15 @@ class PanicAcknowledgePayload(BaseModel):
 
 class PanicResolvePayload(BaseModel):
     panicId: str
+
+
+class PanicActionPayload(BaseModel):
+    panicId: str
+
+
+class PanicNotesPayload(BaseModel):
+    panicId: str
+    notes: str = ""
 
 
 @router.post("/trigger")
@@ -63,6 +81,42 @@ def panic_resolve(
     user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
 ):
     return {"data": resolve_panic_event(db, panic_id=payload.panicId, actor=user)}
+
+
+@router.post("/respond")
+def panic_respond(
+    payload: PanicActionPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    return {"data": respond_to_panic_event(db, panic_id=payload.panicId, actor=user)}
+
+
+@router.post("/ignore")
+def panic_ignore(
+    payload: PanicActionPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    return {"data": ignore_panic_event(db, panic_id=payload.panicId, actor=user)}
+
+
+@router.post("/report-false")
+def panic_report_false(
+    payload: PanicActionPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    return {"data": report_false_panic_event(db, panic_id=payload.panicId, actor=user)}
+
+
+@router.post("/notes")
+def panic_notes(
+    payload: PanicNotesPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("security", "estate", "admin")),
+):
+    return {"data": update_panic_event_notes(db, panic_id=payload.panicId, actor=user, notes=payload.notes)}
 
 
 @router.get("/active")

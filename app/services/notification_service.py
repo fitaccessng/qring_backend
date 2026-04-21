@@ -60,12 +60,18 @@ def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> 
     db.refresh(notification)
     try:
         message = str((payload or {}).get("message") or "You have a new alert.")
+        route = str((payload or {}).get("route") or "")
+        panic_id = str((payload or {}).get("panicId") or "")
+        action_set = str((payload or {}).get("actionSet") or ("panic_response" if kind == "safety.panic" and panic_id else ""))
         title_map = {
             "visitor.request": "New Visitor Request",
             "estate.alert": "Estate Alert",
             "estate.invite": "Estate Invitation",
             "estate.assignment": "Door Assignment",
             "estate.payment.status": "Payment Status",
+            "safety.panic": "Panic Alert Near You",
+            "safety.panic.response": "Responder Update",
+            "safety.panic.reported": "Panic Alert Review",
         }
         send_push_fcm(
             db,
@@ -77,6 +83,11 @@ def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> 
                 "notificationId": notification.id,
                 "sessionId": str((payload or {}).get("sessionId") or ""),
                 "alertId": str((payload or {}).get("alertId") or ""),
+                "panicId": panic_id,
+                "route": route,
+                "actionSet": action_set,
+                "title": title_map.get(kind, "Qring Alert"),
+                "body": message,
             },
         )
     except Exception:

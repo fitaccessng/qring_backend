@@ -138,19 +138,55 @@ def send_push_fcm(
         )
         .all()
     )
-    tokens = [str(row.token or "").strip() for row in rows if str(row.token or "").strip()]
-    if not tokens:
+    subscriptions: list[tuple[str, dict]] = []
+    for row in rows:
+        token = str(row.token or "").strip()
+        if not token:
+            continue
+        try:
+            keys = json.loads(row.keys_json or "{}")
+            keys = keys if isinstance(keys, dict) else {}
+        except Exception:
+            keys = {}
+        subscriptions.append((token, keys))
+    if not subscriptions:
         return {"status": "skipped", "reason": "no_tokens"}
 
     ok = 0
     failed = 0
-    for token in tokens:
+    payload_data = {k: str(v) for k, v in (data or {}).items()}
+    action_set = str(payload_data.get("actionSet") or "").strip()
+    for token, keys in subscriptions:
         try:
-            message = firebase_messaging.Message(
-                token=token,
-                notification=firebase_messaging.Notification(title=title, body=body),
-                data={k: str(v) for k, v in (data or {}).items()},
-            )
+            platform = str(keys.get("platform") or "").strip().lower()
+            native = bool(keys.get("native"))
+            if native and platform == "android":
+                message = firebase_messaging.Message(
+                    token=token,
+                    data=payload_data,
+                    android=firebase_messaging.AndroidConfig(priority="high"),
+                )
+            elif native and platform == "ios":
+                aps = firebase_messaging.Aps(
+                    alert=firebase_messaging.ApsAlert(title=title, body=body),
+                    sound="default",
+                    category=action_set or None,
+                    content_available=True,
+                )
+                message = firebase_messaging.Message(
+                    token=token,
+                    notification=firebase_messaging.Notification(title=title, body=body),
+                    data=payload_data,
+                    apns=firebase_messaging.APNSConfig(
+                        payload=firebase_messaging.APNSPayload(aps=aps),
+                    ),
+                )
+            else:
+                message = firebase_messaging.Message(
+                    token=token,
+                    notification=firebase_messaging.Notification(title=title, body=body),
+                    data=payload_data,
+                )
             firebase_messaging.send(message, app=app)
             ok += 1
         except Exception:

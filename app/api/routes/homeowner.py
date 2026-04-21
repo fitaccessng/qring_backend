@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel
 from typing import Optional
@@ -69,6 +71,15 @@ class HomeownerSettingsUpdate(BaseModel):
     knownContacts: list[str] = []
     allowDeliveryDropAtGate: bool = True
     smsFallbackEnabled: bool = False
+    nearbyPanicAlertsEnabled: bool = True
+    nearbyPanicAlertRadiusMeters: int = 500
+    nearbyPanicAvailability: str = "always"
+    nearbyPanicCustomSchedule: list[dict] = []
+    nearbyPanicReceiveFrom: str = "everyone"
+    nearbyPanicMutedUntil: Optional[datetime] = None
+    nearbyPanicSameAreaLabel: Optional[str] = None
+    panicIdentityVisibility: str = "masked"
+    safetyHomeLocation: Optional[dict] = None
 
 
 class HomeownerProfileUpdate(BaseModel):
@@ -391,6 +402,16 @@ def homeowner_update_settings(
         known_contacts=payload.knownContacts,
         allow_delivery_drop_at_gate=payload.allowDeliveryDropAtGate,
         sms_fallback_enabled=payload.smsFallbackEnabled,
+        nearby_panic_alerts_enabled=payload.nearbyPanicAlertsEnabled,
+        nearby_panic_alert_radius_m=payload.nearbyPanicAlertRadiusMeters,
+        nearby_panic_availability_mode=payload.nearbyPanicAvailability,
+        nearby_panic_schedule=payload.nearbyPanicCustomSchedule,
+        nearby_panic_receive_from=payload.nearbyPanicReceiveFrom,
+        nearby_panic_muted_until=payload.nearbyPanicMutedUntil,
+        nearby_panic_same_area_label=payload.nearbyPanicSameAreaLabel,
+        panic_identity_visibility=payload.panicIdentityVisibility,
+        safety_home_lat=(payload.safetyHomeLocation or {}).get("lat"),
+        safety_home_lng=(payload.safetyHomeLocation or {}).get("lng"),
     )
     return {"data": updated}
 

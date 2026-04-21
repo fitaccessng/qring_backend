@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Iterable
 
@@ -47,6 +48,8 @@ settings = get_settings()
 MAX_VISITOR_REPORTS_PER_DAY = 5
 PANIC_RETRY_INTERVAL_SECONDS = 5
 PANIC_MAX_RETRIES = 3
+PANIC_MAX_TRIGGERS_PER_HOUR = 3
+DEFAULT_NEARBY_PANIC_RADIUS_M = 500
 
 PRIORITY_BY_TYPE = {
     EmergencyAlertType.panic: EmergencyAlertPriority.critical,
@@ -59,6 +62,8 @@ SECURITY_MESSAGE_BY_TYPE = {
     EmergencyAlertType.fire: "Fire alert. Coordinate nearest responders and evacuation support.",
     EmergencyAlertType.break_in: "Break-in alert. Dispatch guards and secure access points.",
 }
+
+
 def create_safety_tables(bind) -> None:
     for table in [
         "emergency_alerts",
@@ -101,6 +106,21 @@ def _normalize_email(value: str | None) -> str:
     return str(value or "").strip().lower()
 
 
+def _to_rad(value: float) -> float:
+    return value * math.pi / 180.0
+
+
+def _distance_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    earth_radius_m = 6371000.0
+    d_lat = _to_rad(lat2 - lat1)
+    d_lng = _to_rad(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(_to_rad(lat1)) * math.cos(_to_rad(lat2)) * math.sin(d_lng / 2) ** 2
+    )
+    return 2 * earth_radius_m * math.asin(math.sqrt(a))
+
+
 def _parse_recipient_user_ids(raw: str | None) -> list[str]:
     try:
         rows = json.loads(raw or "[]")
@@ -109,6 +129,122 @@ def _parse_recipient_user_ids(raw: str | None) -> list[str]:
     if not isinstance(rows, list):
         return []
     return [str(item).strip() for item in rows if str(item).strip()]
+
+
+def _parse_json_list(raw: str | None) -> list[dict[str, Any]]:
+    try:
+        rows = json.loads(raw or "[]")
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _dedupe_users(rows: list[User]) -> list[User]:
+    unique_rows: list[User] = []
+    seen_ids: set[str] = set()
+    for row in rows:
+        if not row or row.id in seen_ids:
+            continue
+        seen_ids.add(row.id)
+        unique_rows.append(row)
+    return unique_rows
+
+
+def _panic_trigger_trust_score(user: User) -> int:
+    score = 10
+    if bool(getattr(user, "email_verified", False)):
+        score += 45
+    if bool(getattr(user, "phone", None)):
+        score += 10
+    if bool(getattr(user, "estate_id", None)):
+        score += 15
+    return min(score, 100)
+
+
+def _blur_location_label(address: str | None, unit_label: str | None) -> str:
+    if unit_label:
+        return f"Near {unit_label}"
+    safe_address = str(address or "").strip()
+    if not safe_address:
+        return "Nearby"
+    parts = [part.strip() for part in safe_address.split(",") if part.strip()]
+    return f"Near {parts[0]}" if parts else "Nearby"
+
+
+def _bucket_distance(distance_m: float | None) -> int | None:
+    if distance_m is None or not math.isfinite(distance_m):
+        return None
+    if distance_m <= 150:
+        return 120
+    if distance_m <= 350:
+        return 300
+    if distance_m <= 750:
+        return 500
+    return int(round(distance_m / 1000.0, 1) * 1000)
+
+
+def _is_night_hour(now: datetime) -> bool:
+    current = now.time()
+    return current >= time(20, 0) or current < time(6, 0)
+
+
+def _schedule_matches(now: datetime, schedule_rows: list[dict[str, Any]]) -> bool:
+    if not schedule_rows:
+        return True
+    weekday = now.weekday()
+    current_minutes = now.hour * 60 + now.minute
+    for row in schedule_rows:
+        days = row.get("days")
+        if isinstance(days, list) and days and weekday not in {int(day) for day in days if str(day).isdigit()}:
+            continue
+        start = str(row.get("start") or "").strip()
+        end = str(row.get("end") or "").strip()
+        if not start or not end:
+            continue
+        try:
+            start_hour, start_minute = [int(part) for part in start.split(":", 1)]
+            end_hour, end_minute = [int(part) for part in end.split(":", 1)]
+        except Exception:
+            continue
+        start_minutes = start_hour * 60 + start_minute
+        end_minutes = end_hour * 60 + end_minute
+        if start_minutes <= end_minutes and start_minutes <= current_minutes <= end_minutes:
+            return True
+        if start_minutes > end_minutes and (current_minutes >= start_minutes or current_minutes <= end_minutes):
+            return True
+    return False
+
+
+def _recipient_allows_panic(sender: User, recipient: User, recipient_settings: HomeownerSetting | None, *, now: datetime) -> bool:
+    if not recipient_settings:
+        return False
+    if not bool(getattr(recipient_settings, "nearby_panic_alerts_enabled", True)):
+        return False
+    muted_until = getattr(recipient_settings, "nearby_panic_muted_until", None)
+    if muted_until and muted_until > now:
+        return False
+
+    availability = str(getattr(recipient_settings, "nearby_panic_availability_mode", "always") or "always").lower()
+    if availability == "night_only" and not _is_night_hour(now):
+        return False
+    if availability == "custom" and not _schedule_matches(now, _parse_json_list(getattr(recipient_settings, "nearby_panic_schedule_json", "[]"))):
+        return False
+
+    receive_from = str(getattr(recipient_settings, "nearby_panic_receive_from", "everyone") or "everyone").lower()
+    if receive_from == "verified_only" and not bool(getattr(sender, "email_verified", False)):
+        return False
+    if receive_from == "same_area":
+        sender_area = ""
+        recipient_area = str(getattr(recipient_settings, "nearby_panic_same_area_label", "") or "").strip().lower()
+        sender_settings = getattr(sender, "_panic_settings_cache", None)
+        if sender_settings is not None:
+            sender_area = str(getattr(sender_settings, "nearby_panic_same_area_label", "") or "").strip().lower()
+        if not recipient_area or recipient_area != sender_area:
+            return False
+
+    return True
 
 
 def _log_audit(db: Session, *, actor_user_id: str | None, action: str, resource_type: str, resource_id: str, meta: dict[str, Any]) -> None:
@@ -328,36 +464,82 @@ def _list_estate_homeowner_users(db: Session, *, estate_id: str, exclude_user_id
         .order_by(User.full_name.asc())
         .all()
     )
-    unique_rows: list[User] = []
-    seen_ids: set[str] = set()
-    for row in rows:
-        if row.id in seen_ids:
+    return _dedupe_users(rows)
+
+
+def _community_panic_recipients(
+    db: Session,
+    *,
+    homeowner: User,
+    settings_row: HomeownerSetting | None,
+    location: dict[str, Any] | None,
+    now: datetime,
+) -> list[User]:
+    lat = (location or {}).get("lat")
+    lng = (location or {}).get("lng")
+    if lat is None or lng is None:
+        return []
+
+    candidates = (
+        db.query(User, HomeownerSetting)
+        .join(HomeownerSetting, HomeownerSetting.user_id == User.id)
+        .filter(
+            User.id != homeowner.id,
+            User.role == UserRole.homeowner,
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+
+    if settings_row is not None:
+        setattr(homeowner, "_panic_settings_cache", settings_row)
+
+    radius_limit = max(200, min(int(getattr(settings_row, "nearby_panic_alert_radius_m", DEFAULT_NEARBY_PANIC_RADIUS_M) or DEFAULT_NEARBY_PANIC_RADIUS_M), 1000))
+    rows: list[User] = []
+    for candidate, candidate_settings in candidates:
+        recipient_lat = getattr(candidate_settings, "safety_home_lat", None)
+        recipient_lng = getattr(candidate_settings, "safety_home_lng", None)
+        if recipient_lat is None or recipient_lng is None:
             continue
-        seen_ids.add(row.id)
-        unique_rows.append(row)
-    return unique_rows
+        try:
+            distance = _distance_meters(float(lat), float(lng), float(recipient_lat), float(recipient_lng))
+        except Exception:
+            continue
+        recipient_radius = max(200, min(int(getattr(candidate_settings, "nearby_panic_alert_radius_m", DEFAULT_NEARBY_PANIC_RADIUS_M) or DEFAULT_NEARBY_PANIC_RADIUS_M), 1000))
+        effective_radius = min(radius_limit, recipient_radius)
+        if distance > effective_radius:
+            continue
+        if not _recipient_allows_panic(homeowner, candidate, candidate_settings, now=now):
+            continue
+        rows.append(candidate)
+    return _dedupe_users(rows)
 
 
-def _panic_recipient_users(db: Session, *, homeowner: User, estate_id: str | None, settings_row: HomeownerSetting | None) -> list[User]:
-    recipients: list[User] = []
-    seen_ids: set[str] = set()
-
-    for contact in _list_personal_contact_users(db, homeowner=homeowner, settings_row=settings_row):
-        if contact.id not in seen_ids:
-            recipients.append(contact)
-            seen_ids.add(contact.id)
+def _panic_recipient_users(
+    db: Session,
+    *,
+    homeowner: User,
+    estate_id: str | None,
+    settings_row: HomeownerSetting | None,
+    location: dict[str, Any] | None,
+    now: datetime,
+) -> list[User]:
+    recipients = _list_personal_contact_users(db, homeowner=homeowner, settings_row=settings_row)
 
     if estate_id:
-        for security_user in _list_security_users(db, estate_id):
-            if security_user.id not in seen_ids:
-                recipients.append(security_user)
-                seen_ids.add(security_user.id)
-        for resident in _list_estate_homeowner_users(db, estate_id=estate_id, exclude_user_id=homeowner.id):
-            if resident.id not in seen_ids:
-                recipients.append(resident)
-                seen_ids.add(resident.id)
+        recipients.extend(_list_security_users(db, estate_id))
 
-    return recipients
+    recipients.extend(
+        _community_panic_recipients(
+            db,
+            homeowner=homeowner,
+            settings_row=settings_row,
+            location=location,
+            now=now,
+        )
+    )
+
+    return _dedupe_users(recipients)
 
 
 def _panic_rooms(panic: PanicEvent, recipient_ids: list[str]) -> list[str]:
@@ -381,11 +563,15 @@ def _panic_rooms(panic: PanicEvent, recipient_ids: list[str]) -> list[str]:
 
 def serialize_panic_event(db: Session, panic: PanicEvent) -> dict[str, Any]:
     trigger_user = db.query(User).filter(User.id == panic.user_id).first()
+    responders = _parse_json_list(getattr(panic, "responder_details_json", "[]"))
+    false_reports = _parse_recipient_user_ids(getattr(panic, "false_report_user_ids_json", "[]"))
+    ignored_user_ids = _parse_recipient_user_ids(getattr(panic, "ignored_user_ids_json", "[]"))
     return {
         "id": panic.id,
         "panicId": panic.id,
         "userId": panic.user_id,
         "userName": trigger_user.full_name if trigger_user else "Resident",
+        "userPhone": trigger_user.phone if trigger_user else None,
         "estateId": panic.estate_id,
         "homeId": panic.home_id,
         "type": "panic",
@@ -396,10 +582,20 @@ def serialize_panic_event(db: Session, panic: PanicEvent) -> dict[str, Any]:
         "location": {
             "doorName": panic.unit_label,
             "address": panic.last_known_address,
+            "blurredAddress": _blur_location_label(panic.last_known_address, panic.unit_label),
             "lat": _to_float(panic.last_known_lat),
             "lng": _to_float(panic.last_known_lng),
             "source": panic.last_known_source,
         },
+        "triggerTrustScore": int(getattr(panic, "trigger_trust_score", 0) or 0),
+        "responderUserIds": _parse_recipient_user_ids(getattr(panic, "responder_user_ids_json", "[]")),
+        "responders": responders,
+        "responderCount": len(responders),
+        "ignoredUserIds": ignored_user_ids,
+        "falseReportCount": len(false_reports),
+        "responseStartedAt": panic.response_started_at.isoformat() if getattr(panic, "response_started_at", None) else None,
+        "lastResponderAt": panic.last_responder_at.isoformat() if getattr(panic, "last_responder_at", None) else None,
+        "incidentNotes": getattr(panic, "incident_notes", None),
         "retryCount": int(panic.retry_count or 0),
         "recipientUserIds": _parse_recipient_user_ids(panic.recipient_user_ids_json),
         "acknowledgedAt": panic.acknowledged_at.isoformat() if panic.acknowledged_at else None,
@@ -488,13 +684,26 @@ def trigger_panic_event(
 
     context = _resolve_panic_context(db, target_user)
     settings_row = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == target_user.id).first()
+    one_hour_ago = utc_now() - timedelta(hours=1)
+    recent_triggers = (
+        db.query(func.count(PanicEvent.id))
+        .filter(PanicEvent.user_id == target_user.id, PanicEvent.created_at >= one_hour_ago)
+        .scalar()
+        or 0
+    )
+    if int(recent_triggers) >= PANIC_MAX_TRIGGERS_PER_HOUR:
+        raise AppException("Panic trigger limit reached. Please contact support if this is an active emergency.", status_code=429)
+
+    now = utc_now()
     recipients = _panic_recipient_users(
         db,
         homeowner=target_user,
         estate_id=context["estate"].id if context["estate"] else None,
         settings_row=settings_row,
+        location=location,
+        now=now,
     )
-    now = utc_now()
+    personal_contact_ids = {row.id for row in _list_personal_contact_users(db, homeowner=target_user, settings_row=settings_row)}
     panic = PanicEvent(
         user_id=target_user.id,
         estate_id=context["estate"].id if context["estate"] else None,
@@ -509,6 +718,14 @@ def trigger_panic_event(
         last_known_address=(location or {}).get("address"),
         last_known_source=(location or {}).get("source") or trigger_mode,
         recipient_user_ids_json=json.dumps([recipient.id for recipient in recipients], ensure_ascii=True),
+        responder_user_ids_json="[]",
+        responder_details_json="[]",
+        ignored_user_ids_json="[]",
+        false_report_user_ids_json="[]",
+        trigger_trust_score=_panic_trigger_trust_score(target_user),
+        incident_notes=None,
+        response_started_at=None,
+        last_responder_at=None,
         retry_count=0,
         last_dispatched_at=now,
         created_at=now,
@@ -530,11 +747,38 @@ def trigger_panic_event(
     db.commit()
     db.refresh(panic)
 
-    notification_message = (
-        f"{target_user.full_name} triggered a panic alert"
-        f"{f' at {panic.unit_label}' if panic.unit_label else ''}. Respond immediately."
-    )
     for recipient in recipients:
+        recipient_settings = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == recipient.id).first()
+        approx_distance_m = None
+        try:
+            if (
+                (location or {}).get("lat") is not None
+                and (location or {}).get("lng") is not None
+                and recipient_settings
+                and recipient_settings.safety_home_lat is not None
+                and recipient_settings.safety_home_lng is not None
+            ):
+                approx_distance_m = _bucket_distance(
+                    _distance_meters(
+                        float((location or {}).get("lat")),
+                        float((location or {}).get("lng")),
+                        float(recipient_settings.safety_home_lat),
+                        float(recipient_settings.safety_home_lng),
+                    )
+                )
+        except Exception:
+            approx_distance_m = None
+
+        distance_text = f"{int(approx_distance_m)}m away" if approx_distance_m and approx_distance_m < 1000 else (
+            f"{round(approx_distance_m / 1000, 1)}km away" if approx_distance_m else "near you"
+        )
+        is_public_recipient = recipient.role == UserRole.homeowner and recipient.id not in personal_contact_ids
+        sender_label = (
+            "Nearby QRing user"
+            if is_public_recipient and str(getattr(settings_row, "panic_identity_visibility", "masked") or "masked").lower() == "masked"
+            else target_user.full_name
+        )
+        notification_message = f"{sender_label} triggered a panic alert {distance_text}. {_blur_location_label(panic.last_known_address, panic.unit_label)}."
         create_notification(
             db=db,
             user_id=recipient.id,
@@ -542,10 +786,15 @@ def trigger_panic_event(
             payload={
                 "panicId": panic.id,
                 "userId": target_user.id,
-                "userName": target_user.full_name,
+                "userName": sender_label,
+                "userPhone": target_user.phone,
                 "mode": panic.mode.value if hasattr(panic.mode, "value") else str(panic.mode),
                 "unitLabel": panic.unit_label,
                 "message": notification_message,
+                "approxDistanceMeters": approx_distance_m,
+                "blurredLocation": _blur_location_label(panic.last_known_address, panic.unit_label),
+                "identityMasked": sender_label != target_user.full_name,
+                "actionSet": "panic_response" if recipient.role == UserRole.homeowner else "",
                 "route": (
                     "/dashboard/estate/emergency"
                     if recipient.role == UserRole.estate
@@ -591,6 +840,127 @@ def acknowledge_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[
     return payload
 
 
+def respond_to_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    if actor.role not in {UserRole.homeowner, UserRole.security, UserRole.estate, UserRole.admin}:
+        raise AppException("You cannot respond to this panic event.", status_code=403)
+    if panic.status == PanicEventStatus.resolved:
+        raise AppException("Resolved panic events cannot be responded to.", status_code=400)
+
+    responder_ids = _parse_recipient_user_ids(getattr(panic, "responder_user_ids_json", "[]"))
+    if actor.id not in responder_ids:
+        responder_ids.append(actor.id)
+    details = _parse_json_list(getattr(panic, "responder_details_json", "[]"))
+    if not any(str(item.get("userId") or "").strip() == actor.id for item in details):
+        details.append(
+            {
+                "userId": actor.id,
+                "name": actor.full_name,
+                "role": actor.role.value if hasattr(actor.role, "value") else str(actor.role),
+                "respondedAt": utc_now().isoformat(),
+                "phone": actor.phone,
+            }
+        )
+    now = utc_now()
+    panic.responder_user_ids_json = json.dumps(responder_ids, ensure_ascii=True)
+    panic.responder_details_json = json.dumps(details, ensure_ascii=True)
+    panic.response_started_at = panic.response_started_at or now
+    panic.last_responder_at = now
+    panic.acknowledged = True
+    panic.acknowledged_by_user_id = panic.acknowledged_by_user_id or actor.id
+    panic.acknowledged_at = panic.acknowledged_at or now
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.responding",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={},
+    )
+    db.commit()
+    db.refresh(panic)
+    create_notification(
+        db=db,
+        user_id=panic.user_id,
+        kind="safety.panic.response",
+        payload={
+            "panicId": panic.id,
+            "responderUserId": actor.id,
+            "responderName": actor.full_name,
+            "message": f"{actor.full_name} is responding to your panic alert.",
+            "route": "/dashboard/homeowner/safety",
+            "priority": "critical",
+        },
+    )
+    return _emit_panic_state(db, panic, event_name="panic_alert_update")
+
+
+def ignore_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    ignored_user_ids = _parse_recipient_user_ids(getattr(panic, "ignored_user_ids_json", "[]"))
+    if actor.id not in ignored_user_ids:
+        ignored_user_ids.append(actor.id)
+    panic.ignored_user_ids_json = json.dumps(ignored_user_ids, ensure_ascii=True)
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.ignored",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={},
+    )
+    db.commit()
+    db.refresh(panic)
+    return _emit_panic_state(db, panic, event_name="panic_alert_update")
+
+
+def report_false_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    reported_by = _parse_recipient_user_ids(getattr(panic, "false_report_user_ids_json", "[]"))
+    if actor.id not in reported_by:
+        reported_by.append(actor.id)
+    panic.false_report_user_ids_json = json.dumps(reported_by, ensure_ascii=True)
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.reported_false",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={"reportedCount": len(reported_by)},
+    )
+    db.commit()
+    db.refresh(panic)
+    if len(reported_by) == 1:
+        create_notification(
+            db=db,
+            user_id=panic.user_id,
+            kind="safety.panic.reported",
+            payload={
+                "panicId": panic.id,
+                "message": "A nearby responder reported this panic alert for review.",
+                "route": "/dashboard/homeowner/safety",
+                "priority": "normal",
+            },
+        )
+    return _emit_panic_state(db, panic, event_name="panic_alert_update")
+
+
+def update_panic_event_notes(db: Session, *, panic_id: str, actor: User, notes: str) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    panic.incident_notes = (notes or "").strip() or None
+    _log_audit(
+        db,
+        actor_user_id=actor.id,
+        action="panic.notes_updated",
+        resource_type="panic_event",
+        resource_id=panic.id,
+        meta={},
+    )
+    db.commit()
+    db.refresh(panic)
+    return _emit_panic_state(db, panic, event_name="panic_alert_update")
+
+
 def resolve_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
     panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
     panic.status = PanicEventStatus.resolved
@@ -620,7 +990,16 @@ def list_active_panic_events(db: Session, *, actor: User) -> list[dict[str, Any]
         .limit(100)
         .all()
     )
-    visible = [panic for panic in rows if _can_access_panic(db, panic=panic, actor=actor)]
+    visible = [
+        panic
+        for panic in rows
+        if _can_access_panic(db, panic=panic, actor=actor)
+        and (
+            actor.role in {UserRole.security, UserRole.estate, UserRole.admin}
+            or actor.id == panic.user_id
+            or actor.id not in set(_parse_recipient_user_ids(getattr(panic, "ignored_user_ids_json", "[]")))
+        )
+    ]
     return [serialize_panic_event(db, panic) for panic in visible]
 
 

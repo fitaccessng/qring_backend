@@ -164,15 +164,6 @@ def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address
         ip_address=ip_address,
     )
     db.add(device_session)
-    existing_notification = db.query(Notification).filter(Notification.user_id == user.id).first()
-    if not existing_notification:
-        db.add(
-            Notification(
-                user_id=user.id,
-                kind="system",
-                payload='{"message":"Welcome to Qring dashboard. Notifications are now active."}',
-            )
-        )
     db.commit()
 
     return AuthResponse(
