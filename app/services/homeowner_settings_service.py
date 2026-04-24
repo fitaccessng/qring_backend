@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -30,9 +31,20 @@ def get_or_create_homeowner_settings(db: Session, user_id: str) -> HomeownerSett
 def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
     row = get_or_create_homeowner_settings(db, user_id)
     user = db.query(User).filter(User.id == user_id).first()
-    homes = db.query(Home).filter(Home.homeowner_id == user_id).order_by(Home.created_at.asc()).all()
-    home_ids = [home.id for home in homes]
-    door_count = db.query(Door).filter(Door.home_id.in_(home_ids)).count() if home_ids else 0
+    primary_home = (
+        db.query(Home)
+        .filter(Home.homeowner_id == user_id)
+        .order_by(Home.created_at.asc())
+        .first()
+    )
+    door_count = (
+        db.query(func.count(Door.id))
+        .select_from(Door)
+        .join(Home, Home.id == Door.home_id)
+        .filter(Home.homeowner_id == user_id)
+        .scalar()
+        or 0
+    )
     estate_row = None
     try:
         estate_row = (
@@ -50,7 +62,6 @@ def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
     managed_by_estate = bool(estate_row)
     subscription_owner_id = estate_row[1].owner_id if estate_row else user_id
     subscription = get_effective_subscription(db, subscription_owner_id)
-    primary_home = homes[0] if homes else None
     return {
         "pushAlerts": row.push_alerts,
         "soundAlerts": row.sound_alerts,

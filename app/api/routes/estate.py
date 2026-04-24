@@ -37,6 +37,7 @@ from app.services.estate_service import (
     get_estate_stats_summary,
     invite_homeowner,
     list_estate_access_logs,
+    list_estate_settings_summary,
     list_estate_shared_selector_qrs,
     list_estate_security_users,
     list_estate_mappings,
@@ -197,6 +198,14 @@ def estate_overview(
     user: User = Depends(require_roles("estate", "admin")),
 ):
     return {"data": list_estate_overview(db, owner_id=user.id)}
+
+
+@router.get("/settings-summary")
+def estate_settings_summary(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {"data": list_estate_settings_summary(db, owner_id=user.id)}
 
 
 @router.get("/{estate_id}/settings")

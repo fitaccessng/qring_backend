@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
@@ -396,6 +397,69 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             "remainingDoors": max(capacity["maxDoors"] - usage["doors"], 0),
             "remainingQrCodes": max(capacity["maxQrCodes"] - usage["qr_codes"], 0),
         },
+        "subscription": effective_sub,
+    }
+
+
+def list_estate_settings_summary(db: Session, owner_id: str) -> dict[str, Any]:
+    estates = db.query(Estate).filter(Estate.owner_id == owner_id).order_by(Estate.created_at.desc()).all()
+    estate_ids = [estate.id for estate in estates]
+    effective_sub = get_effective_subscription(db, owner_id)
+
+    home_counts = {
+        str(estate_id): int(count or 0)
+        for estate_id, count in (
+            db.query(Home.estate_id, func.count(Home.id))
+            .join(Estate, Estate.id == Home.estate_id)
+            .filter(Estate.owner_id == owner_id)
+            .group_by(Home.estate_id)
+            .all()
+        )
+    }
+    door_counts = {
+        str(estate_id): int(count or 0)
+        for estate_id, count in (
+            db.query(Home.estate_id, func.count(Door.id))
+            .select_from(Door)
+            .join(Home, Home.id == Door.home_id)
+            .join(Estate, Estate.id == Home.estate_id)
+            .filter(Estate.owner_id == owner_id)
+            .group_by(Home.estate_id)
+            .all()
+        )
+    }
+    door_rows = (
+        db.query(Door, Home.estate_id)
+        .join(Home, Home.id == Door.home_id)
+        .join(Estate, Estate.id == Home.estate_id)
+        .filter(Estate.owner_id == owner_id)
+        .order_by(Door.name.asc())
+        .all()
+        if estate_ids
+        else []
+    )
+
+    return {
+        "estates": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "createdAt": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
+                "status": "active" if str(getattr(row, "is_active", "")).lower() == "online" else "inactive",
+                "homeCount": home_counts.get(str(row.id), 0),
+                "doorCount": door_counts.get(str(row.id), 0),
+            }
+            for row in estates
+        ],
+        "doors": [
+            {
+                "id": door.id,
+                "name": door.name,
+                "estateId": estate_id,
+                "status": "online" if str(door.is_active or "").lower() == "online" else "offline",
+            }
+            for door, estate_id in door_rows
+        ],
         "subscription": effective_sub,
     }
 
