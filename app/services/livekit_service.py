@@ -56,7 +56,7 @@ def build_request_room_name(visitor_request_id: str) -> str:
 def build_livekit_identity(role: str, user_id: str) -> str:
     normalized_role = str(role or "").strip().lower()
     safe_user_id = str(user_id or "").strip()
-    if normalized_role not in {"homeowner", "security", "visitor"} or not safe_user_id:
+    if normalized_role not in {"homeowner", "security", "visitor", "estate", "admin"} or not safe_user_id:
         raise AppException("Invalid LiveKit identity parameters.", status_code=400)
     return f"{normalized_role}_{safe_user_id}"
 

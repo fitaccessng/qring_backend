@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_roles
 from app.db.models import User
 from app.db.session import get_db
-from app.services.safety_service import acknowledge_panic_event, list_active_panic_events, resolve_panic_event, trigger_panic_event
+from app.services.safety_service import acknowledge_panic_event, end_panic_audio, join_panic_audio, list_active_panic_events, resolve_panic_event, trigger_panic_event
 
 router = APIRouter()
 
@@ -29,15 +29,19 @@ class PanicResolvePayload(BaseModel):
     panicId: str
 
 
+class PanicAudioPayload(BaseModel):
+    panicId: str
+
+
 @router.post("/trigger")
-def panic_trigger(
+async def panic_trigger(
     payload: PanicTriggerPayload,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner", "admin")),
 ):
     return {
-        "data": trigger_panic_event(
-            db,
+        "data": await trigger_panic_event(
+            db=db,
             actor=user,
             user_id=payload.userId,
             trigger_mode=payload.triggerMode,
@@ -57,12 +61,12 @@ def panic_acknowledge(
 
 
 @router.post("/resolve")
-def panic_resolve(
+async def panic_resolve(
     payload: PanicResolvePayload,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
 ):
-    return {"data": resolve_panic_event(db, panic_id=payload.panicId, actor=user)}
+    return {"data": await resolve_panic_event(db, panic_id=payload.panicId, actor=user)}
 
 
 @router.get("/active")
@@ -71,3 +75,21 @@ def panic_active(
     user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
 ):
     return {"data": list_active_panic_events(db, actor=user)}
+
+
+@router.post("/audio/join")
+async def panic_audio_join(
+    payload: PanicAudioPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    return {"data": await join_panic_audio(db, panic_id=payload.panicId, actor=user)}
+
+
+@router.post("/audio/end")
+async def panic_audio_end(
+    payload: PanicAudioPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    return {"data": await end_panic_audio(db, panic_id=payload.panicId, actor=user)}

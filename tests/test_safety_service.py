@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import uuid
 from unittest.mock import patch
@@ -62,7 +63,22 @@ class SafetyServiceTests(unittest.TestCase):
         self.neighbor_home = Home(id=str(uuid.uuid4()), name="Unit B3", estate_id=self.estate.id, homeowner_id=self.neighbor.id)
         self.guard.estate_id = self.estate.id
         self.estate_owner.estate_id = self.estate.id
+        self.homeowner_settings = HomeownerSetting(
+            user_id=self.homeowner.id,
+            nearby_panic_alerts_enabled=True,
+            nearby_panic_alert_radius_m=500,
+            safety_home_lat=6.4501,
+            safety_home_lng=3.3901,
+        )
+        self.neighbor_settings = HomeownerSetting(
+            user_id=self.neighbor.id,
+            nearby_panic_alerts_enabled=True,
+            nearby_panic_alert_radius_m=500,
+            safety_home_lat=6.4502,
+            safety_home_lng=3.3902,
+        )
         self.db.add_all([self.estate_owner, self.homeowner, self.guard, self.neighbor, self.estate, self.home, self.neighbor_home])
+        self.db.add_all([self.homeowner_settings, self.neighbor_settings])
         self.db.commit()
 
     def tearDown(self):
@@ -150,11 +166,13 @@ class SafetyServiceTests(unittest.TestCase):
 
     def test_trigger_panic_event_notifies_estate_manager_security_and_other_homeowners(self):
         with patch("app.services.notification_service.send_push_fcm"), patch("app.services.safety_service.send_email_smtp") as send_email:
-            payload = trigger_panic_event(
-                self.db,
-                actor=self.homeowner,
-                trigger_mode="hold-security",
-                location={"address": "Unit B2"},
+            payload = asyncio.run(
+                trigger_panic_event(
+                    self.db,
+                    actor=self.homeowner,
+                    trigger_mode="hold-security",
+                    location={"address": "Unit B2", "lat": 6.4501, "lng": 3.3901},
+                )
             )
 
         self.assertEqual(payload["status"], "active")

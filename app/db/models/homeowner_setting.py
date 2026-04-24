@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -22,6 +23,16 @@ class ResidentSetting(Base):
     known_contacts_json: Mapped[str] = mapped_column(Text, default="[]")
     allow_delivery_drop_at_gate: Mapped[bool] = mapped_column(Boolean, default=True)
     sms_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    nearby_panic_alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    nearby_panic_alert_radius_m: Mapped[int] = mapped_column(Integer, default=500)
+    nearby_panic_availability_mode: Mapped[str] = mapped_column(String(24), default="always")
+    nearby_panic_schedule_json: Mapped[str] = mapped_column(Text, default="[]")
+    nearby_panic_receive_from: Mapped[str] = mapped_column(String(24), default="everyone")
+    nearby_panic_muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    nearby_panic_same_area_label: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    panic_identity_visibility: Mapped[str] = mapped_column(String(24), default="masked")
+    safety_home_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    safety_home_lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

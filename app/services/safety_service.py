@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from datetime import timedelta
 from decimal import Decimal
@@ -41,12 +42,14 @@ from app.db.models import (
 )
 from app.services.notification_service import create_notification
 from app.services.provider_integrations import send_email_smtp
+from app.services.livekit_service import build_livekit_identity, create_livekit_room, delete_livekit_room, ensure_livekit_configured, issue_livekit_token_for_room
 from app.socket.server import sio
 
 settings = get_settings()
 MAX_VISITOR_REPORTS_PER_DAY = 5
 PANIC_RETRY_INTERVAL_SECONDS = 5
 PANIC_MAX_RETRIES = 3
+DEFAULT_NEARBY_PANIC_RADIUS_M = 500
 
 PRIORITY_BY_TYPE = {
     EmergencyAlertType.panic: EmergencyAlertPriority.critical,
@@ -88,6 +91,16 @@ def _json_loads(raw: str | None) -> dict[str, Any]:
         return {}
 
 
+def _parse_json_list(raw: str | None) -> list[dict[str, Any]]:
+    try:
+        rows = json.loads(raw or "[]")
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def _normalize_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
@@ -99,6 +112,80 @@ def _normalize_phone(value: str | None) -> str:
 
 def _normalize_email(value: str | None) -> str:
     return str(value or "").strip().lower()
+
+
+def _distance_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    radius_m = 6_371_000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lng2 - lng1)
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return radius_m * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+
+def _dedupe_users(rows: list[User]) -> list[User]:
+    unique_rows: list[User] = []
+    seen_ids: set[str] = set()
+    for row in rows:
+        if row.id in seen_ids:
+            continue
+        seen_ids.add(row.id)
+        unique_rows.append(row)
+    return unique_rows
+
+
+def _is_night_hour(now) -> bool:
+    hour = int(getattr(now, "hour", 0))
+    return hour >= 20 or hour < 6
+
+
+def _schedule_matches(now, schedule_rows: list[dict[str, Any]]) -> bool:
+    weekday = int(getattr(now, "weekday", lambda: 0)() if callable(getattr(now, "weekday", None)) else now.weekday())
+    current_minutes = int(now.hour) * 60 + int(now.minute)
+    for row in schedule_rows:
+        day = row.get("day")
+        if day is not None and int(day) != weekday:
+            continue
+        start_hour = int(row.get("startHour", 0))
+        start_minute = int(row.get("startMinute", 0))
+        end_hour = int(row.get("endHour", 23))
+        end_minute = int(row.get("endMinute", 59))
+        start_minutes = start_hour * 60 + start_minute
+        end_minutes = end_hour * 60 + end_minute
+        if start_minutes <= end_minutes and start_minutes <= current_minutes <= end_minutes:
+            return True
+        if start_minutes > end_minutes and (current_minutes >= start_minutes or current_minutes <= end_minutes):
+            return True
+    return False
+
+
+def _recipient_allows_panic(sender: User, recipient: User, recipient_settings: HomeownerSetting | None, *, now) -> bool:
+    if not recipient_settings:
+        return False
+    if not bool(getattr(recipient_settings, "nearby_panic_alerts_enabled", True)):
+        return False
+    muted_until = getattr(recipient_settings, "nearby_panic_muted_until", None)
+    if muted_until and muted_until > now:
+        return False
+    availability = str(getattr(recipient_settings, "nearby_panic_availability_mode", "always") or "always").lower()
+    if availability == "night_only" and not _is_night_hour(now):
+        return False
+    if availability == "custom" and not _schedule_matches(now, _parse_json_list(getattr(recipient_settings, "nearby_panic_schedule_json", "[]"))):
+        return False
+    receive_from = str(getattr(recipient_settings, "nearby_panic_receive_from", "everyone") or "everyone").lower()
+    if receive_from == "verified_only" and not bool(getattr(sender, "email_verified", False)):
+        return False
+    if receive_from == "same_area":
+        sender_settings = getattr(sender, "_panic_settings_cache", None)
+        sender_area = str(getattr(sender_settings, "nearby_panic_same_area_label", "") or "").strip().lower()
+        recipient_area = str(getattr(recipient_settings, "nearby_panic_same_area_label", "") or "").strip().lower()
+        if not sender_area or not recipient_area or sender_area != recipient_area:
+            return False
+    return True
 
 
 def _parse_recipient_user_ids(raw: str | None) -> list[str]:
@@ -338,26 +425,84 @@ def _list_estate_homeowner_users(db: Session, *, estate_id: str, exclude_user_id
     return unique_rows
 
 
-def _panic_recipient_users(db: Session, *, homeowner: User, estate_id: str | None, settings_row: HomeownerSetting | None) -> list[User]:
-    recipients: list[User] = []
-    seen_ids: set[str] = set()
+def _community_panic_recipients(
+    db: Session,
+    *,
+    homeowner: User,
+    settings_row: HomeownerSetting | None,
+    location: dict[str, Any] | None,
+    now,
+) -> list[User]:
+    lat = (location or {}).get("lat")
+    lng = (location or {}).get("lng")
+    if lat is None or lng is None:
+        return []
 
-    for contact in _list_personal_contact_users(db, homeowner=homeowner, settings_row=settings_row):
-        if contact.id not in seen_ids:
-            recipients.append(contact)
-            seen_ids.add(contact.id)
+    candidates = (
+        db.query(User, HomeownerSetting)
+        .join(HomeownerSetting, HomeownerSetting.user_id == User.id)
+        .filter(User.id != homeowner.id, User.role == UserRole.homeowner, User.is_active.is_(True))
+        .all()
+    )
+    if settings_row is not None:
+        setattr(homeowner, "_panic_settings_cache", settings_row)
+
+    radius_limit = max(
+        200,
+        min(
+            int(getattr(settings_row, "nearby_panic_alert_radius_m", DEFAULT_NEARBY_PANIC_RADIUS_M) or DEFAULT_NEARBY_PANIC_RADIUS_M),
+            1000,
+        ),
+    )
+    rows: list[User] = []
+    for candidate, candidate_settings in candidates:
+        recipient_lat = getattr(candidate_settings, "safety_home_lat", None)
+        recipient_lng = getattr(candidate_settings, "safety_home_lng", None)
+        if recipient_lat is None or recipient_lng is None:
+            continue
+        try:
+            distance = _distance_meters(float(lat), float(lng), float(recipient_lat), float(recipient_lng))
+        except Exception:
+            continue
+        recipient_radius = max(
+            200,
+            min(
+                int(getattr(candidate_settings, "nearby_panic_alert_radius_m", DEFAULT_NEARBY_PANIC_RADIUS_M) or DEFAULT_NEARBY_PANIC_RADIUS_M),
+                1000,
+            ),
+        )
+        if distance > min(radius_limit, recipient_radius):
+            continue
+        if not _recipient_allows_panic(homeowner, candidate, candidate_settings, now=now):
+            continue
+        rows.append(candidate)
+    return _dedupe_users(rows)
+
+
+def _panic_recipient_users(
+    db: Session,
+    *,
+    homeowner: User,
+    estate_id: str | None,
+    settings_row: HomeownerSetting | None,
+    location: dict[str, Any] | None,
+    now,
+) -> list[User]:
+    recipients: list[User] = _list_personal_contact_users(db, homeowner=homeowner, settings_row=settings_row)
 
     if estate_id:
-        for security_user in _list_security_users(db, estate_id):
-            if security_user.id not in seen_ids:
-                recipients.append(security_user)
-                seen_ids.add(security_user.id)
-        for resident in _list_estate_homeowner_users(db, estate_id=estate_id, exclude_user_id=homeowner.id):
-            if resident.id not in seen_ids:
-                recipients.append(resident)
-                seen_ids.add(resident.id)
+        recipients.extend(_list_security_users(db, estate_id))
 
-    return recipients
+    recipients.extend(
+        _community_panic_recipients(
+            db,
+            homeowner=homeowner,
+            settings_row=settings_row,
+            location=location,
+            now=now,
+        )
+    )
+    return _dedupe_users(recipients)
 
 
 def _panic_rooms(panic: PanicEvent, recipient_ids: list[str]) -> list[str]:
@@ -379,6 +524,38 @@ def _panic_rooms(panic: PanicEvent, recipient_ids: list[str]) -> list[str]:
     return list(rooms)
 
 
+def _panic_audio_is_active(panic: PanicEvent) -> bool:
+    return bool(panic.audio_room_name and panic.audio_started_at and not panic.audio_ended_at and panic.status == PanicEventStatus.active)
+
+
+async def _ensure_panic_audio_room(db: Session, *, panic: PanicEvent, actor: User | None = None) -> PanicEvent:
+    if _panic_audio_is_active(panic):
+        return panic
+    ensure_livekit_configured()
+    room_name = f"{settings.LIVEKIT_ROOM_PREFIX}panic-{panic.id}"
+    await create_livekit_room(room_name)
+    panic.audio_room_name = room_name
+    panic.audio_started_at = panic.audio_started_at or utc_now()
+    panic.audio_ended_at = None
+    panic.audio_started_by_user_id = actor.id if actor else (panic.audio_started_by_user_id or panic.user_id)
+    db.commit()
+    db.refresh(panic)
+    return panic
+
+
+async def _end_panic_audio_room(db: Session, *, panic: PanicEvent) -> PanicEvent:
+    if panic.audio_room_name and not panic.audio_ended_at:
+        try:
+            await delete_livekit_room(panic.audio_room_name)
+        except Exception:
+            # Resolving the panic must not be blocked by room cleanup.
+            pass
+        panic.audio_ended_at = utc_now()
+        db.commit()
+        db.refresh(panic)
+    return panic
+
+
 def serialize_panic_event(db: Session, panic: PanicEvent) -> dict[str, Any]:
     trigger_user = db.query(User).filter(User.id == panic.user_id).first()
     return {
@@ -386,6 +563,8 @@ def serialize_panic_event(db: Session, panic: PanicEvent) -> dict[str, Any]:
         "panicId": panic.id,
         "userId": panic.user_id,
         "userName": trigger_user.full_name if trigger_user else "Resident",
+        "userEmail": trigger_user.email if trigger_user else None,
+        "userPhone": trigger_user.phone if trigger_user else None,
         "estateId": panic.estate_id,
         "homeId": panic.home_id,
         "type": "panic",
@@ -399,6 +578,13 @@ def serialize_panic_event(db: Session, panic: PanicEvent) -> dict[str, Any]:
             "lat": _to_float(panic.last_known_lat),
             "lng": _to_float(panic.last_known_lng),
             "source": panic.last_known_source,
+        },
+        "audio": {
+            "active": _panic_audio_is_active(panic),
+            "roomName": panic.audio_room_name,
+            "startedAt": panic.audio_started_at.isoformat() if panic.audio_started_at else None,
+            "endedAt": panic.audio_ended_at.isoformat() if panic.audio_ended_at else None,
+            "startedByUserId": panic.audio_started_by_user_id,
         },
         "retryCount": int(panic.retry_count or 0),
         "recipientUserIds": _parse_recipient_user_ids(panic.recipient_user_ids_json),
@@ -465,7 +651,23 @@ def _load_panic_for_actor(db: Session, *, panic_id: str, actor: User) -> PanicEv
     return panic
 
 
-def trigger_panic_event(
+def _panic_audio_display_name(actor: User) -> str:
+    return (actor.full_name or actor.email or actor.phone or actor.role.value.title()).strip() or "Qring User"
+
+
+def _panic_audio_role(actor: User, panic: PanicEvent) -> str:
+    if actor.role == UserRole.admin:
+        return "admin"
+    if actor.role == UserRole.estate:
+        return "estate"
+    if actor.role == UserRole.security:
+        return "security"
+    if actor.id == panic.user_id:
+        return "homeowner"
+    return "homeowner"
+
+
+async def trigger_panic_event(
     db: Session,
     *,
     actor: User,
@@ -488,11 +690,18 @@ def trigger_panic_event(
 
     context = _resolve_panic_context(db, target_user)
     settings_row = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == target_user.id).first()
+    resolved_location = dict(location or {})
+    if resolved_location.get("lat") is None and getattr(settings_row, "safety_home_lat", None) is not None:
+        resolved_location["lat"] = getattr(settings_row, "safety_home_lat", None)
+    if resolved_location.get("lng") is None and getattr(settings_row, "safety_home_lng", None) is not None:
+        resolved_location["lng"] = getattr(settings_row, "safety_home_lng", None)
     recipients = _panic_recipient_users(
         db,
         homeowner=target_user,
         estate_id=context["estate"].id if context["estate"] else None,
         settings_row=settings_row,
+        location=resolved_location,
+        now=utc_now(),
     )
     now = utc_now()
     panic = PanicEvent(
@@ -503,11 +712,11 @@ def trigger_panic_event(
         mode=context["mode"],
         status=PanicEventStatus.active,
         acknowledged=False,
-        unit_label=context["unitLabel"] or (location or {}).get("doorName") or (location or {}).get("address"),
-        last_known_lat=(location or {}).get("lat"),
-        last_known_lng=(location or {}).get("lng"),
-        last_known_address=(location or {}).get("address"),
-        last_known_source=(location or {}).get("source") or trigger_mode,
+        unit_label=context["unitLabel"] or resolved_location.get("doorName") or resolved_location.get("address"),
+        last_known_lat=resolved_location.get("lat"),
+        last_known_lng=resolved_location.get("lng"),
+        last_known_address=resolved_location.get("address"),
+        last_known_source=resolved_location.get("source") or trigger_mode,
         recipient_user_ids_json=json.dumps([recipient.id for recipient in recipients], ensure_ascii=True),
         retry_count=0,
         last_dispatched_at=now,
@@ -530,6 +739,11 @@ def trigger_panic_event(
     db.commit()
     db.refresh(panic)
 
+    try:
+        panic = await _ensure_panic_audio_room(db, panic=panic, actor=actor)
+    except Exception:
+        db.refresh(panic)
+
     notification_message = (
         f"{target_user.full_name} triggered a panic alert"
         f"{f' at {panic.unit_label}' if panic.unit_label else ''}. Respond immediately."
@@ -543,9 +757,21 @@ def trigger_panic_event(
                 "panicId": panic.id,
                 "userId": target_user.id,
                 "userName": target_user.full_name,
+                "userEmail": target_user.email,
+                "userPhone": target_user.phone,
                 "mode": panic.mode.value if hasattr(panic.mode, "value") else str(panic.mode),
                 "unitLabel": panic.unit_label,
                 "message": notification_message,
+                "panicLocation": {
+                    "lat": _to_float(panic.last_known_lat),
+                    "lng": _to_float(panic.last_known_lng),
+                    "address": panic.last_known_address,
+                    "source": panic.last_known_source,
+                },
+                "panicAudio": {
+                    "active": _panic_audio_is_active(panic),
+                    "roomName": panic.audio_room_name,
+                },
                 "route": (
                     "/dashboard/estate/emergency"
                     if recipient.role == UserRole.estate
@@ -555,6 +781,7 @@ def trigger_panic_event(
                 ),
                 "sound": "panic_alert",
                 "priority": "critical",
+                "title": "Panic Alert",
             },
         )
         if recipient.email:
@@ -567,6 +794,37 @@ def trigger_panic_event(
     payload = _emit_panic_state(db, panic, event_name="panic_alert")
     _schedule_panic_retries(panic.id)
     return payload
+
+
+async def join_panic_audio(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    if panic.status == PanicEventStatus.resolved:
+        raise AppException("Resolved panic events cannot open live audio.", status_code=409)
+    panic = await _ensure_panic_audio_room(db, panic=panic, actor=actor)
+    role = _panic_audio_role(actor, panic)
+    issued = issue_livekit_token_for_room(
+        room_name=panic.audio_room_name,
+        identity=build_livekit_identity(role, actor.id),
+        display_name=_panic_audio_display_name(actor),
+        can_publish=True,
+        can_subscribe=True,
+    )
+    return {
+        "panicId": panic.id,
+        "roomName": issued["roomName"],
+        "token": issued["token"],
+        "url": issued.get("url"),
+        "expiresIn": issued.get("expiresIn"),
+        "audio": serialize_panic_event(db, panic).get("audio"),
+    }
+
+
+async def end_panic_audio(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    if actor.id != panic.user_id and actor.role not in {UserRole.admin, UserRole.security, UserRole.estate}:
+        raise AppException("You are not allowed to end this panic audio session.", status_code=403)
+    panic = await _end_panic_audio_room(db, panic=panic)
+    return serialize_panic_event(db, panic)
 
 
 def acknowledge_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
@@ -591,7 +849,7 @@ def acknowledge_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[
     return payload
 
 
-def resolve_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
+async def resolve_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str, Any]:
     panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
     panic.status = PanicEventStatus.resolved
     panic.acknowledged = True
@@ -609,6 +867,7 @@ def resolve_panic_event(db: Session, *, panic_id: str, actor: User) -> dict[str,
     )
     db.commit()
     db.refresh(panic)
+    panic = await _end_panic_audio_room(db, panic=panic)
     return _emit_panic_state(db, panic, event_name="panic_alert_update")
 
 

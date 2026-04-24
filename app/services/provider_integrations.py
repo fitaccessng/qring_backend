@@ -146,10 +146,33 @@ def send_push_fcm(
     failed = 0
     for token in tokens:
         try:
+            push_data = {k: str(v) for k, v in (data or {}).items()}
+            sound_name = "default" if push_data.get("sound") else None
+            android_notification = None
+            android_config = None
+            apns_config = None
+            if sound_name and hasattr(firebase_messaging, "AndroidNotification"):
+                android_notification = firebase_messaging.AndroidNotification(
+                    sound=sound_name,
+                    channel_id="panic_alerts" if push_data.get("kind") == "safety.panic" else None,
+                )
+            if hasattr(firebase_messaging, "AndroidConfig"):
+                android_config = firebase_messaging.AndroidConfig(
+                    priority="high" if push_data.get("priority") == "critical" else "normal",
+                    notification=android_notification,
+                )
+            if sound_name and hasattr(firebase_messaging, "APNSConfig") and hasattr(firebase_messaging, "APNSPayload") and hasattr(firebase_messaging, "Aps"):
+                apns_config = firebase_messaging.APNSConfig(
+                    payload=firebase_messaging.APNSPayload(
+                        aps=firebase_messaging.Aps(sound=sound_name)
+                    )
+                )
             message = firebase_messaging.Message(
                 token=token,
                 notification=firebase_messaging.Notification(title=title, body=body),
-                data={k: str(v) for k, v in (data or {}).items()},
+                data=push_data,
+                android=android_config,
+                apns=apns_config,
             )
             firebase_messaging.send(message, app=app)
             ok += 1

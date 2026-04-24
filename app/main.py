@@ -334,24 +334,30 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "messages", "read_by_homeowner_at", datetime_sql)
             _add_column_if_missing(conn, columns, "messages", "read_by_security_at", datetime_sql)
 
-        if "homeowner_settings" in table_names:
-            columns = {col["name"] for col in inspector.get_columns("homeowner_settings")}
-            _add_column_if_missing(conn, columns, "homeowner_settings", "push_alerts", "BOOLEAN DEFAULT 1")
-            _add_column_if_missing(conn, columns, "homeowner_settings", "sound_alerts", "BOOLEAN DEFAULT 1")
-            _add_column_if_missing(
-                conn,
-                columns,
-                "homeowner_settings",
-                "auto_reject_unknown_visitors",
-                "BOOLEAN DEFAULT 0",
-            )
-            _add_column_if_missing(conn, columns, "homeowner_settings", "auto_approve_trusted_visitors", "BOOLEAN DEFAULT 0")
-            _add_column_if_missing(conn, columns, "homeowner_settings", "auto_approve_known_contacts", "BOOLEAN DEFAULT 0")
-            _add_column_if_missing(conn, columns, "homeowner_settings", "known_contacts_json", "TEXT DEFAULT '[]'")
-            _add_column_if_missing(conn, columns, "homeowner_settings", "allow_delivery_drop_at_gate", "BOOLEAN DEFAULT 1")
-            _add_column_if_missing(conn, columns, "homeowner_settings", "sms_fallback_enabled", "BOOLEAN DEFAULT 0")
-            _add_column_if_missing(conn, columns, "homeowner_settings", "created_at", datetime_sql)
-            _add_column_if_missing(conn, columns, "homeowner_settings", "updated_at", datetime_sql)
+        for settings_table in ("homeowner_settings", "resident_settings"):
+            if settings_table not in table_names:
+                continue
+            columns = {col["name"] for col in inspector.get_columns(settings_table)}
+            _add_column_if_missing(conn, columns, settings_table, "push_alerts", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, settings_table, "sound_alerts", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, settings_table, "auto_reject_unknown_visitors", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, settings_table, "auto_approve_trusted_visitors", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, settings_table, "auto_approve_known_contacts", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, settings_table, "known_contacts_json", "TEXT DEFAULT '[]'")
+            _add_column_if_missing(conn, columns, settings_table, "allow_delivery_drop_at_gate", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, settings_table, "sms_fallback_enabled", "BOOLEAN DEFAULT 0")
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_alerts_enabled", "BOOLEAN DEFAULT 1")
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_alert_radius_m", "INTEGER DEFAULT 500")
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_availability_mode", "VARCHAR(24) DEFAULT 'always'")
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_schedule_json", "TEXT DEFAULT '[]'")
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_receive_from", "VARCHAR(24) DEFAULT 'everyone'")
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_muted_until", datetime_sql)
+            _add_column_if_missing(conn, columns, settings_table, "nearby_panic_same_area_label", "VARCHAR(120)")
+            _add_column_if_missing(conn, columns, settings_table, "panic_identity_visibility", "VARCHAR(24) DEFAULT 'masked'")
+            _add_column_if_missing(conn, columns, settings_table, "safety_home_lat", "FLOAT")
+            _add_column_if_missing(conn, columns, settings_table, "safety_home_lng", "FLOAT")
+            _add_column_if_missing(conn, columns, settings_table, "created_at", datetime_sql)
+            _add_column_if_missing(conn, columns, settings_table, "updated_at", datetime_sql)
 
         if "estates" in table_names:
             columns = {col["name"] for col in inspector.get_columns("estates")}
@@ -462,6 +468,13 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "call_sessions", "created_at", datetime_sql)
             _add_column_if_missing(conn, columns, "call_sessions", "ended_at", datetime_sql)
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_call_sessions_room_name ON call_sessions (room_name)"))
+
+        if "panic_events" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("panic_events")}
+            _add_column_if_missing(conn, columns, "panic_events", "audio_room_name", "VARCHAR(180)")
+            _add_column_if_missing(conn, columns, "panic_events", "audio_started_by_user_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "panic_events", "audio_started_at", datetime_sql)
+            _add_column_if_missing(conn, columns, "panic_events", "audio_ended_at", datetime_sql)
 
         if "digital_access_passes" in table_names:
             columns = {col["name"] for col in inspector.get_columns("digital_access_passes")}

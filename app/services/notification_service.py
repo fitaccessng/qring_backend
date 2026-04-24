@@ -66,6 +66,7 @@ def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> 
             "estate.invite": "Estate Invitation",
             "estate.assignment": "Door Assignment",
             "estate.payment.status": "Payment Status",
+            "safety.panic": "Panic Alert",
         }
         send_push_fcm(
             db,
@@ -77,6 +78,9 @@ def create_notification(db: Session, user_id: str, kind: str, payload: dict) -> 
                 "notificationId": notification.id,
                 "sessionId": str((payload or {}).get("sessionId") or ""),
                 "alertId": str((payload or {}).get("alertId") or ""),
+                "panicId": str((payload or {}).get("panicId") or ""),
+                "priority": str((payload or {}).get("priority") or ""),
+                "sound": str((payload or {}).get("sound") or ""),
             },
         )
     except Exception:
