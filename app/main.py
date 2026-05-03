@@ -784,6 +784,7 @@ async def on_startup():
     _ensure_advanced_features_schema()
     _ensure_estate_alert_schema()
     _ensure_homeowner_payment_schema()
+    _ensure_homeowner_settings_schema()
     _ensure_wallet_schema()
     _ensure_runtime_compatibility_schema()
     create_safety_tables(engine)

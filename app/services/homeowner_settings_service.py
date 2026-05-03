@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.models import Door, Estate, Home, User
 from app.db.models import HomeownerSetting
+from app.db.base import Base
 from app.services.payment_service import get_effective_subscription
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,14 @@ DEFAULT_PANIC_SCHEDULE = []
 
 
 def get_or_create_homeowner_settings(db: Session, user_id: str) -> HomeownerSetting:
-    row = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == user_id).first()
+    try:
+        row = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == user_id).first()
+    except SQLAlchemyError:
+        logger.exception("homeowner_settings_query_failed user_id=%s", user_id)
+        db.rollback()
+        # Older deployments may be missing the resident settings table.
+        Base.metadata.tables[HomeownerSetting.__tablename__].create(bind=db.get_bind(), checkfirst=True)
+        row = db.query(HomeownerSetting).filter(HomeownerSetting.user_id == user_id).first()
     if row:
         return row
 
@@ -50,7 +58,11 @@ def get_homeowner_settings_payload(db: Session, user_id: str) -> dict:
         estate_row = None
     managed_by_estate = bool(estate_row)
     subscription_owner_id = estate_row[1].owner_id if estate_row else user_id
-    subscription = get_effective_subscription(db, subscription_owner_id)
+    try:
+        subscription = get_effective_subscription(db, subscription_owner_id)
+    except Exception:
+        logger.exception("homeowner_settings_subscription_lookup_failed user_id=%s", user_id)
+        subscription = None
     primary_home = homes[0] if homes else None
     return {
         "pushAlerts": row.push_alerts,
