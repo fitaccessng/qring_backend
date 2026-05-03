@@ -14,6 +14,7 @@ from app.db.models import Appointment, Door, Home, User, VisitorSession
 from app.services.payment_service import require_subscription_feature
 from app.services.notification_service import create_notification
 from app.services.provider_integrations import send_email_smtp
+from app.services.security_service import list_security_accounts_for_estate
 from app.services.qr_token_service import (
     build_qr_token_payload,
     build_secure_token,
@@ -123,6 +124,12 @@ def _serialize_appointment(row: Appointment, *, door: Door | None = None, home: 
     }
 
 
+def _build_share_url(appointment_id: str, share_token_hash: str) -> tuple[str, str]:
+    base = (settings.APPOINTMENT_SHARE_BASE_URL or settings.FRONTEND_BASE_URL or "").rstrip("/")
+    short_share_token = _build_short_share_token(appointment_id, share_token_hash)
+    return short_share_token, f"{base}/appointment/{short_share_token}"
+
+
 def ensure_appointment_visitor_session(
     db: Session,
     *,
@@ -130,6 +137,10 @@ def ensure_appointment_visitor_session(
     visitor_label: str | None = None,
     status: str = "pending",
 ) -> VisitorSession:
+    door = db.query(Door).filter(Door.id == appointment.door_id).first()
+    home = db.query(Home).filter(Home.id == appointment.home_id).first()
+    estate_id = getattr(home, "estate_id", None)
+    gate_id = (getattr(door, "gate_label", None) or getattr(door, "id", None) or "main-gate")
     open_statuses = {"pending", "active", "approved"}
     existing = (
         db.query(VisitorSession)
@@ -147,6 +158,18 @@ def ensure_appointment_visitor_session(
         if desired_label and existing.visitor_label != desired_label:
             existing.visitor_label = desired_label
             updated = True
+        if estate_id and existing.estate_id != estate_id:
+            existing.estate_id = estate_id
+            updated = True
+        if gate_id and existing.gate_id != gate_id:
+            existing.gate_id = gate_id
+            updated = True
+        if existing.request_source != "appointment_link":
+            existing.request_source = "appointment_link"
+            updated = True
+        if existing.creator_role != "visitor":
+            existing.creator_role = "visitor"
+            updated = True
         if status and existing.status not in {"rejected", "closed", "completed"} and existing.status != status:
             existing.status = status
             updated = True
@@ -163,6 +186,10 @@ def ensure_appointment_visitor_session(
         appointment_id=appointment.id,
         visitor_label=(visitor_label or appointment.visitor_name or "Visitor").strip() or "Visitor",
         status=status or "pending",
+        estate_id=estate_id,
+        gate_id=gate_id,
+        request_source="appointment_link",
+        creator_role="visitor",
     )
     db.add(session)
     db.commit()
@@ -236,18 +263,19 @@ def create_appointment(
     db.add(appt)
     db.commit()
     db.refresh(appt)
+    share_data = create_appointment_share(db, homeowner_id=homeowner_id, appointment_id=appt.id)
     payload = _serialize_appointment(appt, door=door, home=home)
+    payload.update(
+        {
+            "shareToken": share_data.get("shareToken"),
+            "shareUrl": share_data.get("shareUrl"),
+            "shareExpiresAt": share_data.get("expiresAt"),
+            "inviteCode": share_data.get("shareToken"),
+            "inviteDelivery": "email" if appt.visitor_email else "manual_code",
+        }
+    )
 
     if appt.visitor_email:
-        share_data = create_appointment_share(db, homeowner_id=homeowner_id, appointment_id=appt.id)
-        payload.update(
-            {
-                "shareToken": share_data.get("shareToken"),
-                "shareUrl": share_data.get("shareUrl"),
-                "shareExpiresAt": share_data.get("expiresAt"),
-            }
-        )
-
         homeowner = db.query(User).filter(User.id == homeowner_id).first()
         homeowner_name = (homeowner.full_name if homeowner else "Homeowner").strip() or "Homeowner"
         entry_point = (door.gate_label or door.name or "your entry point").strip()
@@ -261,6 +289,7 @@ def create_appointment(
             f"Purpose: {appt.purpose or 'Scheduled visit'}\n\n"
             "Open this secure QRing link to confirm the visit and enable location updates:\n"
             f"{share_data.get('shareUrl')}\n\n"
+            f"Invite code: {share_data.get('shareToken')}\n\n"
             "When you get close to the property after accepting, QRing will notify the homeowner automatically."
         )
         delivery = send_email_smtp(
@@ -304,9 +333,7 @@ def create_appointment_share(
     db.commit()
     db.refresh(appt)
 
-    base = (settings.APPOINTMENT_SHARE_BASE_URL or settings.FRONTEND_BASE_URL or "").rstrip("/")
-    short_share_token = _build_short_share_token(appt.id, token_data["tokenHash"])
-    share_url = f"{base}/appointment/{short_share_token}"
+    short_share_token, share_url = _build_share_url(appt.id, token_data["tokenHash"])
     return {
         "appointment": _serialize_appointment(appt),
         "shareToken": short_share_token,
@@ -411,6 +438,22 @@ def accept_appointment_share(
             "message": f"{effective_name} accepted appointment and is expected soon.",
         },
     )
+
+    if session.estate_id:
+        for security_user in list_security_accounts_for_estate(db, session.estate_id, gate_id=session.gate_id):
+            create_notification(
+                db=db,
+                user_id=security_user.id,
+                kind="appointment.accepted",
+                payload={
+                    "appointmentId": appt.id,
+                    "sessionId": session.id,
+                    "doorId": appt.door_id,
+                    "homeownerId": appt.homeowner_id,
+                    "visitorName": effective_name,
+                    "message": f"{effective_name} accepted a scheduled visit and is expected at the gate.",
+                },
+            )
 
     share_base = (settings.APPOINTMENT_SHARE_BASE_URL or settings.FRONTEND_BASE_URL or "").rstrip("/")
     return {

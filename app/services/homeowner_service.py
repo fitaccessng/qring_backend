@@ -109,7 +109,7 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "door": door.name,
             "status": STATUS_LABELS.get(session.status, session.status.title()),
             "sessionStatus": session.status,
-            "canDecide": session.status in {"pending", "forwarded", "handled_by_security", "received_by_security", "forwarded_to_homeowner"},
+            "canDecide": session.status in {"submitted", "pending", "forwarded", "handled_by_security", "received_by_security", "forwarded_to_homeowner"},
             "creatorRole": (session.creator_role or "visitor") if (session.creator_role or "").strip() else ("security" if str(session.qr_id or "").startswith("security-manual:") else "visitor"),
             "requestSource": (session.request_source or "visitor_qr") if (session.request_source or "").strip() else ("gateman_assisted" if str(session.qr_id or "").startswith("security-manual:") else "visitor_qr"),
             "preferredCommunicationChannel": session.preferred_communication_channel,
@@ -270,6 +270,7 @@ def create_homeowner_session_message(
     message = Message(
         session_id=session_id,
         sender_type="homeowner",
+        sender_id=homeowner_id,
         body=body,
         created_at=datetime.utcnow(),
     )
@@ -282,6 +283,37 @@ def create_homeowner_session_message(
         "text": message.body,
         "senderType": message.sender_type,
         "displayName": "Homeowner",
+        "at": message.created_at.isoformat(),
+    }
+
+
+def create_visitor_session_message(
+    db: Session, *, session_id: str, text: str
+) -> dict[str, Any] | None:
+    session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+    if not session:
+        return None
+
+    body = (text or "").strip()
+    if not body:
+        return None
+
+    message = Message(
+        session_id=session_id,
+        sender_type="visitor",
+        receiver_id=session.homeowner_id,
+        body=body,
+        created_at=datetime.utcnow(),
+    )
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return {
+        "id": message.id,
+        "sessionId": message.session_id,
+        "text": message.body,
+        "senderType": message.sender_type,
+        "displayName": session.visitor_label or "Visitor",
         "at": message.created_at.isoformat(),
     }
 

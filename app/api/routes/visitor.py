@@ -29,6 +29,7 @@ from app.services.session_service import create_visitor_session, rotate_visitor_
 from app.services.visitor_session_auth import require_visitor_session_access
 from app.services.voice_note_service import save_voice_note
 from app.services.advanced_service import create_snapshot_audit
+from app.services.homeowner_service import create_visitor_session_message
 from app.socket.server import sio
 
 router = APIRouter()
@@ -52,6 +53,11 @@ class VisitorAppointmentArrivalPayload(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
     batteryPct: Optional[int] = None
+
+
+class VisitorSessionMessagePayload(BaseModel):
+    text: str
+    clientId: Optional[str] = None
 
 
 @router.post("/request")
@@ -486,6 +492,38 @@ def visitor_session_messages(
             for row in rows
         ]
     }
+
+
+@router.post("/sessions/{session_id}/messages")
+async def visitor_send_session_message(
+    session_id: str,
+    payload: VisitorSessionMessagePayload,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
+    db: Session = Depends(get_db),
+):
+    from app.db.models import VisitorSession
+
+    session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+    if not session:
+        raise AppException("Session not found", status_code=404)
+
+    require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
+    data = create_visitor_session_message(db, session_id=session_id, text=payload.text)
+    if not data:
+        raise AppException("Unable to send message", status_code=400)
+
+    await sio.emit(
+        "chat.message",
+        {
+            **data,
+            "clientId": payload.clientId,
+            "displayName": session.visitor_label or "Visitor",
+        },
+        room=f"session:{session_id}",
+        namespace=settings.SIGNALING_NAMESPACE,
+    )
+    return {"data": data}
 
 
 @router.post("/sessions/{session_id}/livekit-token")

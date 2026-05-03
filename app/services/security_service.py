@@ -13,6 +13,7 @@ from app.services.notification_service import create_notification
 
 OPEN_SECURITY_STATUSES = {"submitted", "received_by_security", "forwarded_to_homeowner", "approved"}
 STATE_FLOW = {
+    "pending": {"received_by_security", "forwarded_to_homeowner", "approved", "rejected", "completed"},
     "submitted": {"received_by_security"},
     "received_by_security": {"forwarded_to_homeowner", "approved", "rejected"},
     "forwarded_to_homeowner": {"approved", "rejected"},
