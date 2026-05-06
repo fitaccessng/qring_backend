@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -368,6 +368,40 @@ def homeowner_settings(
     user: User = Depends(require_roles("homeowner")),
 ):
     return {"data": get_homeowner_settings_payload(db, user.id)}
+
+
+@router.get("/contact-users/search")
+def homeowner_contact_user_search(
+    email: str = Query(..., min_length=3),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        raise AppException("Email is required.", status_code=400)
+
+    matched = (
+        db.query(User)
+        .filter(
+            User.email == normalized_email,
+            User.id != user.id,
+            User.is_active.is_(True),
+            User.email_verified.is_(True),
+        )
+        .first()
+    )
+    if not matched:
+        raise AppException("No verified QRing user found for that email.", status_code=404)
+
+    return {
+        "data": {
+            "id": matched.id,
+            "fullName": matched.full_name,
+            "email": matched.email,
+            "phone": matched.phone,
+            "role": matched.role.value if hasattr(matched.role, "value") else str(matched.role),
+        }
+    }
 
 
 @router.post("/join-estate")
