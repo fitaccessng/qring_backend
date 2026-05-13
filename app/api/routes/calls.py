@@ -106,6 +106,15 @@ async def start_call(
         payload.sessionId,
         bool(user and user.role.value == "homeowner"),
     )
+    if not user:
+        if not payload.sessionId:
+            raise AppException("sessionId is required for visitor call start.", status_code=400)
+        session = db.query(VisitorSession).filter(VisitorSession.id == payload.sessionId).first()
+        if not session:
+            raise AppException("Visitor session not found.", status_code=404)
+        from app.services.visitor_session_auth import require_visitor_session_access
+
+        require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)
     try:
         row = await start_call_session(
             db,
@@ -176,7 +185,7 @@ async def start_call(
             "roomName": row.room_name,
             "callSessionId": row.id,
             "visitorId": row.visitor_id,
-            "status": "ringing",
+            "status": row.status,
         }
     }
 
@@ -328,13 +337,3 @@ async def end_call(
         )
 
     return {"data": {"callSessionId": row.id, "status": row.status, "endedAt": row.ended_at.isoformat() if row.ended_at else None}}
-    if not user:
-        # Visitor-initiated call: require a valid visitor token for the target session.
-        if not payload.sessionId:
-            raise AppException("sessionId is required for visitor call start.", status_code=400)
-        session = db.query(VisitorSession).filter(VisitorSession.id == payload.sessionId).first()
-        if not session:
-            raise AppException("Visitor session not found.", status_code=404)
-        from app.services.visitor_session_auth import require_visitor_session_access
-
-        require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)
