@@ -17,8 +17,17 @@ raw_cors_origins = (settings.CORS_ORIGINS or "").strip()
 if raw_cors_origins == "*" or settings.cors_allow_origin_regex:
     allow_all_socket_cors = True
 
+sio_manager = None
+if settings.redis_enabled:
+    sio_manager = socketio.AsyncRedisManager(
+        settings.REDIS_URL,
+        channel=settings.SOCKET_REDIS_CHANNEL,
+        write_only=False,
+    )
+
 sio = socketio.AsyncServer(
     async_mode="asgi",
+    client_manager=sio_manager,
     cors_allowed_origins="*" if allow_all_socket_cors else socket_cors_origins,
     logger=False,
     engineio_logger=False,

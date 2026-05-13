@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
+from app.core.cache import cache_key, get_or_set_json
 from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.db.models import Door, Estate, Home, Message, Notification, QRCode, Subscription, SubscriptionPlan, User, UserRole, VisitorSession
@@ -90,7 +91,13 @@ def admin_overview(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin")),
 ):
-    return {"data": get_admin_overview(db)}
+    return {
+        "data": get_or_set_json(
+            cache_key("admin-overview"),
+            lambda: get_admin_overview(db),
+            settings.CACHE_ADMIN_TTL_SECONDS,
+        )
+    }
 
 
 @router.get("/plans")

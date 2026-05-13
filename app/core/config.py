@@ -98,6 +98,22 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
 
     DATABASE_URL: str = "sqlite:///./qring.db"
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 40
+    DB_POOL_TIMEOUT_SECONDS: int = 30
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+
+    REDIS_URL: str = ""
+    REDIS_KEY_PREFIX: str = "qring"
+    SOCKET_REDIS_CHANNEL: str = "qring-socketio"
+    CACHE_DEFAULT_TTL_SECONDS: int = 30
+    CACHE_DASHBOARD_TTL_SECONDS: int = 15
+    CACHE_ADMIN_TTL_SECONDS: int = 20
+    CACHE_ESTATE_TTL_SECONDS: int = 20
+
+    APP_WORKERS: int = 4
+    PROCESS_ROLE: str = "web"
+    RUN_SCHEDULED_JOBS: bool = False
 
     JWT_SECRET_KEY: str = "change-me"
     JWT_ALGORITHM: str = "HS256"
@@ -214,6 +230,19 @@ class Settings(BaseSettings):
     def cors_allow_origin_regex(self) -> Optional[str]:
         value = (self.CORS_ALLOW_ORIGIN_REGEX or "").strip()
         return value or None
+
+    @property
+    def redis_enabled(self) -> bool:
+        return bool((self.REDIS_URL or "").strip())
+
+    @property
+    def database_backend(self) -> str:
+        value = str(self.DATABASE_URL or "").strip().lower()
+        if value.startswith("postgresql"):
+            return "postgresql"
+        if value.startswith("sqlite"):
+            return "sqlite"
+        return "other"
 
 
 @lru_cache

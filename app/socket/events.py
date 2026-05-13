@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections import defaultdict
 from datetime import datetime
 
 from app.core.config import get_settings
@@ -14,8 +13,6 @@ from app.socket.manager import socket_state
 from app.services.visitor_session_auth import require_visitor_session_access
 
 settings = get_settings()
-session_members: dict[str, set[str]] = defaultdict(set)
-sid_allowed_sessions: dict[str, set[str]] = defaultdict(set)
 CHAT_PERSIST_RETRY_DELAYS = (0.35, 1.0, 2.0)
 
 
@@ -174,7 +171,7 @@ def register_socket_events(sio):
     async def connect(sid, environ, auth):
         user_id, _role = _resolve_user_id(auth)
         if user_id:
-            socket_state.bind(user_id, sid)
+            await socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"user:{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
             await sio.enter_room(sid, f"user_{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
             db = SessionLocal()
@@ -202,7 +199,7 @@ def register_socket_events(sio):
 
     @sio.event(namespace=settings.DASHBOARD_NAMESPACE)
     async def disconnect(sid):
-        socket_state.unbind_sid(sid)
+        await socket_state.unbind_sid(sid)
 
     @sio.on("dashboard.subscribe", namespace=settings.DASHBOARD_NAMESPACE)
     async def dashboard_subscribe(sid, payload):
@@ -214,25 +211,20 @@ def register_socket_events(sio):
     async def connect(sid, environ, auth):  # type: ignore[no-redef]
         user_id, _role = _resolve_user_id(auth)
         if user_id:
-            socket_state.bind(user_id, sid)
+            await socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"resident:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
             await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def disconnect(sid):  # type: ignore[no-redef]
-        socket_state.unbind_sid(sid)
-        sid_allowed_sessions.pop(sid, None)
-        for room, members in list(session_members.items()):
-            if sid in members:
-                members.discard(sid)
-                await sio.emit(
-                    "session.participant_left",
-                    {"sid": sid, "count": len(members)},
-                    room=room,
-                    namespace=settings.SIGNALING_NAMESPACE,
-                )
-                if not members:
-                    session_members.pop(room, None)
+        room_counts = await socket_state.unbind_sid(sid)
+        for room, count in room_counts:
+            await sio.emit(
+                "session.participant_left",
+                {"sid": sid, "count": count},
+                room=room,
+                namespace=settings.SIGNALING_NAMESPACE,
+            )
 
     @sio.on("session.join", namespace=settings.SIGNALING_NAMESPACE)
     async def session_join(sid, payload):
@@ -240,7 +232,7 @@ def register_socket_events(sio):
         if not session_id:
             return
         visitor_token = (payload or {}).get("visitorToken")
-        sender_user_id = socket_state.sid_user.get(sid)
+        sender_user_id = await socket_state.get_user_id(sid)
 
         db = SessionLocal()
         try:
@@ -280,14 +272,13 @@ def register_socket_events(sio):
 
         room = f"session:{session_id}"
         await sio.enter_room(sid, room, namespace=settings.SIGNALING_NAMESPACE)
-        session_members[room].add(sid)
-        sid_allowed_sessions[sid].add(str(session_id))
+        participant_count = await socket_state.allow_session(sid, str(session_id))
         await sio.emit(
             "session.participant_joined",
             {
                 "sid": sid,
                 "displayName": (payload or {}).get("displayName") or "Participant",
-                "count": len(session_members[room]),
+                "count": participant_count,
             },
             room=room,
             skip_sid=sid,
@@ -295,7 +286,7 @@ def register_socket_events(sio):
         )
         await sio.emit(
             "session.joined",
-            {"sid": sid, "count": len(session_members[room])},
+            {"sid": sid, "count": participant_count},
             to=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
@@ -355,7 +346,7 @@ def register_socket_events(sio):
         client_id = (payload or {}).get("clientId")
         if not session_id or not body:
             return
-        if str(session_id) not in sid_allowed_sessions.get(sid, set()):
+        if not await socket_state.is_session_allowed(sid, str(session_id)):
             await sio.emit(
                 "chat.ack",
                 {
@@ -371,7 +362,7 @@ def register_socket_events(sio):
             return
         if len(body) > 2000:
             body = body[:2000]
-        sender_user_id = socket_state.sid_user.get(sid)
+        sender_user_id = await socket_state.get_user_id(sid)
         visitor_token = (payload or {}).get("visitorToken")
         raw_sender_type = (payload or {}).get("senderType")
         optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor", "security"} else "visitor"

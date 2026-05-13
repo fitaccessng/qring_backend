@@ -2,6 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 ENV ENVIRONMENT=production
+ENV PYTHONUNBUFFERED=1
 
 # Install dependencies with caching
 COPY requirements.txt .
@@ -17,4 +18,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 EXPOSE 8080
 
 # Run with production settings
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers ${APP_WORKERS:-4}"]

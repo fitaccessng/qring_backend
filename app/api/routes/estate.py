@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
+from app.core.cache import cache_key, get_or_set_json
+from app.core.config import get_settings
 from app.db.models import User
 from app.db.session import get_db
 from app.services.estate_alert_service import (
@@ -49,6 +51,7 @@ from app.services.estate_service import (
 )
 
 router = APIRouter()
+settings = get_settings()
 
 
 class EstateCreate(BaseModel):
@@ -198,7 +201,13 @@ def estate_overview(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
-    return {"data": list_estate_overview(db, owner_id=user.id)}
+    return {
+        "data": get_or_set_json(
+            cache_key("estate-overview", user.id),
+            lambda: list_estate_overview(db, owner_id=user.id),
+            settings.CACHE_ESTATE_TTL_SECONDS,
+        )
+    }
 
 
 @router.get("/{estate_id}/settings")

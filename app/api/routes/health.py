@@ -22,4 +22,7 @@ def health():
         "status": "ok",
         "livekitConfigured": _livekit_configured(),
         "environment": settings.ENVIRONMENT,
+        "databaseBackend": settings.database_backend,
+        "redisEnabled": settings.redis_enabled,
+        "processRole": settings.PROCESS_ROLE,
     }

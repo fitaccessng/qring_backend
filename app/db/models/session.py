@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -13,6 +13,11 @@ from app.core.time import utc_now
 
 class VisitorSession(Base):
     __tablename__ = "visitor_sessions"
+    __table_args__ = (
+        Index("ix_visitor_sessions_homeowner_started_at", "homeowner_id", "started_at"),
+        Index("ix_visitor_sessions_estate_started_at", "estate_id", "started_at"),
+        Index("ix_visitor_sessions_status_started_at", "status", "started_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -66,6 +71,9 @@ class VisitorSession(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_session_created_at", "session_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id: Mapped[str] = mapped_column(String(36), ForeignKey("visitor_sessions.id"), nullable=False, index=True)
@@ -80,6 +88,9 @@ class Message(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
+    __table_args__ = (
+        Index("ix_notifications_user_created_at", "user_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
@@ -91,6 +102,10 @@ class Notification(Base):
 
 class CallSession(Base):
     __tablename__ = "call_sessions"
+    __table_args__ = (
+        Index("ix_call_sessions_homeowner_created_at", "homeowner_id", "created_at"),
+        Index("ix_call_sessions_status_created_at", "status", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     appointment_id: Mapped[Optional[str]] = mapped_column(

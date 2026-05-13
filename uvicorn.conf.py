@@ -5,4 +5,4 @@ settings = get_settings()
 host = settings.BACKEND_HOST
 port = settings.BACKEND_PORT
 log_level = "debug" if settings.DEBUG else "info"
-workers = 1 if settings.DEBUG else 2
+workers = 1 if settings.DEBUG else max(2, settings.APP_WORKERS)

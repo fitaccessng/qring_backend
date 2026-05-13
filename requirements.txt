@@ -9,6 +9,7 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.12
 psycopg2-binary==2.9.10
+redis[hiredis]==5.2.1
 email-validator==2.2.0
 firebase-admin==6.6.0
 livekit-api==0.8.2

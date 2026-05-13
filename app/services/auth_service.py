@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.core.redis import get_redis_client, prefixed_key
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -44,6 +45,32 @@ _TOKEN_ISSUE_WINDOW_SECONDS = 60 * 60
 _TOKEN_ISSUE_MAX = 5
 _token_issue_hits: dict[str, list[float]] = {}
 _email_verify_attempt_hits: dict[str, list[float]] = {}
+_LOGIN_REDIS_WINDOW_LUA = """
+local hits_key = KEYS[1]
+local blocked_key = KEYS[2]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local max_failures = tonumber(ARGV[3])
+local lock_seconds = tonumber(ARGV[4])
+local member = ARGV[5]
+local blocked_until = tonumber(redis.call('GET', blocked_key) or '0')
+
+if blocked_until > now then
+  return {0, blocked_until}
+end
+
+redis.call('ZREMRANGEBYSCORE', hits_key, 0, now - window)
+redis.call('ZADD', hits_key, now, member)
+redis.call('EXPIRE', hits_key, math.ceil(window))
+local count = redis.call('ZCARD', hits_key)
+if count >= max_failures then
+  blocked_until = now + lock_seconds
+  redis.call('SETEX', blocked_key, math.ceil(lock_seconds), tostring(blocked_until))
+  return {0, blocked_until}
+end
+
+return {1, 0}
+"""
 
 try:
     import firebase_admin
@@ -645,8 +672,25 @@ def _login_rate_key(login_key: str, ip_address: str, scope: str) -> str:
     return f"ip:{ip}"
 
 
+def _login_rate_redis_keys(login_key: str, ip_address: str) -> tuple[str, str]:
+    base = _login_rate_key(login_key, ip_address, "ip")
+    return (
+        prefixed_key("auth", "login-failures", base),
+        prefixed_key("auth", "login-blocked", base),
+    )
+
+
 def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
     now = datetime.utcnow().timestamp()
+    redis_client = get_redis_client()
+    if redis_client is not None:
+        _hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
+        blocked_until_raw = redis_client.get(blocked_key)
+        blocked_until = float(blocked_until_raw or 0.0)
+        if blocked_until and now < blocked_until:
+            raise AppException("Too many login attempts. Please retry later.", status_code=429)
+        return
+
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
     ]
@@ -659,6 +703,23 @@ def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
 
 def _record_login_failure(login_key: str, ip_address: str) -> None:
     now = datetime.utcnow().timestamp()
+    redis_client = get_redis_client()
+    if redis_client is not None:
+        hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
+        script = redis_client.register_script(_LOGIN_REDIS_WINDOW_LUA)
+        allowed, blocked_until = script(
+            keys=[hits_key, blocked_key],
+            args=[
+                str(now),
+                str(_LOGIN_FAILURE_WINDOW_SECONDS),
+                str(_LOGIN_MAX_FAILURES),
+                str(_LOGIN_LOCK_SECONDS),
+                f"{now:.6f}:{secrets.token_hex(4)}",
+            ],
+        )
+        if not bool(int(allowed)) and float(blocked_until or 0.0) > now:
+            return
+
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
     ]
@@ -673,6 +734,12 @@ def _record_login_failure(login_key: str, ip_address: str) -> None:
 
 
 def _clear_login_failures(login_key: str, ip_address: str) -> None:
+    redis_client = get_redis_client()
+    if redis_client is not None:
+        hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
+        redis_client.delete(hits_key, blocked_key)
+        return
+
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
     ]

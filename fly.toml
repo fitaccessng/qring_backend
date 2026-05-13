@@ -13,13 +13,16 @@ primary_region = "ams"
   BACKEND_HOST = "0.0.0.0"
   BACKEND_PORT = "8080"
   API_V1_PREFIX = "/api/v1"
+  PROCESS_ROLE = "web"
+  RUN_SCHEDULED_JOBS = "false"
+  APP_WORKERS = "4"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 2
   processes = ["app"]
 
 [[services]]
@@ -28,8 +31,8 @@ primary_region = "ams"
   
   [services.concurrency]
     type = "connections"
-    hard_limit = 100
-    soft_limit = 80
+    hard_limit = 1000
+    soft_limit = 700
 
   [[services.ports]]
     number = 80
@@ -47,8 +50,8 @@ primary_region = "ams"
 
 [[vm]]
   cpu_kind = "shared"
-  cpus = 1
-  memory_mb = 256
+  cpus = 2
+  memory_mb = 1024
 
 [metrics]
   port = 9090

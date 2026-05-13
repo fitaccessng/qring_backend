@@ -742,6 +742,13 @@ async def _subscription_lifecycle_loop() -> None:
         await asyncio.sleep(60 * 60)
 
 
+def _should_run_scheduled_jobs() -> bool:
+    role = (settings.PROCESS_ROLE or "").strip().lower()
+    if settings.RUN_SCHEDULED_JOBS:
+        return True
+    return role in {"worker", "scheduler", "jobs"}
+
+
 def _validate_livekit_runtime() -> tuple[bool, list[str]]:
     missing: list[str] = []
     if not settings.LIVEKIT_URL.strip():
@@ -799,8 +806,12 @@ async def on_startup():
             logging.exception("Startup alert repair/cleanup failed.")
     finally:
         db.close()
-    asyncio.create_task(_payment_reminder_loop())
-    asyncio.create_task(_subscription_lifecycle_loop())
+    if _should_run_scheduled_jobs():
+        asyncio.create_task(_payment_reminder_loop())
+        asyncio.create_task(_subscription_lifecycle_loop())
+        logging.info("Scheduled background jobs enabled for process role '%s'.", settings.PROCESS_ROLE)
+    else:
+        logging.info("Scheduled background jobs disabled for process role '%s'.", settings.PROCESS_ROLE)
 
 
 app = socketio.ASGIApp(

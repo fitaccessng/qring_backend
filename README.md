@@ -21,10 +21,11 @@ A production-ready FastAPI backend for the Qring property access management syst
 |-----------|-----------|
 | Framework | FastAPI 0.115+ |
 | Server | Uvicorn (ASGI) |
-| Database | PostgreSQL (prod) / SQLite (dev) |
+| Database | PostgreSQL |
 | ORM | SQLAlchemy 2.0 |
 | Migrations | Alembic |
 | Real-Time | Socket.IO |
+| Cache / Coordination | Redis |
 | Auth | JWT (python-jose) |
 | Password | bcrypt |
 | Validation | Pydantic |
@@ -68,7 +69,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 |----------|---------|-------|
 | `ENVIRONMENT` | `production` | Set to `production` for prod |
 | `DEBUG` | `false` | Disable in production |
-| `DATABASE_URL` | `postgresql://user:pass@localhost/qring` | Must use PostgreSQL in prod |
+| `DATABASE_URL` | `postgresql://user:pass@localhost/qring` | Use PostgreSQL for local and production |
+| `REDIS_URL` | `redis://localhost:6379/0` | Required for distributed rate limits, cache, and Socket.IO scaling |
+| `APP_WORKERS` | `4` | Number of Uvicorn worker processes |
+| `PROCESS_ROLE` | `web` | Use `worker` for the scheduled-jobs process |
+| `RUN_SCHEDULED_JOBS` | `false` | Keep `false` on web nodes; `true` only on one worker |
 | `JWT_SECRET_KEY` | Generate with `openssl rand -hex 32` | **Keep secret** |
 | `CORS_ORIGINS` | `https://yourdomain.com` | Separate multiple with commas |
 | `PAYSTACK_SECRET_KEY` | `sk_live_...` | From Paystack dashboard |
@@ -192,18 +197,36 @@ docker run -p 8000:8000 \
   qring-backend:latest
 ```
 
+### Horizontal Scaling Stack
+
+This repo now includes:
+
+- `docker-compose.scaling.yml` for `redis + 2 app nodes + 1 worker + nginx`
+- `infra/nginx/nginx.conf` for reverse proxying and Socket.IO upgrades
+- `app/worker.py` for scheduled background jobs outside the web tier
+- `loadtests/locustfile.py` for signup/API concurrency testing
+
 ### Production Checklist
 
 - [ ] Set `ENVIRONMENT=production` and `DEBUG=false`
 - [ ] Use PostgreSQL (not SQLite)
+- [ ] Set `REDIS_URL` for shared rate limits, cache, and Socket.IO
 - [ ] Generate strong `JWT_SECRET_KEY` (`openssl rand -hex 32`)
 - [ ] Configure real CORS origins (not `*`)
-- [ ] Set up SSL/TLS (reverse proxy with nginx)
+- [ ] Run web nodes behind nginx or a managed load balancer
+- [ ] Run exactly one `PROCESS_ROLE=worker` instance for scheduled jobs
 - [ ] Configure logging to persistent storage
 - [ ] Set up database backups
 - [ ] Enable HTTPS only
 - [ ] Rotate Paystack & VAPID keys securely
 - [ ] Configure monitoring & alerting
+
+### Load Testing
+
+See [loadtests/README.md](loadtests/README.md) for Locust commands covering:
+
+- `100` concurrent signup users
+- `1000` concurrent authenticated API users
 
 ### Health Check
 
