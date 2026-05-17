@@ -32,6 +32,21 @@ def build_livekit_client_url() -> str:
     return raw_url
 
 
+def build_livekit_server_url() -> str:
+    raw_url = str(settings.LIVEKIT_URL or "").strip()
+    if not raw_url:
+        raise AppException("LiveKit is not configured on the server.", status_code=503)
+
+    parsed = urlparse(raw_url)
+    if parsed.scheme in {"http", "https"}:
+        return raw_url
+    if parsed.scheme in {"ws", "wss"}:
+        return urlunparse(
+            parsed._replace(scheme="https" if parsed.scheme == "wss" else "http")
+        )
+    return raw_url
+
+
 def build_room_name(session_id: str) -> str:
     safe_session = str(session_id or "").strip()
     if not safe_session:
@@ -80,7 +95,7 @@ async def create_livekit_room(room_name: str) -> None:
 
     try:
         client = livekit_api.LiveKitAPI(
-            url=settings.LIVEKIT_URL,
+            url=build_livekit_server_url(),
             api_key=settings.LIVEKIT_API_KEY,
             api_secret=settings.LIVEKIT_API_SECRET,
         )
@@ -120,7 +135,7 @@ async def delete_livekit_room(room_name: str) -> None:
 
     try:
         client = livekit_api.LiveKitAPI(
-            url=settings.LIVEKIT_URL,
+            url=build_livekit_server_url(),
             api_key=settings.LIVEKIT_API_KEY,
             api_secret=settings.LIVEKIT_API_SECRET,
         )

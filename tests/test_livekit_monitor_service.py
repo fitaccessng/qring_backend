@@ -80,13 +80,24 @@ class LivekitMonitorServiceTests(unittest.TestCase):
     def test_participant_joined_marks_call_active(self):
         payload = {
             "event": "participant_joined",
-            "room": {"name": self.call.room_name},
+            "room": {"name": self.call.room_name, "numParticipants": 2},
             "participant": {"identity": "homeowner:test"},
         }
         data = handle_livekit_webhook_event(self.db, payload)
         self.assertTrue(data["handled"])
         refreshed = self.db.query(CallSession).filter(CallSession.id == self.call.id).first()
         self.assertEqual(refreshed.status, "ongoing")
+
+    def test_first_participant_join_does_not_mark_call_active(self):
+        payload = {
+            "event": "participant_joined",
+            "room": {"name": self.call.room_name, "numParticipants": 1},
+            "participant": {"identity": "homeowner:test"},
+        }
+        data = handle_livekit_webhook_event(self.db, payload)
+        self.assertTrue(data["handled"])
+        refreshed = self.db.query(CallSession).filter(CallSession.id == self.call.id).first()
+        self.assertEqual(refreshed.status, "ringing")
 
     def test_room_finished_marks_call_ended(self):
         payload = {

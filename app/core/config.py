@@ -164,6 +164,7 @@ class Settings(BaseSettings):
     FIREBASE_STORAGE_BUCKET: str = ""
     ADMIN_SIGNUP_KEY: str = ""
     LIVEKIT_URL: str = ""
+    LIVEKIT_CLOUD_ENABLED: bool = True
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     LIVEKIT_WEBHOOK_SECRET: str = ""

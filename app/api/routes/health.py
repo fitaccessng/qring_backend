@@ -21,6 +21,7 @@ def health():
     return {
         "status": "ok",
         "livekitConfigured": _livekit_configured(),
+        "livekitCloudEnabled": settings.LIVEKIT_CLOUD_ENABLED,
         "environment": settings.ENVIRONMENT,
         "databaseBackend": settings.database_backend,
         "redisEnabled": settings.redis_enabled,

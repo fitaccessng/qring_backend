@@ -193,15 +193,6 @@ def _get_visitor_display_name(db: Session, call_session: CallSession) -> str:
     return "Visitor"
 
 
-def _mark_call_ongoing(db: Session, row: CallSession) -> CallSession:
-    if row.status in CALL_SETUP_STATUSES:
-        row.status = "ongoing"
-        row.answered_at = row.answered_at or utc_now()
-        db.commit()
-        db.refresh(row)
-    return row
-
-
 def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: str) -> dict:
     require_subscription_feature(db, homeowner_id, "chat_call_verification", user_role="homeowner")
     row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
@@ -211,8 +202,6 @@ def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: s
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)
-    row = _mark_call_ongoing(db, row)
-
     data = issue_livekit_token_for_room(
         room_name=row.room_name,
         identity=build_livekit_identity("homeowner", homeowner_id),
@@ -244,8 +233,6 @@ def join_call_as_security(db: Session, *, call_session_id: str, security_user_id
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)
-    row = _mark_call_ongoing(db, row)
-
     security_user = db.query(User).filter(User.id == security_user_id).first()
     data = issue_livekit_token_for_room(
         room_name=row.room_name,
@@ -283,8 +270,6 @@ def join_call_as_visitor(db: Session, *, call_session_id: str, visitor_id: str) 
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)
-    row = _mark_call_ongoing(db, row)
-
     data = issue_livekit_token_for_room(
         room_name=row.room_name,
         identity=build_livekit_identity("visitor", visitor_identity),

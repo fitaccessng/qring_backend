@@ -1,5 +1,8 @@
 # QRing Realtime + TURN Deployment Checklist
 
+Deprecated for public launch migration:
+QRing is moving to LiveKit Cloud at `wss://qring-yovnizqn.livekit.cloud` for production launch. This file is now a rollback/reference document for the former self-hosted topology and should not be treated as the active launch path.
+
 This guide is the production baseline for stable messaging, audio, and video across mobile/NAT-heavy networks.
 
 ## LiveKit baseline
@@ -17,16 +20,23 @@ Recommended production ports:
 
 Set `rtc.use_external_ip: true` unless you are explicitly handling NAT traversal elsewhere.
 
+Choose exactly one TURN topology before production:
+
+1. `LiveKit built-in TURN`
+2. `Standalone Coturn`
+
+Do not expose both on the same public IP/ports unless you explicitly split listeners or hosts.
+
 ## 1) Provision TURN host
 
 - Create a VM in/near target users (recommended primary: Africa region).
 - Assign a static public IPv4 address.
-- Create DNS record (example): `turn.useqring.online` -> VM public IP.
+- Create DNS record for your self-hosted TURN hostname -> VM public IP.
 - Open firewall/security group:
 - `3478/udp`
 - `3478/tcp`
 - `443/tcp`
-- `49152-65535/udp` (relay media range)
+- `50000-60000/udp` (relay media range)
 
 ## 2) Install and configure coturn
 
@@ -39,7 +49,7 @@ Use your distro package or Docker. Start from:
 Required replacements:
 
 - `<TURN_PUBLIC_IP>`
-- `<TURN_REALM_FQDN>` (example: `turn.useqring.online`)
+- `<TURN_REALM_FQDN>` (example: `turn.example.com`)
 - `<TURN_USERNAME>`
 - `<TURN_PASSWORD>`
 
@@ -48,6 +58,7 @@ Notes:
 - Keep `lt-cred-mech` enabled.
 - Do not run open relay (never disable auth).
 - Keep TLS (`turns:`) configured for reliability where UDP is blocked.
+- Prefer `443/tcp` for TURN/TLS on restrictive mobile/carrier networks.
 
 ### One-command Docker Compose start
 
@@ -64,11 +75,12 @@ docker compose -f docker-compose.turn.yml up -d
 Update `frontend/.env` (and deployment secrets) with ICE servers:
 
 ```env
-VITE_WEBRTC_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{"urls":["turn:turn.useqring.online:3478?transport=udp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turns:turn.useqring.online:443?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"}]
-VITE_LIVEKIT_URL=wss://livekit.useqring.online
+VITE_WEBRTC_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478?transport=udp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turn:turn.example.com:3478?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turns:turn.example.com:443?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"}]
+VITE_LIVEKIT_URL=wss://qring-yovnizqn.livekit.cloud
 VITE_CALL_CONNECT_TIMEOUT_MS=8000
 VITE_CALL_RING_TIMEOUT_MS=30000
 VITE_PREFER_VOICE_NOTE_FALLBACK=true
+VITE_RTC_MONITORING_URL=https://YOUR-MONITORING-ENDPOINT.example/rtc
 ```
 
 This is consumed by `env.webRtcIceServers` in:
@@ -98,7 +110,12 @@ This is consumed by `env.webRtcIceServers` in:
 3. Failover test:
    - Temporarily block UDP on one client network.
    - Verify call still connects over `turns:...:443` (TCP/TLS).
-4. Messaging persistence test:
+4. Carrier/mobile test:
+   - Verify on MTN, Airtel, Glo, and 9mobile with one user on mobile data.
+5. Bad-network test:
+   - Apply 3G throttling, packet loss, unstable Wi-Fi, and network switching.
+   - Confirm the app stays `connecting` until remote media is actually rendered.
+6. Messaging persistence test:
    - Send chat message and confirm immediate UI delivery + persisted state.
    - Simulate DB outage and confirm `Not saved` + retry flow works.
 

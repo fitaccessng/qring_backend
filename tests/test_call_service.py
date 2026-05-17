@@ -96,7 +96,7 @@ class CallServiceTests(unittest.TestCase):
             create_room_mock.assert_called_once()
             notify_mock.assert_called_once()
 
-    def test_room_join_generates_token_and_activates_call(self):
+    def test_room_join_generates_token_without_marking_call_active_early(self):
         call = CallSession(
             id=str(uuid.uuid4()),
             appointment_id=self.appointment.id,
@@ -118,7 +118,7 @@ class CallServiceTests(unittest.TestCase):
             self.assertEqual(data["token"], "jwt-token")
             self.assertEqual(data["roomName"], call.room_name)
             refreshed = self.db.query(CallSession).filter(CallSession.id == call.id).first()
-            self.assertEqual(refreshed.status, "ongoing")
+            self.assertEqual(refreshed.status, "ringing")
 
     def test_call_end_disconnects_and_marks_ended(self):
         call = CallSession(
@@ -158,7 +158,7 @@ class CallServiceTests(unittest.TestCase):
             }
             joined = join_call_as_visitor(self.db, call_session_id=call.id, visitor_id="visitor-device-abc")
             self.assertEqual(joined["token"], "visitor-jwt")
-            self.assertEqual(joined["status"], "ongoing")
+            self.assertEqual(joined["status"], "ringing")
 
 
 if __name__ == "__main__":

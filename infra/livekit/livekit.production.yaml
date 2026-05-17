@@ -10,7 +10,7 @@ rtc:
 
 turn:
   enabled: true
-  domain: turn.useqring.online
+  domain: turn.example.com
   udp_port: 3478
   tls_port: 443
   external_tls: false

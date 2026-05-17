@@ -1,4 +1,5 @@
 # QRing production coturn template
+# Archived for rollback/reference while QRing's launch path is LiveKit Cloud.
 # Copy to /etc/turnserver.conf (or mount into container) and replace placeholders.
 
 # Network interfaces
@@ -8,9 +9,10 @@ external-ip=<TURN_PUBLIC_IP>
 
 # Ports
 listening-port=3478
-tls-listening-port=5349
-min-port=49152
-max-port=65535
+# For restrictive mobile/enterprise networks, prefer 443/TCP for TURN over TLS.
+tls-listening-port=443
+min-port=50000
+max-port=60000
 
 # Auth and realm (long-term credentials)
 lt-cred-mech
@@ -41,3 +43,7 @@ log-file=stdout
 
 # Optional: if behind strict firewall, keep relay traffic predictable
 # allowed-peer-ip=<BACKEND_PUBLIC_IP>
+
+# IMPORTANT:
+# - Do not run this on the same host/ports as LiveKit built-in TURN unless you disable one side.
+# - If you prefer classic TURN/TLS port 5349 instead of 443, update frontend ICE URLs, firewall, and docs together.
