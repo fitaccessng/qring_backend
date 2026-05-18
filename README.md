@@ -70,7 +70,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `ENVIRONMENT` | `production` | Set to `production` for prod |
 | `DEBUG` | `false` | Disable in production |
 | `DATABASE_URL` | `postgresql://user:pass@localhost/qring` | Use PostgreSQL for local and production |
-| `REDIS_URL` | `redis://localhost:6379/0` | Required for distributed rate limits, cache, and Socket.IO scaling |
+| `REDIS_URL` | `redis://localhost:6379/0` | Required for distributed rate limits, cache, and Socket.IO scaling. On Render, copy the exact internal Key Value URL from the instance's `Connect` menu. |
 | `APP_WORKERS` | `4` | Number of Uvicorn worker processes |
 | `PROCESS_ROLE` | `web` | Use `worker` for the scheduled-jobs process |
 | `RUN_SCHEDULED_JOBS` | `false` | Keep `false` on web nodes; `true` only on one worker |
@@ -211,6 +211,7 @@ This repo now includes:
 - [ ] Set `ENVIRONMENT=production` and `DEBUG=false`
 - [ ] Use PostgreSQL (not SQLite)
 - [ ] Set `REDIS_URL` for shared rate limits, cache, and Socket.IO
+- [ ] On Render, use the Key Value internal URL from the same workspace and region; do not use guessed hostnames
 - [ ] Generate strong `JWT_SECRET_KEY` (`openssl rand -hex 32`)
 - [ ] Configure real CORS origins (not `*`)
 - [ ] Run web nodes behind nginx or a managed load balancer

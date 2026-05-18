@@ -10,6 +10,7 @@ from urllib.parse import quote
 from threading import Lock
 from datetime import datetime, timedelta
 
+from redis.exceptions import RedisError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -684,12 +685,15 @@ def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
     now = datetime.utcnow().timestamp()
     redis_client = get_redis_client()
     if redis_client is not None:
-        _hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
-        blocked_until_raw = redis_client.get(blocked_key)
-        blocked_until = float(blocked_until_raw or 0.0)
-        if blocked_until and now < blocked_until:
-            raise AppException("Too many login attempts. Please retry later.", status_code=429)
-        return
+        try:
+            _hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
+            blocked_until_raw = redis_client.get(blocked_key)
+            blocked_until = float(blocked_until_raw or 0.0)
+            if blocked_until and now < blocked_until:
+                raise AppException("Too many login attempts. Please retry later.", status_code=429)
+            return
+        except RedisError as exc:
+            logger.warning("Redis login rate limit unavailable; falling back to local memory: %s", exc)
 
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
@@ -705,20 +709,23 @@ def _record_login_failure(login_key: str, ip_address: str) -> None:
     now = datetime.utcnow().timestamp()
     redis_client = get_redis_client()
     if redis_client is not None:
-        hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
-        script = redis_client.register_script(_LOGIN_REDIS_WINDOW_LUA)
-        allowed, blocked_until = script(
-            keys=[hits_key, blocked_key],
-            args=[
-                str(now),
-                str(_LOGIN_FAILURE_WINDOW_SECONDS),
-                str(_LOGIN_MAX_FAILURES),
-                str(_LOGIN_LOCK_SECONDS),
-                f"{now:.6f}:{secrets.token_hex(4)}",
-            ],
-        )
-        if not bool(int(allowed)) and float(blocked_until or 0.0) > now:
-            return
+        try:
+            hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
+            script = redis_client.register_script(_LOGIN_REDIS_WINDOW_LUA)
+            allowed, blocked_until = script(
+                keys=[hits_key, blocked_key],
+                args=[
+                    str(now),
+                    str(_LOGIN_FAILURE_WINDOW_SECONDS),
+                    str(_LOGIN_MAX_FAILURES),
+                    str(_LOGIN_LOCK_SECONDS),
+                    f"{now:.6f}:{secrets.token_hex(4)}",
+                ],
+            )
+            if not bool(int(allowed)) and float(blocked_until or 0.0) > now:
+                return
+        except RedisError as exc:
+            logger.warning("Redis login failure tracking unavailable; falling back to local memory: %s", exc)
 
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),
@@ -736,9 +743,12 @@ def _record_login_failure(login_key: str, ip_address: str) -> None:
 def _clear_login_failures(login_key: str, ip_address: str) -> None:
     redis_client = get_redis_client()
     if redis_client is not None:
-        hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
-        redis_client.delete(hits_key, blocked_key)
-        return
+        try:
+            hits_key, blocked_key = _login_rate_redis_keys(login_key, ip_address)
+            redis_client.delete(hits_key, blocked_key)
+            return
+        except RedisError as exc:
+            logger.warning("Redis login failure reset unavailable; falling back to local memory: %s", exc)
 
     keys = [
         _login_rate_key(login_key, ip_address, "ip"),

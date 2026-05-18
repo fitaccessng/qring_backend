@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
 from collections import deque
 
+from redis.exceptions import RedisError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -14,6 +16,7 @@ from app.middleware.request_context import get_client_ip
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 _SLIDING_WINDOW_LUA = """
 local key = KEYS[1]
@@ -82,18 +85,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def _check_redis_limit(self, key: str, *, window_seconds: int, max_requests: int) -> tuple[bool, int, int]:
         if self._redis is None:
             return self._check_local_limit(key, window_seconds=window_seconds, max_requests=max_requests)
-        if self._redis_script is None:
-            self._redis_script = self._redis.register_script(_SLIDING_WINDOW_LUA)
+        try:
+            if self._redis_script is None:
+                self._redis_script = self._redis.register_script(_SLIDING_WINDOW_LUA)
 
-        now = time.time()
-        member = f"{now:.6f}:{time.monotonic_ns()}"
-        bucket_key = prefixed_key("ratelimit", key)
-        allowed, count, retry_after = await self._redis_script(
-            keys=[bucket_key],
-            args=[str(now), str(window_seconds), str(max_requests), member],
-        )
-        remaining = max(0, max_requests - int(count))
-        return bool(int(allowed)), remaining, int(retry_after)
+            now = time.time()
+            member = f"{now:.6f}:{time.monotonic_ns()}"
+            bucket_key = prefixed_key("ratelimit", key)
+            allowed, count, retry_after = await self._redis_script(
+                keys=[bucket_key],
+                args=[str(now), str(window_seconds), str(max_requests), member],
+            )
+            remaining = max(0, max_requests - int(count))
+            return bool(int(allowed)), remaining, int(retry_after)
+        except RedisError as exc:
+            logger.warning("Redis rate limit unavailable; falling back to local in-memory limits: %s", exc)
+            return self._check_local_limit(key, window_seconds=window_seconds, max_requests=max_requests)
 
     def _check_local_limit(self, key: str, *, window_seconds: int, max_requests: int) -> tuple[bool, int, int]:
         now = time.monotonic()
