@@ -56,6 +56,9 @@ class AuthRateLimitTests(unittest.TestCase):
             def get(self, _key):
                 raise RedisConnectionError("redis down")
 
+            def register_script(self, _script):
+                raise RedisConnectionError("redis down")
+
         original = auth_service.get_redis_client
         auth_service.get_redis_client = lambda: BrokenRedis()
         try:
