@@ -27,7 +27,6 @@ VITE_LIVEKIT_URL=wss://qring-yovnizqn.livekit.cloud
 VITE_WEBRTC_ICE_SERVERS=[{"urls":["turn:turn.example.com:3478?transport=udp"],"username":"TURN_USERNAME","credential":"TURN_PASSWORD"},{"urls":["turns:turn.example.com:443?transport=tcp"],"username":"TURN_USERNAME","credential":"TURN_PASSWORD"},{"urls":"stun:stun.l.google.com:19302"}]
 VITE_CALL_CONNECT_TIMEOUT_MS=8000
 VITE_CALL_RING_TIMEOUT_MS=30000
-VITE_PREFER_VOICE_NOTE_FALLBACK=true
 ```
 
 ## Backend Env

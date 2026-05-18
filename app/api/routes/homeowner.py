@@ -40,7 +40,6 @@ from app.core.exceptions import AppException
 from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import mark_session_notifications_read
 from app.services.security_service import serialize_security_session, update_security_session_status
-from app.services.voice_note_service import save_voice_note
 from app.socket.server import sio
 from app.core.config import get_settings
 from app.services.estate_alert_service import create_homeowner_maintenance_request, attach_alert_payment_proof
@@ -234,33 +233,6 @@ async def homeowner_send_message(
         namespace=settings.SIGNALING_NAMESPACE,
     )
     return {"data": data}
-
-
-@router.post("/messages/{session_id}/voice-notes")
-async def homeowner_upload_voice_note(
-    session_id: str,
-    media: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("homeowner")),
-):
-    from app.db.models import VisitorSession
-
-    session = (
-        db.query(VisitorSession)
-        .filter(VisitorSession.id == session_id, VisitorSession.homeowner_id == user.id)
-        .first()
-    )
-    if not session:
-        raise AppException("Session not found", status_code=404)
-
-    data = await media.read()
-    payload = save_voice_note(
-        media_bytes=data,
-        filename_hint=media.filename or "voice-note.webm",
-        content_type=media.content_type,
-        session_id=session_id,
-    )
-    return {"data": {"url": payload["url"], "contentType": payload["contentType"]}}
 
 
 @router.post("/alerts/{alert_id}/payment-proof")

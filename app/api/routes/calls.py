@@ -148,21 +148,6 @@ async def start_call(
         )
         linked_session = visit.id if visit else None
 
-    await sio.emit(
-        "call.invite",
-        {
-            "sessionId": linked_session,
-            "callSessionId": row.id,
-            "appointmentId": row.appointment_id,
-            "roomName": row.room_name,
-            "status": row.status,
-            "visitorId": row.visitor_id,
-            "hasVideo": bool(payload.hasVideo),
-            "type": row.call_type,
-        },
-        room=f"homeowner:{row.homeowner_id}",
-        namespace=settings.SIGNALING_NAMESPACE,
-    )
     if linked_session:
         await sio.emit(
             "call.invite",

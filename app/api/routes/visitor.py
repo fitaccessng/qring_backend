@@ -5,7 +5,7 @@ import base64
 from time import perf_counter
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Header, UploadFile
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -27,7 +27,6 @@ from app.services.qr_service import resolve_qr
 from app.services.security_service import notify_security_request, serialize_security_session
 from app.services.session_service import create_visitor_session, rotate_visitor_session_token
 from app.services.visitor_session_auth import require_visitor_session_access
-from app.services.voice_note_service import save_voice_note
 from app.services.advanced_service import create_snapshot_audit
 from app.services.homeowner_service import create_visitor_session_message
 from app.socket.server import sio
@@ -554,30 +553,3 @@ def visitor_livekit_token(
         can_subscribe=True,
     )
     return {"data": data}
-
-
-@router.post("/sessions/{session_id}/voice-notes")
-async def visitor_upload_voice_note(
-    session_id: str,
-    visitorToken: Optional[str] = None,
-    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
-    media: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user=Depends(get_optional_current_user),
-):
-    from app.db.models import VisitorSession
-
-    session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
-    if not session:
-        raise AppException("Session not found", status_code=404)
-    if user is None:
-        require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
-
-    data = await media.read()
-    payload = save_voice_note(
-        media_bytes=data,
-        filename_hint=media.filename or "voice-note.webm",
-        content_type=media.content_type,
-        session_id=session_id,
-    )
-    return {"data": {"url": payload["url"], "contentType": payload["contentType"]}}

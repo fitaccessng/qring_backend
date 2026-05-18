@@ -10,6 +10,7 @@ from app.core.security import decode_token
 from app.db.models import Estate, ResidentSetting, Message, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
 from app.socket.manager import socket_state
+from app.services.call_service import mark_call_session_answered, mark_call_session_rejected
 from app.services.visitor_session_auth import require_visitor_session_access
 
 settings = get_settings()
@@ -459,6 +460,13 @@ def register_socket_events(sio):
         session_id = (payload or {}).get("sessionId")
         if not session_id:
             return
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        if call_session_id:
+            db = SessionLocal()
+            try:
+                mark_call_session_answered(db, call_session_id=call_session_id)
+            finally:
+                db.close()
         await sio.emit(
             "call.accepted",
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
@@ -472,6 +480,13 @@ def register_socket_events(sio):
         session_id = (payload or {}).get("sessionId")
         if not session_id:
             return
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        if call_session_id:
+            db = SessionLocal()
+            try:
+                mark_call_session_rejected(db, call_session_id=call_session_id)
+            finally:
+                db.close()
         await sio.emit(
             "call.rejected",
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},

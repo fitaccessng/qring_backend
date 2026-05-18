@@ -193,6 +193,34 @@ def _get_visitor_display_name(db: Session, call_session: CallSession) -> str:
     return "Visitor"
 
 
+def mark_call_session_answered(db: Session, *, call_session_id: str) -> CallSession | None:
+    row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+    if not row:
+        return None
+    if row.status in CALL_TERMINAL_STATUSES:
+        return row
+    if row.status not in CALL_CONNECTED_STATUSES:
+        row.status = "ongoing"
+        row.answered_at = row.answered_at or utc_now()
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def mark_call_session_rejected(db: Session, *, call_session_id: str, reason: str = "rejected") -> CallSession | None:
+    row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+    if not row:
+        return None
+    if row.status in CALL_TERMINAL_STATUSES:
+        return row
+    row.status = "missed" if row.status in CALL_SETUP_STATUSES else "ended"
+    row.ended_at = row.ended_at or utc_now()
+    row.ended_reason = str(reason or "").strip() or "rejected"
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: str) -> dict:
     require_subscription_feature(db, homeowner_id, "chat_call_verification", user_role="homeowner")
     row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
