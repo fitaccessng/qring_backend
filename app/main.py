@@ -751,8 +751,8 @@ def _should_run_scheduled_jobs() -> bool:
 
 def _validate_realtime_runtime() -> tuple[bool, list[str]]:
     missing: list[str] = []
-    if not settings.WEBRTC_TURN_URL.strip():
-        missing.append("WEBRTC_TURN_URL")
+    if not settings.WEBRTC_TURN_URL.strip() and not settings.WEBRTC_TURN_TLS_URL.strip():
+        missing.append("WEBRTC_TURN_URL or WEBRTC_TURN_TLS_URL")
     if not settings.WEBRTC_TURN_USERNAME.strip():
         missing.append("WEBRTC_TURN_USERNAME")
     if not settings.WEBRTC_TURN_CREDENTIAL.strip():
@@ -778,9 +778,14 @@ async def on_startup():
     realtime_ok, missing = _validate_realtime_runtime()
     if not realtime_ok:
         message = f"WebRTC/TURN configuration missing: {', '.join(missing)}"
-        if env in {"production", "staging"}:
+        if settings.WEBRTC_REQUIRE_TURN:
             raise RuntimeError(message)
-        logging.warning("%s (continuing because ENVIRONMENT=%s)", message, settings.ENVIRONMENT)
+        logging.warning(
+            "%s (continuing because WEBRTC_REQUIRE_TURN=%s, ENVIRONMENT=%s)",
+            message,
+            settings.WEBRTC_REQUIRE_TURN,
+            settings.ENVIRONMENT,
+        )
 
     # Runtime schema mutations are intentionally disabled in favor of Alembic migrations.
     # Keep automatic table creation only for local development convenience.

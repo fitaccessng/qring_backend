@@ -168,6 +168,7 @@ class Settings(BaseSettings):
     WEBRTC_TURN_TLS_URL: str = ""
     WEBRTC_TURN_USERNAME: str = ""
     WEBRTC_TURN_CREDENTIAL: str = ""
+    WEBRTC_REQUIRE_TURN: bool = False
     APPOINTMENT_SHARE_BASE_URL: str = "https://www.useqring.online"
     MEDIA_STORAGE_PATH: str = ""
     SMTP_HOST: str = ""
