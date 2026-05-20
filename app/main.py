@@ -749,14 +749,14 @@ def _should_run_scheduled_jobs() -> bool:
     return role in {"worker", "scheduler", "jobs"}
 
 
-def _validate_livekit_runtime() -> tuple[bool, list[str]]:
+def _validate_realtime_runtime() -> tuple[bool, list[str]]:
     missing: list[str] = []
-    if not settings.LIVEKIT_URL.strip():
-        missing.append("LIVEKIT_URL")
-    if not settings.LIVEKIT_API_KEY.strip():
-        missing.append("LIVEKIT_API_KEY")
-    if not settings.LIVEKIT_API_SECRET.strip():
-        missing.append("LIVEKIT_API_SECRET")
+    if not settings.WEBRTC_TURN_URL.strip():
+        missing.append("WEBRTC_TURN_URL")
+    if not settings.WEBRTC_TURN_USERNAME.strip():
+        missing.append("WEBRTC_TURN_USERNAME")
+    if not settings.WEBRTC_TURN_CREDENTIAL.strip():
+        missing.append("WEBRTC_TURN_CREDENTIAL")
     return (len(missing) == 0, missing)
 
 
@@ -775,9 +775,9 @@ async def on_startup():
         if settings.DEBUG:
             logging.warning("DEBUG=True while ENVIRONMENT=%s. This is not recommended.", settings.ENVIRONMENT)
 
-    livekit_ok, missing = _validate_livekit_runtime()
-    if not livekit_ok:
-        message = f"LiveKit configuration missing: {', '.join(missing)}"
+    realtime_ok, missing = _validate_realtime_runtime()
+    if not realtime_ok:
+        message = f"WebRTC/TURN configuration missing: {', '.join(missing)}"
         if env in {"production", "staging"}:
             raise RuntimeError(message)
         logging.warning("%s (continuing because ENVIRONMENT=%s)", message, settings.ENVIRONMENT)

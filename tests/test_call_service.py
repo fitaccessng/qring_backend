@@ -78,9 +78,7 @@ class CallServiceTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_call_initiation_creates_session(self):
-        with patch("app.services.call_service.create_livekit_room") as create_room_mock, patch(
-            "app.services.call_service.create_notification"
-        ) as notify_mock:
+        with patch("app.services.call_service.create_notification") as notify_mock:
             row = asyncio.run(
                 start_call_session(
                     self.db,
@@ -92,11 +90,10 @@ class CallServiceTests(unittest.TestCase):
             self.assertIsNotNone(row.id)
             self.assertEqual(row.status, "ringing")
             self.assertEqual(row.appointment_id, self.appointment.id)
-            self.assertEqual(row.room_name, f"qring-session-{self.appointment.id}")
-            create_room_mock.assert_called_once()
+            self.assertEqual(row.room_name, f"qring-call-{self.appointment.id}")
             notify_mock.assert_called_once()
 
-    def test_room_join_generates_token_without_marking_call_active_early(self):
+    def test_room_join_returns_webrtc_config_without_marking_call_active_early(self):
         call = CallSession(
             id=str(uuid.uuid4()),
             appointment_id=self.appointment.id,
@@ -108,17 +105,11 @@ class CallServiceTests(unittest.TestCase):
         self.db.add(call)
         self.db.commit()
 
-        with patch("app.services.call_service.issue_livekit_token_for_room") as token_mock:
-            token_mock.return_value = {
-                "token": "jwt-token",
-                "roomName": call.room_name,
-                "url": "wss://livekit.example.com",
-            }
-            data = join_call_as_homeowner(self.db, call_session_id=call.id, homeowner_id=self.homeowner.id)
-            self.assertEqual(data["token"], "jwt-token")
-            self.assertEqual(data["roomName"], call.room_name)
-            refreshed = self.db.query(CallSession).filter(CallSession.id == call.id).first()
-            self.assertEqual(refreshed.status, "ringing")
+        data = join_call_as_homeowner(self.db, call_session_id=call.id, homeowner_id=self.homeowner.id)
+        self.assertEqual(data["roomName"], call.room_name)
+        self.assertIn("rtcConfig", data)
+        refreshed = self.db.query(CallSession).filter(CallSession.id == call.id).first()
+        self.assertEqual(refreshed.status, "ringing")
 
     def test_call_end_disconnects_and_marks_ended(self):
         call = CallSession(
@@ -132,11 +123,9 @@ class CallServiceTests(unittest.TestCase):
         self.db.add(call)
         self.db.commit()
 
-        with patch("app.services.call_service.delete_livekit_room") as delete_room_mock:
-            ended = asyncio.run(end_call_session(self.db, call_session_id=call.id))
-            self.assertEqual(ended.status, "ended")
-            self.assertIsNotNone(ended.ended_at)
-            delete_room_mock.assert_called_once_with(call.room_name)
+        ended = asyncio.run(end_call_session(self.db, call_session_id=call.id))
+        self.assertEqual(ended.status, "ended")
+        self.assertIsNotNone(ended.ended_at)
 
     def test_visitor_join_requires_matching_visitor_id(self):
         call = CallSession(
@@ -150,15 +139,10 @@ class CallServiceTests(unittest.TestCase):
         self.db.add(call)
         self.db.commit()
 
-        with patch("app.services.call_service.issue_livekit_token_for_room") as token_mock:
-            token_mock.return_value = {
-                "token": "visitor-jwt",
-                "roomName": call.room_name,
-                "url": "wss://livekit.example.com",
-            }
-            joined = join_call_as_visitor(self.db, call_session_id=call.id, visitor_id="visitor-device-abc")
-            self.assertEqual(joined["token"], "visitor-jwt")
-            self.assertEqual(joined["status"], "ringing")
+        joined = join_call_as_visitor(self.db, call_session_id=call.id, visitor_id="visitor-device-abc")
+        self.assertEqual(joined["roomName"], call.room_name)
+        self.assertEqual(joined["status"], "ringing")
+        self.assertIn("rtcConfig", joined)
 
 
 if __name__ == "__main__":

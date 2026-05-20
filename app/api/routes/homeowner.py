@@ -37,7 +37,6 @@ from app.services.appointment_service import (
 )
 from app.services.session_service import mark_session_status
 from app.core.exceptions import AppException
-from app.services.livekit_service import issue_livekit_token
 from app.services.notification_service import mark_session_notifications_read
 from app.services.security_service import serialize_security_session, update_security_session_status
 from app.socket.server import sio
@@ -100,10 +99,6 @@ class VisitDecisionPayload(BaseModel):
 class HomeownerMessagePayload(BaseModel):
     text: str
     clientId: Optional[str] = None
-
-
-class LiveKitTokenPayload(BaseModel):
-    displayName: Optional[str] = None
 
 
 class MaintenanceRequestPayload(BaseModel):
@@ -604,32 +599,3 @@ async def homeowner_end_visit(
     )
     return {"data": {"id": updated.id, "status": updated.status}}
 
-
-@router.post("/visits/{session_id}/livekit-token")
-def homeowner_livekit_token(
-    session_id: str,
-    payload: LiveKitTokenPayload,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_roles("homeowner")),
-):
-    from app.db.models import VisitorSession
-
-    session = (
-        db.query(VisitorSession)
-        .filter(VisitorSession.id == session_id, VisitorSession.homeowner_id == user.id)
-        .first()
-    )
-    if not session:
-        raise AppException("Visit not found", status_code=404)
-    if session.status in {"closed", "rejected"}:
-        raise AppException("Session is not available for calls.", status_code=400)
-
-    display_name = (payload.displayName or user.full_name or "Homeowner").strip() or "Homeowner"
-    data = issue_livekit_token(
-        session_id=session_id,
-        identity=f"homeowner:{user.id}",
-        display_name=display_name,
-        can_publish=True,
-        can_subscribe=True,
-    )
-    return {"data": data}

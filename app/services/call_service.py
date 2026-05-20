@@ -19,13 +19,7 @@ try:
 except Exception:  # pragma: no cover - local test dependency fallback
     def create_notification(*args, **kwargs):
         return {}
-from app.services.livekit_service import (
-    build_livekit_identity,
-    build_request_room_name,
-    create_livekit_room,
-    delete_livekit_room,
-    issue_livekit_token_for_room,
-)
+from app.services.realtime_config_service import build_webrtc_rtc_config
 
 CALL_SETUP_STATUSES = {"pending", "ringing"}
 CALL_CONNECTED_STATUSES = {"active", "ongoing"}
@@ -124,8 +118,7 @@ async def start_call_session(
         if visitor_session and visitor_session.request_id
         else str(visitor_session.id if visitor_session else effective_appointment_id or visitor_identity).strip()
     )
-    room_name = build_request_room_name(visitor_request_id)
-    await create_livekit_room(room_name)
+    room_name = f"qring-call-{visitor_request_id}"
 
     row = CallSession(
         id=call_session_id,
@@ -230,13 +223,6 @@ def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: s
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)
-    data = issue_livekit_token_for_room(
-        room_name=row.room_name,
-        identity=build_livekit_identity("homeowner", homeowner_id),
-        display_name=_get_homeowner_display_name(db, homeowner_id),
-        can_publish=True,
-        can_subscribe=True,
-    )
     logger.info(
         "call.join.homeowner call_session_id=%s homeowner_id=%s room_name=%s status=%s",
         row.id,
@@ -245,11 +231,11 @@ def join_call_as_homeowner(db: Session, *, call_session_id: str, homeowner_id: s
         row.status,
     )
     return {
-        "token": data["token"],
-        "roomName": data["roomName"],
+        "callSessionId": row.id,
+        "roomName": row.room_name,
         "status": row.status,
-        "url": data.get("url"),
-        "expiresIn": data.get("expiresIn"),
+        "displayName": _get_homeowner_display_name(db, homeowner_id),
+        "rtcConfig": build_webrtc_rtc_config(),
     }
 
 
@@ -262,13 +248,6 @@ def join_call_as_security(db: Session, *, call_session_id: str, security_user_id
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)
     security_user = db.query(User).filter(User.id == security_user_id).first()
-    data = issue_livekit_token_for_room(
-        room_name=row.room_name,
-        identity=build_livekit_identity("security", security_user_id),
-        display_name=(security_user.full_name if security_user else "Security") or "Security",
-        can_publish=True,
-        can_subscribe=True,
-    )
     logger.info(
         "call.join.security call_session_id=%s security_user_id=%s room_name=%s status=%s",
         row.id,
@@ -277,11 +256,11 @@ def join_call_as_security(db: Session, *, call_session_id: str, security_user_id
         row.status,
     )
     return {
-        "token": data["token"],
-        "roomName": data["roomName"],
+        "callSessionId": row.id,
+        "roomName": row.room_name,
         "status": row.status,
-        "url": data.get("url"),
-        "expiresIn": data.get("expiresIn"),
+        "displayName": (security_user.full_name if security_user else "Security") or "Security",
+        "rtcConfig": build_webrtc_rtc_config(),
     }
 
 
@@ -298,13 +277,6 @@ def join_call_as_visitor(db: Session, *, call_session_id: str, visitor_id: str) 
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)
-    data = issue_livekit_token_for_room(
-        room_name=row.room_name,
-        identity=build_livekit_identity("visitor", visitor_identity),
-        display_name=_get_visitor_display_name(db, row),
-        can_publish=True,
-        can_subscribe=True,
-    )
     logger.info(
         "call.join.visitor call_session_id=%s visitor_id=%s room_name=%s status=%s",
         row.id,
@@ -313,11 +285,11 @@ def join_call_as_visitor(db: Session, *, call_session_id: str, visitor_id: str) 
         row.status,
     )
     return {
-        "token": data["token"],
-        "roomName": data["roomName"],
+        "callSessionId": row.id,
+        "roomName": row.room_name,
         "status": row.status,
-        "url": data.get("url"),
-        "expiresIn": data.get("expiresIn"),
+        "displayName": _get_visitor_display_name(db, row),
+        "rtcConfig": build_webrtc_rtc_config(),
     }
 
 
@@ -340,10 +312,4 @@ async def end_call_session(db: Session, *, call_session_id: str, reason: str | N
         row.room_name,
     )
 
-    try:
-        await delete_livekit_room(row.room_name)
-    except AppException:
-        # Keep end-call idempotent even if room cleanup fails or room no longer exists.
-        logger.exception("call.end.cleanup_failed call_session_id=%s room_name=%s", row.id, row.room_name)
-        pass
     return row

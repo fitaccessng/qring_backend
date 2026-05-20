@@ -1,139 +1,136 @@
-# QRing Realtime + TURN Deployment Checklist
+# QRing WebRTC + TURN Deployment
 
-Deprecated for public launch migration:
-QRing is moving to LiveKit Cloud at `wss://qring-yovnizqn.livekit.cloud` for production launch. This file is now a rollback/reference document for the former self-hosted topology and should not be treated as the active launch path.
+This is the active production topology:
 
-This guide is the production baseline for stable messaging, audio, and video across mobile/NAT-heavy networks.
+`React + Capacitor app -> Socket.IO signaling on Render -> Coturn on VPS -> direct WebRTC media`
 
-## LiveKit baseline
+## Core rules
 
-Use the production template at:
+- Do not host TURN on Render.
+- Do not route media through the backend.
+- Do not add group-call or SFU logic to this stack.
+- Keep this path 1-on-1 only.
 
-- `infra/livekit/livekit.production.yaml`
+## Recommended hosting
 
-Recommended production ports:
+- Signaling/API: Render
+- TURN: Hetzner Germany, Contabo Germany, or a UK VPS
+- STUN: `stun:stun.l.google.com:19302`
 
-- `443/tcp` for HTTPS + TURN/TLS
-- `7881/tcp` for WebRTC/TCP fallback
-- `3478/udp` for TURN/UDP
-- `50000-60000/udp` for RTP relay/media
+## Ubuntu TURN deployment
 
-Set `rtc.use_external_ip: true` unless you are explicitly handling NAT traversal elsewhere.
+1. Provision Ubuntu 22.04 or 24.04 on a Germany VPS.
+2. Point `turn.yourdomain.com` to the VPS public IPv4.
+3. Install Coturn and certificates:
 
-Choose exactly one TURN topology before production:
+```bash
+sudo apt update
+sudo apt install -y coturn certbot
+sudo systemctl enable coturn
+```
 
-1. `LiveKit built-in TURN`
-2. `Standalone Coturn`
+4. Issue TLS certs:
 
-Do not expose both on the same public IP/ports unless you explicitly split listeners or hosts.
+```bash
+sudo certbot certonly --standalone -d turn.yourdomain.com
+```
 
-## 1) Provision TURN host
+5. Copy the QRing baseline from:
 
-- Create a VM in/near target users (recommended primary: Africa region).
-- Assign a static public IPv4 address.
-- Create DNS record for your self-hosted TURN hostname -> VM public IP.
-- Open firewall/security group:
-- `3478/udp`
-- `3478/tcp`
-- `443/tcp`
-- `50000-60000/udp` (relay media range)
+- [turnserver.conf.example](/Users/macbookpro/Documents/qring/backend/infra/coturn/turnserver.conf.example)
 
-## 2) Install and configure coturn
-
-Use your distro package or Docker. Start from:
-
-- `backend/infra/coturn/turnserver.conf.example`
-- `backend/infra/coturn/docker-compose.turn.yml`
-- `backend/infra/coturn/.env.turn.example`
-
-Required replacements:
+6. Replace:
 
 - `<TURN_PUBLIC_IP>`
-- `<TURN_REALM_FQDN>` (example: `turn.example.com`)
+- `<TURN_REALM_FQDN>`
 - `<TURN_USERNAME>`
 - `<TURN_PASSWORD>`
 
-Notes:
-
-- Keep `lt-cred-mech` enabled.
-- Do not run open relay (never disable auth).
-- Keep TLS (`turns:`) configured for reliability where UDP is blocked.
-- Prefer `443/tcp` for TURN/TLS on restrictive mobile/carrier networks.
-
-### One-command Docker Compose start
-
-From `backend/infra/coturn`:
+7. Restart Coturn:
 
 ```bash
-cp .env.turn.example .env.turn
-# update TURN_* values and place certs in ./certs/fullchain.pem + ./certs/privkey.pem
-docker compose -f docker-compose.turn.yml up -d
+sudo systemctl restart coturn
+sudo systemctl status coturn
 ```
 
-## 3) Frontend environment (required)
+## Required ports on the TURN VPS
 
-Update `frontend/.env` (and deployment secrets) with ICE servers:
+- `3478/udp`
+- `3478/tcp`
+- `5349/tcp` or `443/tcp` for `turns:`
+- `50000-60000/udp`
+
+## Frontend env
 
 ```env
-VITE_WEBRTC_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{"urls":["turn:turn.example.com:3478?transport=udp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turn:turn.example.com:3478?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"},{"urls":["turns:turn.example.com:443?transport=tcp"],"username":"<TURN_USERNAME>","credential":"<TURN_PASSWORD>"}]
-VITE_LIVEKIT_URL=wss://qring-yovnizqn.livekit.cloud
+VITE_SOCKET_URL=https://qring-backend-1.onrender.com
+VITE_SOCKET_PATH=/socket.io
+VITE_SIGNALING_NAMESPACE=/realtime/signaling
+VITE_WEBRTC_ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":["turn:turn.example.com:3478?transport=udp","turn:turn.example.com:3478?transport=tcp"],"username":"TURN_USER","credential":"TURN_PASSWORD"},{"urls":"turns:turn.example.com:5349?transport=tcp","username":"TURN_USER","credential":"TURN_PASSWORD"}]
 VITE_CALL_CONNECT_TIMEOUT_MS=8000
 VITE_CALL_RING_TIMEOUT_MS=30000
-VITE_RTC_MONITORING_URL=https://YOUR-MONITORING-ENDPOINT.example/rtc
+VITE_RTC_MONITORING_URL=https://YOUR_MONITORING_ENDPOINT/rtc
 ```
 
-This is consumed by `env.webRtcIceServers` in:
+## Backend env
 
-- `frontend/src/config/env.js`
-- `frontend/src/hooks/useSessionRealtime.js`
-- `frontend/src/pages/visitor/SessionPage.jsx`
+```env
+WEBRTC_STUN_URL=stun:stun.l.google.com:19302
+WEBRTC_TURN_URL=turn:turn.yourdomain.com:3478
+WEBRTC_TURN_TLS_URL=turns:turn.yourdomain.com:5349
+WEBRTC_TURN_USERNAME=user
+WEBRTC_TURN_CREDENTIAL=password
+SOCKET_PATH=/socket.io
+SIGNALING_NAMESPACE=/realtime/signaling
+```
 
-## 4) Backend and socket requirements
+## Coturn baseline
 
-- Socket path/namespace must remain reachable over HTTPS/WSS:
-  - `/socket.io`
-  - `/realtime/signaling`
-- If backend runs multiple instances, add Redis pub/sub adapter/backplane so socket rooms fan out across instances.
-- Keep websocket transport enabled end-to-end through proxy/load balancer.
+Use:
 
-## 5) Verification steps (must pass)
+- [turnserver.conf.example](/Users/macbookpro/Documents/qring/backend/infra/coturn/turnserver.conf.example)
+- [docker-compose.turn.yml](/Users/macbookpro/Documents/qring/backend/infra/coturn/docker-compose.turn.yml)
 
-1. ICE server test:
-   - Open `https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/`
-   - Add your `turn:` and `turns:` servers with credentials.
-   - Confirm relay candidates appear (`typ relay`).
-2. QRing browser test:
-   - Open two devices on different networks.
-   - Start video call from homeowner.
-   - Verify connection succeeds within a few seconds.
-3. Failover test:
-   - Temporarily block UDP on one client network.
-   - Verify call still connects over `turns:...:443` (TCP/TLS).
-4. Carrier/mobile test:
-   - Verify on MTN, Airtel, Glo, and 9mobile with one user on mobile data.
-5. Bad-network test:
-   - Apply 3G throttling, packet loss, unstable Wi-Fi, and network switching.
-   - Confirm the app stays `connecting` until remote media is actually rendered.
-6. Messaging persistence test:
-   - Send chat message and confirm immediate UI delivery + persisted state.
-   - Simulate DB outage and confirm `Not saved` + retry flow works.
+Production notes:
 
-## 6) Operational checklist
-
+- Keep long-term credentials enabled.
+- Keep both UDP and TCP TURN listeners.
+- Prefer `turns:` for office WiFi and restrictive carrier paths.
+- Keep TLS TURN on `5349` or `443` and test both direct carrier data and estate WiFi.
 - Rotate TURN credentials regularly.
-- Monitor TURN VM CPU, bandwidth, and packet loss.
-- Alert on:
-  - spike in call setup failures
-  - drop in relay candidate success rate
-  - repeated socket reconnect storms
-- Keep at least one standby TURN region for failover.
+- Monitor bandwidth, CPU, packet loss, and relay success rate.
 
-## 7) Quick runbook (incident)
+## QRing call tuning
 
-- Symptom: calls ring but never connect.
-  - Check TURN ports and firewall first.
-  - Check certificate validity for `turns:`.
-  - Confirm relay candidates still generated in trickle-ice.
-- Symptom: messages delayed.
-  - Verify websocket-only transport and signaling server health.
-  - Check backend DB latency and async persist failure rate.
+- Default video target: `640x360 @ 24fps`
+- Prefer VP8 for video
+- Prefer Opus for audio
+- Preserve audio first when bandwidth drops
+- Use TURN relay retry when direct ICE is unstable
+- Re-run ICE after app resume or network switching
+
+## Verification
+
+1. Use the WebRTC trickle-ice sample and confirm relay candidates appear.
+2. Confirm both `turn:` and `turns:` produce relay candidates.
+3. Confirm call setup usually completes in 1-3 seconds on healthy networks.
+4. Test homeowner <-> visitor on different networks.
+5. Test homeowner <-> security on different networks.
+6. Switch one device from WiFi to mobile data during a live call.
+7. Lock and unlock Android during a live call.
+8. Confirm audio survives weak-network conditions before video does.
+9. Confirm chat still works even if media recovery fails.
+
+## Incident checklist
+
+- Calls ring but do not connect:
+  - verify TURN ports
+  - verify public IP / DNS on Coturn
+  - verify relay candidates still appear
+- One-way audio or black video:
+  - verify TURN credentials
+  - verify ICE candidates are exchanged both ways
+  - verify app is not stuck on a stale peer connection after resume
+- Reconnect storms:
+  - verify Socket.IO health on Render
+  - verify Redis/socket fanout if multiple backend instances are running

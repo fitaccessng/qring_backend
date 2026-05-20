@@ -83,6 +83,14 @@ def _contact_resident_ids_for_user(db, *, user: User) -> list[str]:
 
 
 def register_socket_events(sio):
+    async def _get_allowed_session_id(sid: str, payload) -> str | None:
+        session_id = str((payload or {}).get("sessionId") or "").strip()
+        if not session_id:
+            return None
+        if not await socket_state.is_session_allowed(sid, session_id):
+            return None
+        return session_id
+
     async def persist_chat_message_with_retry(
         *,
         sid: str,
@@ -294,51 +302,42 @@ def register_socket_events(sio):
 
     @sio.on("webrtc.offer", namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_offer(sid, payload):
-        target = (payload or {}).get("target")
-        if target:
-            await sio.emit("webrtc.offer", payload, room=target, namespace=settings.SIGNALING_NAMESPACE)
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
             return
-        session_id = (payload or {}).get("sessionId")
-        if session_id:
-            await sio.emit(
-                "webrtc.offer",
-                {**(payload or {}), "sender": sid},
-                room=f"session:{session_id}",
-                skip_sid=sid,
-                namespace=settings.SIGNALING_NAMESPACE,
-            )
+        await sio.emit(
+            "webrtc.offer",
+            {**(payload or {}), "sender": sid},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
 
     @sio.on("webrtc.answer", namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_answer(sid, payload):
-        target = (payload or {}).get("target")
-        if target:
-            await sio.emit("webrtc.answer", payload, room=target, namespace=settings.SIGNALING_NAMESPACE)
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
             return
-        session_id = (payload or {}).get("sessionId")
-        if session_id:
-            await sio.emit(
-                "webrtc.answer",
-                {**(payload or {}), "sender": sid},
-                room=f"session:{session_id}",
-                skip_sid=sid,
-                namespace=settings.SIGNALING_NAMESPACE,
-            )
+        await sio.emit(
+            "webrtc.answer",
+            {**(payload or {}), "sender": sid},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
 
     @sio.on("webrtc.ice", namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_ice(sid, payload):
-        target = (payload or {}).get("target")
-        if target:
-            await sio.emit("webrtc.ice", payload, room=target, namespace=settings.SIGNALING_NAMESPACE)
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
             return
-        session_id = (payload or {}).get("sessionId")
-        if session_id:
-            await sio.emit(
-                "webrtc.ice",
-                {**(payload or {}), "sender": sid},
-                room=f"session:{session_id}",
-                skip_sid=sid,
-                namespace=settings.SIGNALING_NAMESPACE,
-            )
+        await sio.emit(
+            "webrtc.ice",
+            {**(payload or {}), "sender": sid},
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
 
     @sio.on("chat.message", namespace=settings.SIGNALING_NAMESPACE)
     async def chat_message(sid, payload):
@@ -426,7 +425,7 @@ def register_socket_events(sio):
 
     @sio.on("session.control", namespace=settings.SIGNALING_NAMESPACE)
     async def session_control(sid, payload):
-        session_id = (payload or {}).get("sessionId")
+        session_id = await _get_allowed_session_id(sid, payload)
         action = (payload or {}).get("action")
         if not session_id or not action:
             return
@@ -444,7 +443,7 @@ def register_socket_events(sio):
 
     @sio.on("call.invite", namespace=settings.SIGNALING_NAMESPACE)
     async def call_invite(sid, payload):
-        session_id = (payload or {}).get("sessionId")
+        session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return
         await sio.emit(
@@ -457,7 +456,7 @@ def register_socket_events(sio):
 
     @sio.on("call.accepted", namespace=settings.SIGNALING_NAMESPACE)
     async def call_accepted(sid, payload):
-        session_id = (payload or {}).get("sessionId")
+        session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return
         call_session_id = str((payload or {}).get("callSessionId") or "").strip()
@@ -477,7 +476,7 @@ def register_socket_events(sio):
 
     @sio.on("call.rejected", namespace=settings.SIGNALING_NAMESPACE)
     async def call_rejected(sid, payload):
-        session_id = (payload or {}).get("sessionId")
+        session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return
         call_session_id = str((payload or {}).get("callSessionId") or "").strip()
@@ -497,7 +496,7 @@ def register_socket_events(sio):
 
     @sio.on("call.ended", namespace=settings.SIGNALING_NAMESPACE)
     async def call_ended(sid, payload):
-        session_id = (payload or {}).get("sessionId")
+        session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return
         await sio.emit(

@@ -1,6 +1,5 @@
 services:
   coturn:
-    # Archived for rollback/reference while QRing's launch path is LiveKit Cloud.
     image: coturn/coturn:4.6.3
     container_name: qring-coturn
     restart: unless-stopped

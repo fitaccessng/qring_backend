@@ -1,5 +1,4 @@
 # QRing production coturn template
-# Archived for rollback/reference while QRing's launch path is LiveKit Cloud.
 # Copy to /etc/turnserver.conf (or mount into container) and replace placeholders.
 
 # Network interfaces
@@ -45,5 +44,5 @@ log-file=stdout
 # allowed-peer-ip=<BACKEND_PUBLIC_IP>
 
 # IMPORTANT:
-# - Do not run this on the same host/ports as LiveKit built-in TURN unless you disable one side.
+# - Keep TURN on its own VPS, not on Render.
 # - If you prefer classic TURN/TLS port 5349 instead of 443, update frontend ICE URLs, firewall, and docs together.

@@ -22,7 +22,6 @@ from app.services.appointment_service import (
     resolve_qr_appointment_token_for_request,
     mark_appointment_qr_used,
 )
-from app.services.livekit_service import issue_livekit_token
 from app.services.qr_service import resolve_qr
 from app.services.security_service import notify_security_request, serialize_security_session
 from app.services.session_service import create_visitor_session, rotate_visitor_session_token
@@ -34,10 +33,6 @@ from app.socket.server import sio
 router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
-
-
-class VisitorLiveKitTokenPayload(BaseModel):
-    displayName: Optional[str] = None
 
 
 class VisitorAppointmentAcceptPayload(BaseModel):
@@ -524,32 +519,3 @@ async def visitor_send_session_message(
     )
     return {"data": data}
 
-
-@router.post("/sessions/{session_id}/livekit-token")
-def visitor_livekit_token(
-    session_id: str,
-    payload: VisitorLiveKitTokenPayload,
-    visitorToken: Optional[str] = None,
-    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
-    db: Session = Depends(get_db),
-    user=Depends(get_optional_current_user),
-):
-    from app.db.models import VisitorSession
-
-    session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
-    if not session:
-        raise AppException("Session not found", status_code=404)
-    if session.status in {"closed", "rejected"}:
-        raise AppException("Session is not available for calls.", status_code=400)
-    if user is None:
-        require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
-
-    display_name = (payload.displayName or session.visitor_label or "Visitor").strip() or "Visitor"
-    data = issue_livekit_token(
-        session_id=session_id,
-        identity=f"visitor:{session_id}",
-        display_name=display_name,
-        can_publish=True,
-        can_subscribe=True,
-    )
-    return {"data": data}

@@ -19,6 +19,7 @@ from app.services.call_service import (
     join_call_as_visitor,
     start_call_session,
 )
+from app.services.realtime_config_service import build_webrtc_rtc_config
 from app.socket.server import sio
 
 router = APIRouter()
@@ -171,6 +172,7 @@ async def start_call(
             "callSessionId": row.id,
             "visitorId": row.visitor_id,
             "status": row.status,
+            "rtcConfig": build_webrtc_rtc_config(),
         }
     }
 
@@ -223,11 +225,11 @@ async def join_call(
 
     return {
         "data": {
-            "token": data["token"],
+            "callSessionId": data["callSessionId"],
             "roomName": data["roomName"],
             "status": data["status"],
-            "url": data.get("url"),
-            "expiresIn": data.get("expiresIn"),
+            "displayName": data.get("displayName"),
+            "rtcConfig": data.get("rtcConfig"),
         }
     }
 
