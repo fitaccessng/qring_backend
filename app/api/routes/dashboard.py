@@ -19,9 +19,12 @@ def dashboard_overview(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    data = get_or_set_json(
-        cache_key("dashboard-overview", user.id),
-        lambda: get_dashboard_overview(db, homeowner_id=user.id),
-        settings.CACHE_DASHBOARD_TTL_SECONDS,
-    )
+    try:
+        data = get_or_set_json(
+            cache_key("dashboard-overview", user.id),
+            lambda: get_dashboard_overview(db, homeowner_id=user.id),
+            settings.CACHE_DASHBOARD_TTL_SECONDS,
+        )
+    except Exception:
+        data = get_dashboard_overview(db, homeowner_id=user.id)
     return {"data": data}

@@ -261,7 +261,9 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         )
         visitor_token = rotate_visitor_session_token(db, session=session)
         return {"data": {"sessionId": session.id, "status": session.status, "visitorToken": visitor_token}}
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, ValueError):
+            raise AppException(str(exc), status_code=409) from exc
         elapsed_ms = (perf_counter() - started) * 1000
         logger.exception(
             "visitor.request failed in %.1fms phase=%s qr_id=%s door_id=%s",
@@ -518,4 +520,3 @@ async def visitor_send_session_message(
         namespace=settings.SIGNALING_NAMESPACE,
     )
     return {"data": data}
-

@@ -43,7 +43,7 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
     rows = (
         db.query(Door, Home, User)
         .join(Home, Home.id == Door.home_id)
-        .join(User, User.id == Home.homeowner_id)
+        .outerjoin(User, User.id == Home.homeowner_id)
         .filter(Door.id.in_(door_ids))
         .all()
         if door_ids
@@ -65,6 +65,24 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
                 "homeownerName": user.full_name if user else "",
             }
         )
+
+    if not door_options and door_ids:
+        fallback_rows = db.query(Door, Home).join(Home, Home.id == Door.home_id).filter(Door.id.in_(door_ids)).all()
+        fallback_index = {door.id: (door, home) for door, home in fallback_rows}
+        for door_id in door_ids:
+            door, home = fallback_index.get(door_id, (None, None))
+            if not door:
+                continue
+            door_options.append(
+                {
+                    "id": door.id,
+                    "name": door.name,
+                    "homeId": home.id if home else "",
+                    "homeName": home.name if home else "",
+                    "homeownerId": "",
+                    "homeownerName": "",
+                }
+            )
 
     return {
         "qr_id": qr.qr_id,

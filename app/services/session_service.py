@@ -67,9 +67,15 @@ def create_visitor_session(
 
     selected_door = select_door(doors, mode, requested_door)
     door = db.query(Door).filter(Door.id == selected_door).first()
+    if not door:
+        raise ValueError("Selected door no longer exists.")
     home = db.query(Home).filter(Home.id == (door.home_id if door else qr_home_id)).first()
+    if not home:
+        raise ValueError("Door is not linked to a valid home.")
 
     homeowner_id = home.homeowner_id if home else ""
+    if not str(homeowner_id or "").strip():
+        raise ValueError("Door is not assigned to a homeowner yet.")
     estate_id = home.estate_id if home else None
     gate_id = (door.gate_label if door else None) or "main-gate"
     clean_visitor_type = (visitor_type or "guest").strip().lower() or "guest"
