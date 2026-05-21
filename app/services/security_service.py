@@ -222,6 +222,7 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
     home = db.query(Home).filter(Home.id == session.home_id).first()
     estate = db.query(Estate).filter(Estate.id == (session.estate_id or (home.estate_id if home else None))).first()
     security_user = db.query(User).filter(User.id == session.handled_by_security_id).first() if session.handled_by_security_id else None
+    session_route = f"/session/{session.id}/message"
     request_source = (session.request_source or "").strip().lower()
     if request_source not in {"visitor_qr", "gateman_assisted"}:
         request_source = "gateman_assisted" if str(session.qr_id or "").startswith("security-manual:") else "visitor_qr"
@@ -240,10 +241,15 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         "gateLabel": session.gate_id or (door.gate_label if door else "Main Gate"),
         "homeId": session.home_id,
         "homeName": home.name if home else "",
+        "buildingName": home.name if home else "",
+        "unitName": home.name if home else "",
         "homeownerId": session.homeowner_id,
         "estateId": estate.id if estate else session.estate_id,
         "estateName": estate.name if estate else "",
         "status": session.status,
+        "sessionRoomId": session.id,
+        "sessionRoute": session_route,
+        "sessionActivated": session.status in {"approved", "active", "gate_confirmed"},
         "communicationStatus": session.communication_status or "none",
         "preferredCommunicationChannel": session.preferred_communication_channel,
         "preferredCommunicationTarget": session.preferred_communication_target,
@@ -278,6 +284,17 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         "startedAt": session.started_at.isoformat() if session.started_at else None,
         "endedAt": session.ended_at.isoformat() if session.ended_at else None,
         "waitingSeconds": max(0, int((datetime.utcnow() - (session.started_at or datetime.utcnow())).total_seconds())),
+        "snapshotMissing": not bool(session.photo_url),
+        "detailsMissing": [
+            field_name
+            for field_name, field_value in {
+                "visitorName": session.visitor_label,
+                "phoneNumber": session.visitor_phone,
+                "purpose": session.purpose,
+                "photoUrl": session.photo_url,
+            }.items()
+            if not str(field_value or "").strip()
+        ],
     }
 
 

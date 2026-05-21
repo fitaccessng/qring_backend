@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,7 @@ from app.schemas.auth import (
 from app.services import auth_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/signup")
@@ -131,8 +134,19 @@ def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/refresh-token")
-def refresh_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
-    data = auth_service.rotate_refresh_token(db, payload.refreshToken)
+def refresh_token(payload: RefreshTokenRequest | None = None, request: Request | None = None, db: Session = Depends(get_db)):
+    refresh_token_value = (
+        getattr(payload, "refreshToken", None)
+        or (request.cookies.get("refreshToken") if request else None)
+        or (request.cookies.get("refresh_token") if request else None)
+    )
+    logger.info(
+        "auth.refresh_token requested has_body=%s has_cookie=%s origin=%s",
+        bool(getattr(payload, "refreshToken", None)),
+        bool((request.cookies.get("refreshToken") if request else None) or (request.cookies.get("refresh_token") if request else None)),
+        request.headers.get("origin") if request else None,
+    )
+    data = auth_service.rotate_refresh_token(db, refresh_token_value)
     return {"data": data}
 
 

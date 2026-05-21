@@ -295,7 +295,7 @@ def register_socket_events(sio):
         )
         await sio.emit(
             "session.joined",
-            {"sid": sid, "count": participant_count},
+            {"sid": sid, "count": participant_count, "sessionId": str(session_id)},
             to=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
@@ -421,6 +421,42 @@ def register_socket_events(sio):
                 created_at_iso=created_at,
                 client_id=client_id,
             )
+        )
+
+    @sio.on("chat.typing", namespace=settings.SIGNALING_NAMESPACE)
+    async def chat_typing(sid, payload):
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
+            return
+        await sio.emit(
+            "chat.typing",
+            {
+                "sessionId": session_id,
+                "senderType": (payload or {}).get("senderType") or "visitor",
+                "displayName": (payload or {}).get("displayName") or "Participant",
+                "isTyping": bool((payload or {}).get("isTyping")),
+                "at": datetime.utcnow().isoformat(),
+            },
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
+    @sio.on("chat.read", namespace=settings.SIGNALING_NAMESPACE)
+    async def chat_read(sid, payload):
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
+            return
+        await sio.emit(
+            "chat.read",
+            {
+                "sessionId": session_id,
+                "readerType": (payload or {}).get("readerType") or "participant",
+                "at": (payload or {}).get("at") or datetime.utcnow().isoformat(),
+            },
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
         )
 
     @sio.on("session.control", namespace=settings.SIGNALING_NAMESPACE)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel
@@ -46,6 +47,7 @@ from app.services.estate_service import join_estate_by_token
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class DoorQrCreate(BaseModel):
@@ -223,6 +225,16 @@ async def homeowner_send_message(
             **data,
             "clientId": payload.clientId,
             "displayName": user.full_name or "Homeowner",
+        },
+        room=f"session:{session_id}",
+        namespace=settings.SIGNALING_NAMESPACE,
+    )
+    await sio.emit(
+        "chat.read",
+        {
+            "sessionId": session_id,
+            "readerType": "homeowner",
+            "at": data.get("at"),
         },
         room=f"session:{session_id}",
         namespace=settings.SIGNALING_NAMESPACE,
@@ -484,13 +496,29 @@ async def homeowner_visit_decision(
     action = (payload.action or "").strip().lower()
     if action not in {"approve", "reject"}:
         raise AppException("Action must be approve or reject", status_code=400)
+    if payload.communicationChannel and str(payload.communicationChannel).strip().lower() not in {"chat", "audio", "video"}:
+        raise AppException("communicationChannel must be chat, audio, or video", status_code=400)
 
     from app.db.models import VisitorSession
 
     session = db.query(VisitorSession).filter(VisitorSession.id == session_id, VisitorSession.homeowner_id == user.id).first()
     if not session:
         raise AppException("Visit not found", status_code=404)
+    if session.status not in {"submitted", "pending", "forwarded", "handled_by_security", "received_by_security", "forwarded_to_homeowner"} and action in {"approve", "reject"}:
+        raise AppException(
+            f"Cannot {action} a visit in {session.status or 'unknown'} state",
+            status_code=409,
+        )
 
+    logger.info(
+        "homeowner.visit_decision session_id=%s homeowner_id=%s action=%s channel=%s target=%s prior_status=%s",
+        session_id,
+        user.id,
+        action,
+        payload.communicationChannel,
+        payload.communicationTarget,
+        session.status,
+    )
     updated = update_security_session_status(
         db,
         session_id=session_id,
@@ -526,6 +554,22 @@ async def homeowner_visit_decision(
             "homeownerId": session.homeowner_id,
             "doorId": session.door_id,
             "visitorName": session.visitor_label or "Visitor",
+            "sessionActivated": updated.status in {"approved", "active", "gate_confirmed"},
+            "sessionRoomId": session.id,
+            "sessionRoute": f"/session/{session.id}/message",
+            "communicationChannel": updated.preferred_communication_channel,
+            "communicationTarget": updated.preferred_communication_target,
+        },
+        room=f"session:{session.id}",
+        namespace=settings.SIGNALING_NAMESPACE,
+    )
+    await sio.emit(
+        "session.activated",
+        {
+            "data": serialize_security_session(db, updated),
+            "sessionId": session.id,
+            "status": updated.status,
+            "route": f"/session/{session.id}/message",
         },
         room=f"session:{session.id}",
         namespace=settings.SIGNALING_NAMESPACE,
@@ -535,7 +579,17 @@ async def homeowner_visit_decision(
         {"data": serialize_security_session(db, updated), "action": action, "actorRole": user.role.value},
         namespace=settings.DASHBOARD_NAMESPACE,
     )
-    return {"data": {"id": updated.id, "status": updated.status}}
+    return {
+        "data": {
+            "id": updated.id,
+            "status": updated.status,
+            "sessionActivated": updated.status in {"approved", "active", "gate_confirmed"},
+            "sessionRoomId": updated.id,
+            "sessionRoute": f"/session/{updated.id}/message",
+            "communicationChannel": updated.preferred_communication_channel,
+            "communicationTarget": updated.preferred_communication_target,
+        }
+    }
 
 
 @router.post("/visits/{session_id}/end")
@@ -598,4 +652,3 @@ async def homeowner_end_visit(
         namespace=settings.SIGNALING_NAMESPACE,
     )
     return {"data": {"id": updated.id, "status": updated.status}}
-

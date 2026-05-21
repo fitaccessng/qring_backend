@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Appointment, Door, Home, Message, Notification, QRCode, VisitorSession
+from app.db.models import Appointment, Door, Estate, Home, Message, Notification, QRCode, VisitorSession
 from app.core.exceptions import AppException
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
@@ -74,8 +74,10 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
     retention_days = int(((effective_sub or {}).get("limits") or {}).get("logRetentionDays") or 0)
     cutoff = datetime.utcnow() - timedelta(days=retention_days) if retention_days > 0 else None
     rows = (
-        db.query(VisitorSession, Door)
+        db.query(VisitorSession, Door, Home, Estate)
         .join(Door, Door.id == VisitorSession.door_id)
+        .join(Home, Home.id == VisitorSession.home_id)
+        .outerjoin(Estate, Estate.id == VisitorSession.estate_id)
         .filter(VisitorSession.homeowner_id == homeowner_id)
         .filter(VisitorSession.started_at >= cutoff if cutoff else True)
         .order_by(VisitorSession.started_at.desc())
@@ -83,7 +85,7 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
         .all()
     )
 
-    session_ids = [session.id for session, _ in rows]
+    session_ids = [session.id for session, _, _, _ in rows]
     request_payload_by_session: dict[str, dict[str, Any]] = {}
     if session_ids:
         notifications = (
@@ -106,7 +108,9 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
         {
             "id": session.id,
             "visitor": session.visitor_label or "Visitor",
+            "visitorFullName": session.visitor_label or "Visitor",
             "door": door.name,
+            "doorName": door.name,
             "status": STATUS_LABELS.get(session.status, session.status.title()),
             "sessionStatus": session.status,
             "canDecide": session.status in {"submitted", "pending", "forwarded", "handled_by_security", "received_by_security", "forwarded_to_homeowner"},
@@ -114,12 +118,20 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "requestSource": (session.request_source or "visitor_qr") if (session.request_source or "").strip() else ("gateman_assisted" if str(session.qr_id or "").startswith("security-manual:") else "visitor_qr"),
             "preferredCommunicationChannel": session.preferred_communication_channel,
             "preferredCommunicationTarget": session.preferred_communication_target,
-            "purpose": (request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
-            "phoneNumber": (request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
+            "purpose": (session.purpose or request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
+            "phoneNumber": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
+            "visitorPhone": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
+            "photoUrl": session.photo_url,
             "snapshotAuditId": request_payload_by_session.get(session.id, {}).get("snapshotAuditId"),
             "time": session.started_at.isoformat(),
+            "timestamp": session.started_at.isoformat(),
+            "estateId": estate.id if estate else session.estate_id,
+            "estateName": estate.name if estate else "",
+            "buildingName": home.name if home else "",
+            "unitName": home.name if home else "",
+            "homeName": home.name if home else "",
         }
-        for session, door in rows
+        for session, door, home, estate in rows
     ]
 
 
@@ -130,15 +142,17 @@ def list_resident_visits(db: Session, resident_id: str, limit: int = 50) -> list
 
 def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     sessions = (
-        db.query(VisitorSession, Door)
+        db.query(VisitorSession, Door, Home, Estate)
         .join(Door, Door.id == VisitorSession.door_id)
+        .join(Home, Home.id == VisitorSession.home_id)
+        .outerjoin(Estate, Estate.id == VisitorSession.estate_id)
         .filter(VisitorSession.homeowner_id == homeowner_id)
         .order_by(VisitorSession.started_at.desc())
         .limit(limit)
         .all()
     )
 
-    session_by_id = {session.id: (session, door) for session, door in sessions}
+    session_by_id = {session.id: (session, door, home, estate) for session, door, home, estate in sessions}
     if not session_by_id:
         return []
 
@@ -165,7 +179,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
             unread_by_session[message.session_id] += 1
 
     threads: list[dict[str, Any]] = []
-    for session_id, (session, door) in session_by_id.items():
+    for session_id, (session, door, home, estate) in session_by_id.items():
         latest = latest_by_session.get(session_id)
         linked_appointment = appointment_by_id.get(session.appointment_id) if session.appointment_id else None
         thread_time = (
@@ -201,7 +215,12 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
                 "photoUrl": session.photo_url,
                 "appointmentId": session.appointment_id,
-                "homeName": door.home.name if getattr(door, "home", None) else None,
+                "homeName": home.name if home else None,
+                "buildingName": home.name if home else None,
+                "unitName": home.name if home else None,
+                "estateId": estate.id if estate else session.estate_id,
+                "estateName": estate.name if estate else "",
+                "timestamp": session.started_at.isoformat() if session.started_at else None,
             }
         )
 

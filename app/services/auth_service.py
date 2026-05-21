@@ -399,16 +399,19 @@ def google_signup(
 def rotate_refresh_token(db: Session, refresh_token: str):
     token_value = (refresh_token or "").strip()
     if not token_value:
+        logger.warning("auth.refresh_token missing_refresh_token")
         raise AppException("Refresh token is required", status_code=400)
 
     try:
         claims = decode_token(token_value)
     except ValueError as exc:
+        logger.warning("auth.refresh_token decode_failed")
         raise AppException("Invalid or expired refresh token", status_code=401) from exc
 
     token_type = str(claims.get("type") or "").strip().lower()
     token_subject = str(claims.get("sub") or "").strip()
     if token_type != "refresh" or not token_subject:
+        logger.warning("auth.refresh_token invalid_claims token_type=%s subject_present=%s", token_type, bool(token_subject))
         raise AppException("Invalid refresh token", status_code=401)
 
     session = (
@@ -417,14 +420,17 @@ def rotate_refresh_token(db: Session, refresh_token: str):
         .first()
     )
     if not session:
+        logger.warning("auth.refresh_token session_not_found user_id=%s", token_subject)
         raise AppException("Invalid refresh token", status_code=401)
     if str(session.user_id) != token_subject:
         session.revoked_at = datetime.utcnow()
         db.commit()
+        logger.warning("auth.refresh_token subject_mismatch expected=%s actual=%s", session.user_id, token_subject)
         raise AppException("Invalid refresh token", status_code=401)
     if not session.user or not session.user.is_active:
         session.revoked_at = datetime.utcnow()
         db.commit()
+        logger.warning("auth.refresh_token user_inactive user_id=%s", session.user_id)
         raise AppException("User not found", status_code=401)
 
     access_token = create_access_token(session.user_id, session.user.role.value)
@@ -439,6 +445,7 @@ def rotate_refresh_token(db: Session, refresh_token: str):
         )
     )
     db.commit()
+    logger.info("auth.refresh_token rotated user_id=%s", session.user_id)
     return {"accessToken": access_token, "refreshToken": new_refresh}
 
 

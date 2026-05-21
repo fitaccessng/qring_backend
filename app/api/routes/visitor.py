@@ -118,6 +118,23 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             request_source="visitor_qr",
             creator_role="visitor",
             )
+        missing_fields = [
+            field_name
+            for field_name, field_value in {
+                "visitorName": effective_visitor_name,
+                "phoneNumber": payload.phoneNumber,
+                "purpose": payload.purpose,
+                "snapshotBase64": payload.snapshotBase64,
+            }.items()
+            if not str(field_value or "").strip()
+        ]
+        if missing_fields:
+            logger.warning(
+                "visitor.request missing_fields session_id=%s qr_id=%s missing=%s",
+                session.id,
+                payload.qrId,
+                ",".join(missing_fields),
+            )
         if appointment:
             mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
 
@@ -423,12 +440,36 @@ def visitor_session_status(
         else:
             raise AppException("Not authorized to access this session.", status_code=403)
 
+    data = serialize_security_session(db, row)
     return {
         "data": {
             "sessionId": row.id,
             "status": row.status,
+            "sessionStatus": row.status,
             "startedAt": row.started_at.isoformat() if row.started_at else None,
             "endedAt": row.ended_at.isoformat() if row.ended_at else None,
+            "sessionRoute": data.get("sessionRoute"),
+            "sessionRoomId": data.get("sessionRoomId"),
+            "sessionActivated": data.get("sessionActivated"),
+            "communicationStatus": data.get("communicationStatus"),
+            "preferredCommunicationChannel": data.get("preferredCommunicationChannel"),
+            "preferredCommunicationTarget": data.get("preferredCommunicationTarget"),
+            "visitor": {
+                "fullName": row.visitor_label or "Visitor",
+                "phoneNumber": row.visitor_phone or "",
+                "purpose": row.purpose or "",
+                "photoUrl": row.photo_url,
+                "timestamp": row.started_at.isoformat() if row.started_at else None,
+            },
+            "location": {
+                "estateId": data.get("estateId"),
+                "estateName": data.get("estateName"),
+                "buildingName": data.get("buildingName"),
+                "unitName": data.get("unitName"),
+                "doorId": data.get("doorId"),
+                "doorName": data.get("doorName"),
+                "gateLabel": data.get("gateLabel"),
+            },
         }
     }
 
@@ -515,6 +556,16 @@ async def visitor_send_session_message(
             **data,
             "clientId": payload.clientId,
             "displayName": session.visitor_label or "Visitor",
+        },
+        room=f"session:{session_id}",
+        namespace=settings.SIGNALING_NAMESPACE,
+    )
+    await sio.emit(
+        "chat.read",
+        {
+            "sessionId": session_id,
+            "readerType": "visitor",
+            "at": data.get("at"),
         },
         room=f"session:{session_id}",
         namespace=settings.SIGNALING_NAMESPACE,
