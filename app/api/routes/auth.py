@@ -134,17 +134,22 @@ def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/refresh-token")
-def refresh_token(payload: RefreshTokenRequest | None = None, request: Request | None = None, db: Session = Depends(get_db)):
+async def refresh_token(request: Request, db: Session = Depends(get_db)):
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
     refresh_token_value = (
-        getattr(payload, "refreshToken", None)
-        or (request.cookies.get("refreshToken") if request else None)
-        or (request.cookies.get("refresh_token") if request else None)
+        (payload or {}).get("refreshToken")
+        or request.cookies.get("refreshToken")
+        or request.cookies.get("refresh_token")
     )
     logger.info(
         "auth.refresh_token requested has_body=%s has_cookie=%s origin=%s",
-        bool(getattr(payload, "refreshToken", None)),
-        bool((request.cookies.get("refreshToken") if request else None) or (request.cookies.get("refresh_token") if request else None)),
-        request.headers.get("origin") if request else None,
+        bool((payload or {}).get("refreshToken")),
+        bool(request.cookies.get("refreshToken") or request.cookies.get("refresh_token")),
+        request.headers.get("origin"),
     )
     data = auth_service.rotate_refresh_token(db, refresh_token_value)
     return {"data": data}
