@@ -31,6 +31,8 @@ from app.services.estate_alert_service import (
     run_scheduled_payment_reminders,
 )
 from app.services.safety_service import create_safety_tables
+from app.services.realtime_config_service import get_turn_diagnostics
+from app.services.realtime_runtime_service import append_startup_diagnostic, mark_realtime_state
 from app.services.subscription_lifecycle_service import run_subscription_lifecycle_jobs
 
 settings = get_settings()
@@ -750,12 +752,13 @@ def _should_run_scheduled_jobs() -> bool:
 
 
 def _validate_realtime_runtime() -> tuple[bool, list[str]]:
+    turn = get_turn_diagnostics()
     missing: list[str] = []
-    if not settings.WEBRTC_TURN_URL.strip() and not settings.WEBRTC_TURN_TLS_URL.strip():
-        missing.append("WEBRTC_TURN_URL or WEBRTC_TURN_TLS_URL")
-    if not settings.WEBRTC_TURN_USERNAME.strip():
+    if not turn["urls"]:
+        missing.append("TURN_URLS/WEBRTC_TURN_URL/WEBRTC_TURN_TLS_URL")
+    if not turn["usernameConfigured"]:
         missing.append("WEBRTC_TURN_USERNAME")
-    if not settings.WEBRTC_TURN_CREDENTIAL.strip():
+    if not turn["credentialConfigured"]:
         missing.append("WEBRTC_TURN_CREDENTIAL")
     return (len(missing) == 0, missing)
 
@@ -763,6 +766,16 @@ def _validate_realtime_runtime() -> tuple[bool, list[str]]:
 @fastapi_app.on_event("startup")
 async def on_startup():
     env = settings.ENVIRONMENT.lower().strip()
+    mark_realtime_state(
+        redisConnected=bool(settings.redis_enabled),
+        redisError="",
+        socketServerMounted=True,
+        socketPath=settings.SOCKET_PATH,
+        socketNamespaces=[settings.DASHBOARD_NAMESPACE, settings.SIGNALING_NAMESPACE],
+    )
+    append_startup_diagnostic(
+        f"Startup checks running for environment={settings.ENVIRONMENT} process_role={settings.PROCESS_ROLE}."
+    )
 
     # Fail fast on weak/default secrets in production-like environments.
     if env in {"production", "staging"}:
@@ -778,6 +791,7 @@ async def on_startup():
     realtime_ok, missing = _validate_realtime_runtime()
     if not realtime_ok:
         message = f"WebRTC/TURN configuration missing: {', '.join(missing)}"
+        append_startup_diagnostic(message)
         if settings.WEBRTC_REQUIRE_TURN:
             raise RuntimeError(message)
         logging.warning(
@@ -785,6 +799,12 @@ async def on_startup():
             message,
             settings.WEBRTC_REQUIRE_TURN,
             settings.ENVIRONMENT,
+        )
+    else:
+        turn = get_turn_diagnostics()
+        append_startup_diagnostic(
+            "WebRTC/TURN configuration validated "
+            f"(tls={turn['tlsEnabled']}, tcp={turn['tcpEnabled']}, udp={turn['udpEnabled']})."
         )
 
     # Runtime schema mutations are intentionally disabled in favor of Alembic migrations.
@@ -815,8 +835,10 @@ async def on_startup():
         asyncio.create_task(_payment_reminder_loop())
         asyncio.create_task(_subscription_lifecycle_loop())
         logging.info("Scheduled background jobs enabled for process role '%s'.", settings.PROCESS_ROLE)
+        append_startup_diagnostic(f"Scheduled jobs enabled for process role {settings.PROCESS_ROLE}.")
     else:
         logging.info("Scheduled background jobs disabled for process role '%s'.", settings.PROCESS_ROLE)
+        append_startup_diagnostic(f"Scheduled jobs disabled for process role {settings.PROCESS_ROLE}.")
 
 
 app = socketio.ASGIApp(
@@ -824,3 +846,4 @@ app = socketio.ASGIApp(
     other_asgi_app=fastapi_app,
     socketio_path=settings.SOCKET_PATH.lstrip("/"),
 )
+mark_realtime_state(socketServerMounted=True)

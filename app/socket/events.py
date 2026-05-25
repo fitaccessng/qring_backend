@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.security import decode_token
-from app.db.models import Estate, ResidentSetting, Message, User, UserRole, VisitorSession
+from app.db.models import CallSession, Estate, ResidentSetting, Message, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
+from app.socket.contracts import RealtimeEvent
 from app.socket.manager import socket_state
 from app.services.call_service import mark_call_session_answered, mark_call_session_rejected
 from app.services.visitor_session_auth import require_visitor_session_access
 
 settings = get_settings()
 CHAT_PERSIST_RETRY_DELAYS = (0.35, 1.0, 2.0)
+logger = logging.getLogger(__name__)
 
 
 def _resolve_user_id(auth: dict | None) -> tuple[str | None, str | None]:
@@ -82,7 +85,60 @@ def _contact_resident_ids_for_user(db, *, user: User) -> list[str]:
     return resident_ids
 
 
+def _socket_log(event: str, **fields) -> None:
+    details = " ".join(f"{key}={value}" for key, value in fields.items() if value not in (None, "", [], {}))
+    logger.info("socket.%s %s", event, details)
+
+
 def register_socket_events(sio):
+    async def _participant_type_for_sid(db, sid: str, sender_user_id: str | None, session: VisitorSession) -> str:
+        if sender_user_id and sender_user_id == session.homeowner_id:
+            return "homeowner"
+        if sender_user_id:
+            user = db.query(User).filter(User.id == sender_user_id).first()
+            if user and user.role == UserRole.security:
+                return "security"
+        return "visitor"
+
+    async def _active_call_snapshot(db, session_id: str) -> dict | None:
+        row = (
+            db.query(CallSession)
+            .filter(CallSession.visitor_session_id == str(session_id))
+            .filter(CallSession.status.in_(["pending", "ringing", "active", "ongoing"]))
+            .order_by(CallSession.created_at.desc())
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "callSessionId": row.id,
+            "status": row.status,
+            "type": row.call_type,
+            "hasVideo": row.call_type == "video",
+            "visitorId": row.visitor_id,
+            "roomName": row.room_name,
+            "appointmentId": row.appointment_id,
+            "initiatedByRole": row.initiated_by_role,
+            "answeredAt": row.answered_at.isoformat() if row.answered_at else None,
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
+        }
+
+    async def _emit_session_presence(session_id: str) -> None:
+        if not session_id:
+            return
+        participants = await socket_state.session_participants(str(session_id))
+        await sio.emit(
+            RealtimeEvent.SESSION_PRESENCE,
+            {
+                "sessionId": str(session_id),
+                "participants": participants,
+                "count": len(participants),
+                "at": datetime.utcnow().isoformat(),
+            },
+            room=f"session:{session_id}",
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+
     async def _get_allowed_session_id(sid: str, payload) -> str | None:
         session_id = str((payload or {}).get("sessionId") or "").strip()
         if not session_id:
@@ -136,7 +192,7 @@ def register_socket_events(sio):
                 db.commit()
 
                 await sio.emit(
-                    "chat.persisted",
+                    RealtimeEvent.CHAT_PERSISTED,
                     {
                         "id": message_id,
                         "sessionId": session_id,
@@ -160,7 +216,7 @@ def register_socket_events(sio):
                 await asyncio.sleep(delay)
 
         await sio.emit(
-            "chat.persist_failed",
+            RealtimeEvent.CHAT_PERSIST_FAILED,
             {
                 "id": message_id,
                 "sessionId": session_id,
@@ -180,7 +236,6 @@ def register_socket_events(sio):
     async def connect(sid, environ, auth):
         user_id, _role = _resolve_user_id(auth)
         if user_id:
-            await socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"user:{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
             await sio.enter_room(sid, f"user_{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
             db = SessionLocal()
@@ -199,6 +254,7 @@ def register_socket_events(sio):
                         await sio.enter_room(sid, f"contacts:{resident_id}", namespace=settings.DASHBOARD_NAMESPACE)
             finally:
                 db.close()
+        _socket_log("dashboard_connect", sid=sid, user_id=user_id)
         await sio.emit(
             "dashboard.snapshot",
             {"data": {"message": "connected"}},
@@ -208,7 +264,7 @@ def register_socket_events(sio):
 
     @sio.event(namespace=settings.DASHBOARD_NAMESPACE)
     async def disconnect(sid):
-        await socket_state.unbind_sid(sid)
+        _socket_log("dashboard_disconnect", sid=sid)
 
     @sio.on("dashboard.subscribe", namespace=settings.DASHBOARD_NAMESPACE)
     async def dashboard_subscribe(sid, payload):
@@ -223,23 +279,46 @@ def register_socket_events(sio):
             await socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"resident:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
             await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+        _socket_log("signaling_connect", sid=sid, user_id=user_id, has_auth=bool(auth))
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
     async def disconnect(sid):  # type: ignore[no-redef]
         room_counts = await socket_state.unbind_sid(sid)
-        for room, count in room_counts:
+        _socket_log("signaling_disconnect", sid=sid, room_counts=room_counts)
+        for item in room_counts:
             await sio.emit(
-                "session.participant_left",
-                {"sid": sid, "count": count},
-                room=room,
+                RealtimeEvent.SESSION_PARTICIPANT_LEFT,
+                {
+                    "sid": sid,
+                    "count": item.get("count", 0),
+                    "participant": item.get("participant"),
+                },
+                room=item["room"],
                 namespace=settings.SIGNALING_NAMESPACE,
             )
+            await _emit_session_presence(str(item.get("sessionId") or ""))
 
-    @sio.on("session.join", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.SESSION_LEAVE, namespace=settings.SIGNALING_NAMESPACE)
+    async def session_leave(sid, payload):
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
+            return {"ok": False, "reason": "session_not_joined"}
+        await sio.leave_room(sid, f"session:{session_id}", namespace=settings.SIGNALING_NAMESPACE)
+        await socket_state.update_session_participant(
+            sid,
+            session_id,
+            presence="offline",
+            callState="idle",
+            lastSeenAt=datetime.utcnow().isoformat(),
+        )
+        await _emit_session_presence(session_id)
+        return {"ok": True, "sessionId": session_id}
+
+    @sio.on(RealtimeEvent.SESSION_JOIN, namespace=settings.SIGNALING_NAMESPACE)
     async def session_join(sid, payload):
         session_id = (payload or {}).get("sessionId")
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_id_required"}
         visitor_token = (payload or {}).get("visitorToken")
         sender_user_id = await socket_state.get_user_id(sid)
 
@@ -247,46 +326,77 @@ def register_socket_events(sio):
         try:
             session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
             if not session:
+                _socket_log("session_join_denied", sid=sid, session_id=session_id, reason="session_not_found")
                 await sio.emit(
-                    "session.join_denied",
+                    RealtimeEvent.SESSION_JOIN_DENIED,
                     {"sessionId": session_id, "reason": "session_not_found"},
                     to=sid,
                     namespace=settings.SIGNALING_NAMESPACE,
                 )
-                return
+                await socket_state.record_session_join_denied()
+                return {"ok": False, "reason": "session_not_found"}
 
             if sender_user_id:
                 user = db.query(User).filter(User.id == sender_user_id).first()
                 if not user or not _is_user_allowed_for_session(db, user=user, session=session):
+                    _socket_log("session_join_denied", sid=sid, session_id=session_id, reason="not_authorized", user_id=sender_user_id)
                     await sio.emit(
-                        "session.join_denied",
+                        RealtimeEvent.SESSION_JOIN_DENIED,
                         {"sessionId": session_id, "reason": "not_authorized"},
                         to=sid,
                         namespace=settings.SIGNALING_NAMESPACE,
                     )
-                    return
+                    await socket_state.record_session_join_denied()
+                    return {"ok": False, "reason": "not_authorized"}
             else:
                 try:
                     require_visitor_session_access(db, session=session, visitor_token=visitor_token)
                 except Exception:
+                    _socket_log("session_join_denied", sid=sid, session_id=session_id, reason="invalid_visitor_token")
                     await sio.emit(
-                        "session.join_denied",
+                        RealtimeEvent.SESSION_JOIN_DENIED,
                         {"sessionId": session_id, "reason": "invalid_visitor_token"},
                         to=sid,
                         namespace=settings.SIGNALING_NAMESPACE,
                     )
-                    return
+                    await socket_state.record_session_join_denied()
+                    return {"ok": False, "reason": "invalid_visitor_token"}
+            participant_type = await _participant_type_for_sid(db, sid, sender_user_id, session)
+            session_status = str(session.status or "")
+            active_call = await _active_call_snapshot(db, str(session_id))
         finally:
             db.close()
 
         room = f"session:{session_id}"
         await sio.enter_room(sid, room, namespace=settings.SIGNALING_NAMESPACE)
-        participant_count = await socket_state.allow_session(sid, str(session_id))
+        now_iso = datetime.utcnow().isoformat()
+        participant_count = await socket_state.allow_session(
+            sid,
+            str(session_id),
+            {
+                "userId": sender_user_id,
+                "participantType": participant_type,
+                "displayName": (payload or {}).get("displayName") or "Participant",
+                "presence": "online",
+                "callState": active_call["status"] if active_call else "idle",
+                "joinedAt": now_iso,
+                "lastSeenAt": now_iso,
+            },
+        )
+        _socket_log(
+            "session_joined",
+            sid=sid,
+            session_id=session_id,
+            participant_count=participant_count,
+            display_name=(payload or {}).get("displayName"),
+            user_id=sender_user_id,
+        )
         await sio.emit(
-            "session.participant_joined",
+            RealtimeEvent.SESSION_PARTICIPANT_JOINED,
             {
                 "sid": sid,
                 "displayName": (payload or {}).get("displayName") or "Participant",
+                "participantType": participant_type,
                 "count": participant_count,
             },
             room=room,
@@ -294,61 +404,136 @@ def register_socket_events(sio):
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await sio.emit(
-            "session.joined",
+            RealtimeEvent.SESSION_JOINED,
             {"sid": sid, "count": participant_count, "sessionId": str(session_id)},
             to=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        await _emit_session_presence(str(session_id))
+        await sio.emit(
+            RealtimeEvent.SESSION_SNAPSHOT,
+            {
+                "sessionId": str(session_id),
+                "status": session_status,
+                "participants": await socket_state.session_participants(str(session_id)),
+                "activeCall": active_call,
+                "joinedAt": now_iso,
+            },
+            to=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
 
-    @sio.on("webrtc.offer", namespace=settings.SIGNALING_NAMESPACE)
+        db = SessionLocal()
+        try:
+            active_call = (
+                db.query(CallSession)
+                .filter(
+                    CallSession.visitor_session_id == str(session_id),
+                    CallSession.status.in_(["pending", "ringing"]),
+                )
+                .order_by(CallSession.created_at.desc())
+                .first()
+            )
+            if active_call and active_call.caller_id != sender_user_id:
+                _socket_log(
+                    "call_invite_replayed",
+                    sid=sid,
+                    session_id=session_id,
+                    call_session_id=active_call.id,
+                    caller_id=active_call.caller_id,
+                )
+                await sio.emit(
+                    RealtimeEvent.CALL_INVITE,
+                    {
+                        "sessionId": str(session_id),
+                        "callSessionId": active_call.id,
+                        "appointmentId": active_call.appointment_id,
+                        "roomName": active_call.room_name,
+                        "status": active_call.status,
+                        "visitorId": active_call.visitor_id,
+                        "hasVideo": active_call.call_type == "video",
+                        "type": active_call.call_type,
+                        "replayed": True,
+                    },
+                    to=sid,
+                    namespace=settings.SIGNALING_NAMESPACE,
+                )
+                await socket_state.record_metric("inviteReplayHits")
+        finally:
+            db.close()
+        return {
+            "ok": True,
+            "sessionId": str(session_id),
+            "count": participant_count,
+            "status": session_status,
+            "activeCall": active_call,
+        }
+
+    @sio.on(RealtimeEvent.WEBRTC_OFFER, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_offer(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
+        _socket_log("webrtc_offer", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
         await sio.emit(
-            "webrtc.offer",
+            RealtimeEvent.WEBRTC_OFFER,
             {**(payload or {}), "sender": sid},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        return {"ok": True, "sessionId": session_id}
 
-    @sio.on("webrtc.answer", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.WEBRTC_ANSWER, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_answer(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
+        _socket_log("webrtc_answer", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
         await sio.emit(
-            "webrtc.answer",
+            RealtimeEvent.WEBRTC_ANSWER,
             {**(payload or {}), "sender": sid},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        return {"ok": True, "sessionId": session_id}
 
-    @sio.on("webrtc.ice", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.WEBRTC_ICE, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_ice(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
+        candidate = (payload or {}).get("candidate") or {}
+        candidate_string = str(candidate)
+        if " typ relay" in candidate_string:
+            await socket_state.record_metric("relayCandidates")
+        _socket_log(
+            "webrtc_ice",
+            sid=sid,
+            session_id=session_id,
+            call_session_id=(payload or {}).get("callSessionId"),
+            candidate_type="relay" if " typ relay" in candidate_string else "host_or_srflx",
+        )
         await sio.emit(
-            "webrtc.ice",
+            RealtimeEvent.WEBRTC_ICE,
             {**(payload or {}), "sender": sid},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        return {"ok": True, "sessionId": session_id, "candidateType": "relay" if " typ relay" in candidate_string else "host_or_srflx"}
 
-    @sio.on("chat.message", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CHAT_MESSAGE, namespace=settings.SIGNALING_NAMESPACE)
     async def chat_message(sid, payload):
         session_id = (payload or {}).get("sessionId")
         body = str((payload or {}).get("text") or "").strip()
         client_id = (payload or {}).get("clientId")
         if not session_id or not body:
-            return
+            return {"ok": False, "reason": "invalid_payload"}
         if not await socket_state.is_session_allowed(sid, str(session_id)):
             await sio.emit(
-                "chat.ack",
+                RealtimeEvent.CHAT_ACK,
                 {
                     "id": "",
                     "sessionId": session_id,
@@ -359,10 +544,19 @@ def register_socket_events(sio):
                 to=sid,
                 namespace=settings.SIGNALING_NAMESPACE,
             )
-            return
+            return {"ok": False, "reason": "session_not_joined"}
         if len(body) > 2000:
             body = body[:2000]
+        await socket_state.record_metric("chatMessages")
         sender_user_id = await socket_state.get_user_id(sid)
+        _socket_log(
+            "chat_message",
+            sid=sid,
+            session_id=session_id,
+            sender_user_id=sender_user_id,
+            sender_type=(payload or {}).get("senderType"),
+            client_id=client_id,
+        )
         visitor_token = (payload or {}).get("visitorToken")
         raw_sender_type = (payload or {}).get("senderType")
         optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor", "security"} else "visitor"
@@ -382,7 +576,7 @@ def register_socket_events(sio):
                 db.close()
 
         await sio.emit(
-            "chat.message",
+            RealtimeEvent.CHAT_MESSAGE,
             {
                 "id": message_id,
                 "sessionId": session_id,
@@ -398,7 +592,7 @@ def register_socket_events(sio):
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await sio.emit(
-            "chat.ack",
+            RealtimeEvent.CHAT_ACK,
             {
                 "id": message_id,
                 "sessionId": session_id,
@@ -422,14 +616,17 @@ def register_socket_events(sio):
                 client_id=client_id,
             )
         )
+        return {"ok": True, "id": message_id, "sessionId": session_id, "status": "queued"}
 
-    @sio.on("chat.typing", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CHAT_TYPING, namespace=settings.SIGNALING_NAMESPACE)
     async def chat_typing(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
+        await socket_state.record_metric("typingEvents")
+        _socket_log("chat_typing", sid=sid, session_id=session_id, is_typing=bool((payload or {}).get("isTyping")))
         await sio.emit(
-            "chat.typing",
+            RealtimeEvent.CHAT_TYPING,
             {
                 "sessionId": session_id,
                 "senderType": (payload or {}).get("senderType") or "visitor",
@@ -441,14 +638,15 @@ def register_socket_events(sio):
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        return {"ok": True, "sessionId": session_id}
 
-    @sio.on("chat.read", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CHAT_READ, namespace=settings.SIGNALING_NAMESPACE)
     async def chat_read(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
         await sio.emit(
-            "chat.read",
+            RealtimeEvent.CHAT_READ,
             {
                 "sessionId": session_id,
                 "readerType": (payload or {}).get("readerType") or "participant",
@@ -458,15 +656,17 @@ def register_socket_events(sio):
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        return {"ok": True, "sessionId": session_id}
 
-    @sio.on("session.control", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.SESSION_CONTROL, namespace=settings.SIGNALING_NAMESPACE)
     async def session_control(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         action = (payload or {}).get("action")
         if not session_id or not action:
-            return
+            return {"ok": False, "reason": "invalid_payload"}
+        _socket_log("session_control", sid=sid, session_id=session_id, action=action)
         await sio.emit(
-            "session.control",
+            RealtimeEvent.SESSION_CONTROL,
             {
                 "sessionId": session_id,
                 "action": action,
@@ -476,72 +676,104 @@ def register_socket_events(sio):
             room=f"session:{session_id}",
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        return {"ok": True, "sessionId": session_id}
 
-    @sio.on("call.invite", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CALL_INVITE, namespace=settings.SIGNALING_NAMESPACE)
     async def call_invite(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
+        _socket_log("call_invite", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
+        await socket_state.update_session_participant(sid, session_id, callState="ringing", presence="ringing", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
-            "call.invite",
+            RealtimeEvent.CALL_INVITE,
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        await _emit_session_presence(session_id)
+        return {"ok": True, "sessionId": session_id}
 
-    @sio.on("call.accepted", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CALL_INVITE_RECEIVED, namespace=settings.SIGNALING_NAMESPACE)
+    async def call_invite_received(sid, payload):
+        session_id = await _get_allowed_session_id(sid, payload)
+        if not session_id:
+            return {"ok": False, "reason": "session_not_joined"}
+        await socket_state.update_session_participant(
+            sid,
+            session_id,
+            callState="ringing",
+            presence="ringing",
+            lastSeenAt=datetime.utcnow().isoformat(),
+        )
+        await _emit_session_presence(session_id)
+        return {"ok": True, "sessionId": session_id}
+
+    @sio.on(RealtimeEvent.CALL_ACCEPTED, namespace=settings.SIGNALING_NAMESPACE)
     async def call_accepted(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
         call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        _socket_log("call_accepted", sid=sid, session_id=session_id, call_session_id=call_session_id)
         if call_session_id:
             db = SessionLocal()
             try:
                 mark_call_session_answered(db, call_session_id=call_session_id)
             finally:
                 db.close()
+        await socket_state.update_session_participant(sid, session_id, callState="connecting", presence="in_call", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
-            "call.accepted",
+            RealtimeEvent.CALL_ACCEPTED,
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        await _emit_session_presence(session_id)
+        return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id}
 
-    @sio.on("call.rejected", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CALL_REJECTED, namespace=settings.SIGNALING_NAMESPACE)
     async def call_rejected(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
         call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        _socket_log("call_rejected", sid=sid, session_id=session_id, call_session_id=call_session_id)
         if call_session_id:
             db = SessionLocal()
             try:
                 mark_call_session_rejected(db, call_session_id=call_session_id)
             finally:
                 db.close()
+        await socket_state.update_session_participant(sid, session_id, callState="idle", presence="online", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
-            "call.rejected",
+            RealtimeEvent.CALL_REJECTED,
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        await _emit_session_presence(session_id)
+        return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id}
 
-    @sio.on("call.ended", namespace=settings.SIGNALING_NAMESPACE)
+    @sio.on(RealtimeEvent.CALL_ENDED, namespace=settings.SIGNALING_NAMESPACE)
     async def call_ended(sid, payload):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
-            return
+            return {"ok": False, "reason": "session_not_joined"}
+        _socket_log("call_ended", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
+        await socket_state.update_session_participant(sid, session_id, callState="idle", presence="online", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
-            "call.ended",
+            RealtimeEvent.CALL_ENDED,
             {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
+        await _emit_session_presence(session_id)
+        return {"ok": True, "sessionId": session_id}
 
     @sio.on("visitor-arrived", namespace=settings.SIGNALING_NAMESPACE)
     async def visitor_arrived(sid, payload):
@@ -563,6 +795,7 @@ def register_socket_events(sio):
             "senderSid": sid,
             "at": datetime.utcnow().isoformat(),
         }
+        _socket_log("visitor_arrived", sid=sid, homeowner_id=homeowner_id, session_id=event_payload["sessionId"])
         await sio.emit(
             "incoming-call",
             event_payload,
