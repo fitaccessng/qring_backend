@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 import logging
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
@@ -34,6 +35,46 @@ def _validate_appointment_for_call(appointment: Appointment) -> None:
     appointment_end = ensure_utc(appointment.ends_at)
     if appointment_end and appointment_end < utc_now():
         raise AppException("Appointment has expired.", status_code=409)
+
+
+def _build_active_call_query(
+    db: Session,
+    *,
+    appointment: Appointment | None,
+    visitor_session: VisitorSession | None,
+    effective_homeowner_id: str,
+    visitor_identity: str,
+):
+    query = db.query(CallSession).filter(CallSession.status.in_(CALL_ACTIVE_STATUSES))
+    if appointment:
+        return query.filter(CallSession.appointment_id == appointment.id)
+    if visitor_session:
+        return query.filter(CallSession.visitor_session_id == visitor_session.id)
+    return query.filter(
+        CallSession.homeowner_id == effective_homeowner_id,
+        CallSession.visitor_id == visitor_identity,
+    )
+
+
+def _find_existing_active_call(
+    db: Session,
+    *,
+    appointment: Appointment | None,
+    visitor_session: VisitorSession | None,
+    effective_homeowner_id: str,
+    visitor_identity: str,
+) -> CallSession | None:
+    return (
+        _build_active_call_query(
+            db,
+            appointment=appointment,
+            visitor_session=visitor_session,
+            effective_homeowner_id=effective_homeowner_id,
+            visitor_identity=visitor_identity,
+        )
+        .order_by(CallSession.created_at.desc())
+        .first()
+    )
 
 
 async def start_call_session(
@@ -89,17 +130,24 @@ async def start_call_session(
     if not visitor_identity and visitor_session:
         visitor_identity = visitor_session.id
 
-    existing_query = db.query(CallSession).filter(CallSession.status.in_(CALL_ACTIVE_STATUSES))
-    if appointment:
-        existing_query = existing_query.filter(CallSession.appointment_id == appointment.id)
-    elif visitor_session:
-        existing_query = existing_query.filter(CallSession.visitor_session_id == visitor_session.id)
-    else:
-        existing_query = existing_query.filter(
-            CallSession.homeowner_id == effective_homeowner_id,
-            CallSession.visitor_id == visitor_identity,
-        )
-    existing = existing_query.order_by(CallSession.created_at.desc()).first()
+    logger.info(
+        "call.start.request appointment_id=%s visitor_session_id=%s homeowner_id=%s security_user_id=%s caller_id=%s call_type=%s visitor_id=%s",
+        effective_appointment_id or None,
+        visitor_session.id if visitor_session else None,
+        effective_homeowner_id,
+        str(security_user_id or "").strip() or None,
+        str(caller_id or "").strip() or None,
+        (call_type or "audio").strip() or "audio",
+        visitor_identity or None,
+    )
+
+    existing = _find_existing_active_call(
+        db,
+        appointment=appointment,
+        visitor_session=visitor_session,
+        effective_homeowner_id=effective_homeowner_id,
+        visitor_identity=visitor_identity,
+    )
     if existing:
         if existing.visitor_id != visitor_identity:
             raise AppException("Call already in progress for this session.", status_code=409)
@@ -136,7 +184,51 @@ async def start_call_session(
         status="ringing",
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.warning(
+            "call.start.integrity_conflict appointment_id=%s visitor_session_id=%s homeowner_id=%s room_name=%s",
+            row.appointment_id,
+            row.visitor_session_id,
+            row.homeowner_id,
+            row.room_name,
+            exc_info=True,
+        )
+        existing = (
+            db.query(CallSession)
+            .filter(CallSession.room_name == row.room_name)
+            .order_by(CallSession.created_at.desc())
+            .first()
+        ) or _find_existing_active_call(
+            db,
+            appointment=appointment,
+            visitor_session=visitor_session,
+            effective_homeowner_id=effective_homeowner_id,
+            visitor_identity=visitor_identity,
+        )
+        if existing:
+            logger.info(
+                "call.start.recovered_existing call_session_id=%s appointment_id=%s visitor_session_id=%s homeowner_id=%s room_name=%s",
+                existing.id,
+                existing.appointment_id,
+                existing.visitor_session_id,
+                existing.homeowner_id,
+                existing.room_name,
+            )
+            return existing
+        raise AppException("Call session already exists for this visitor.", status_code=409)
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "call.start.commit_failed appointment_id=%s visitor_session_id=%s homeowner_id=%s room_name=%s",
+            row.appointment_id,
+            row.visitor_session_id,
+            row.homeowner_id,
+            row.room_name,
+        )
+        raise
     db.refresh(row)
 
     effective_visitor_name = (visitor_name or "").strip() or (

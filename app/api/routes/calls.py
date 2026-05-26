@@ -102,9 +102,11 @@ async def start_call(
     user: Optional[User] = Depends(get_optional_current_user),
 ):
     logger.info(
-        "api.call.start request appointment_id=%s session_id=%s has_homeowner_auth=%s",
+        "api.call.start request appointment_id=%s session_id=%s user_id=%s user_role=%s has_homeowner_auth=%s",
         payload.appointmentId,
         payload.sessionId,
+        user.id if user else None,
+        user.role.value if user else "visitor",
         bool(user and user.role.value == "homeowner"),
     )
     if not user:
@@ -132,8 +134,14 @@ async def start_call(
     except AppException:
         raise
     except Exception as exc:
-        logger.exception("api.call.start.unhandled_error session_id=%s appointment_id=%s", payload.sessionId, payload.appointmentId)
-        raise AppException(f"Unable to start call session: {exc}", status_code=500) from exc
+        logger.exception(
+            "api.call.start.unhandled_error session_id=%s appointment_id=%s user_id=%s call_type=%s",
+            payload.sessionId,
+            payload.appointmentId,
+            user.id if user else None,
+            payload.type or ("video" if payload.hasVideo else "audio"),
+        )
+        raise AppException("Unable to start call session right now.", status_code=500) from exc
 
     linked_session = None
     if payload.sessionId:
