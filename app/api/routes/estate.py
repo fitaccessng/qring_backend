@@ -210,6 +210,20 @@ def estate_overview(
     }
 
 
+@router.get("/settings-summary")
+def estate_settings_summary(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {
+        "data": get_or_set_json(
+            cache_key("estate-settings-summary", user.id),
+            lambda: list_estate_overview(db, owner_id=user.id),
+            settings.CACHE_ESTATE_TTL_SECONDS,
+        )
+    }
+
+
 @router.get("/{estate_id}/settings")
 def estate_get_settings(
     estate_id: str,

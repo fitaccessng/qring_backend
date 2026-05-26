@@ -284,6 +284,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             {
                 "id": row.id,
                 "name": row.name,
+                "status": "active" if bool(row.is_active) else "inactive",
                 "createdAt": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
                 "reminderFrequencyDays": int(row.reminder_frequency_days or 1),
             }
@@ -310,6 +311,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
                 "id": row.id,
                 "name": row.name,
                 "homeId": row.home_id,
+                "estateId": home_by_id[row.home_id].estate_id if row.home_id in home_by_id else "",
                 "homeName": home_by_id[row.home_id].name if row.home_id in home_by_id else "",
                 "homeownerId": home_by_id[row.home_id].homeowner_id if row.home_id in home_by_id else "",
                 "homeownerName": (
