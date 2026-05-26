@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from app.core.redis import get_async_redis_client, prefixed_key
+from app.services.realtime_runtime_service import mark_realtime_state
 
 
 class SocketState:
@@ -222,28 +223,41 @@ class SocketState:
 
     async def diagnostics(self) -> dict[str, Any]:
         if self._redis is not None:
-            sid_count = await self._redis.hlen(self._sid_user_key())
-            metrics = await self._redis.hgetall(prefixed_key("socket", "metrics"))
-            room_keys = []
-            async for key in self._redis.scan_iter(match=prefixed_key("socket", "room-members", "*")):
-                room_keys.append(key)
-            active_rooms = len(room_keys)
-            session_keys = []
-            async for key in self._redis.scan_iter(match=prefixed_key("socket", "session-participants", "*")):
-                session_keys.append(key)
-            active_calls = 0
-            active_sessions: dict[str, int] = {}
-            for key in session_keys:
-                session_id = str(key).rsplit(":", 1)[-1]
-                participants = await self._redis.hlen(key)
-                active_sessions[session_id] = int(participants or 0)
-            return {
-                "activeSockets": int(sid_count or 0),
-                "activeRooms": active_rooms,
-                "activeSessions": active_sessions,
-                "activeCalls": active_calls,
-                "metrics": {key: int(value or 0) for key, value in (metrics or {}).items()},
-            }
+            try:
+                sid_count = await self._redis.hlen(self._sid_user_key())
+                metrics = await self._redis.hgetall(prefixed_key("socket", "metrics"))
+                room_keys = []
+                async for key in self._redis.scan_iter(match=prefixed_key("socket", "room-members", "*")):
+                    room_keys.append(key)
+                active_rooms = len(room_keys)
+                session_keys = []
+                async for key in self._redis.scan_iter(match=prefixed_key("socket", "session-participants", "*")):
+                    session_keys.append(key)
+                active_calls = 0
+                active_sessions: dict[str, int] = {}
+                for key in session_keys:
+                    session_id = str(key).rsplit(":", 1)[-1]
+                    participants = await self._redis.hlen(key)
+                    active_sessions[session_id] = int(participants or 0)
+                mark_realtime_state(redisConnected=True, redisError="")
+                return {
+                    "activeSockets": int(sid_count or 0),
+                    "activeRooms": active_rooms,
+                    "activeSessions": active_sessions,
+                    "activeCalls": active_calls,
+                    "metrics": {key: int(value or 0) for key, value in (metrics or {}).items()},
+                }
+            except Exception as exc:
+                mark_realtime_state(redisConnected=False, redisError=str(exc))
+                return {
+                    "activeSockets": 0,
+                    "activeRooms": 0,
+                    "activeSessions": {},
+                    "activeCalls": 0,
+                    "metrics": {},
+                    "degraded": True,
+                    "error": str(exc),
+                }
         async with self._lock:
             return {
                 "activeSockets": len(self._sid_user),
