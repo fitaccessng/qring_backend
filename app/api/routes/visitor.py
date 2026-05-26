@@ -188,6 +188,12 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
             db.commit()
             db.refresh(session)
+            logger.info(
+                "visitor.request.snapshot_saved session_id=%s snapshot_id=%s photo_url=%s",
+                session.id,
+                snapshot_audit.get("id"),
+                session.photo_url,
+            )
 
         phase = "create_notification"
         from app.services.notification_service import create_notification
@@ -413,9 +419,11 @@ def visitor_session_status(
     user=Depends(get_optional_current_user),
 ):
     from app.db.models import VisitorSession
+    logger.info("visitor.session_status.request session_id=%s has_user=%s", session_id, bool(user))
     row = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
     if not row:
-        return {"data": {"sessionId": session_id, "status": "not_found"}}
+        logger.warning("visitor.session_status.not_found session_id=%s", session_id)
+        raise AppException("Session not found", status_code=404, code="VISITOR_SESSION_NOT_FOUND")
 
     # AuthZ: homeowner/security/estate/admin via JWT, otherwise require visitor token.
     if user is None:
@@ -484,9 +492,11 @@ def visitor_session_messages(
 ):
     from app.db.models import Message, VisitorSession
 
+    logger.info("visitor.session_messages.request session_id=%s has_user=%s", session_id, bool(user))
     session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
     if not session:
-        return {"data": []}
+        logger.warning("visitor.session_messages.not_found session_id=%s", session_id)
+        raise AppException("Session not found", status_code=404, code="VISITOR_SESSION_NOT_FOUND")
 
     if user is None:
         require_visitor_session_access(db, session=session, visitor_token=visitorToken or x_visitor_token)
@@ -541,6 +551,7 @@ async def visitor_send_session_message(
 ):
     from app.db.models import VisitorSession
 
+    logger.info("visitor.session_message.send session_id=%s has_visitor_token=%s", session_id, bool(visitorToken or x_visitor_token))
     session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
     if not session:
         raise AppException("Session not found", status_code=404)

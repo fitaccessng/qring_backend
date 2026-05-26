@@ -181,6 +181,12 @@ async def security_register_request(
         session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
         db.commit()
         db.refresh(session)
+        logger.info(
+            "security.request.snapshot_saved session_id=%s snapshot_id=%s photo_url=%s",
+            session.id,
+            snapshot_audit.get("id"),
+            session.photo_url,
+        )
 
     updated = update_security_session_status(
         db,

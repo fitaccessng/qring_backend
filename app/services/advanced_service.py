@@ -149,6 +149,11 @@ def _summary_window(week_start_iso: str | None = None) -> tuple[datetime, dateti
     return start, end
 
 
+def _build_snapshot_file_url(snapshot_id: str) -> str:
+    prefix = str(settings.API_V1_PREFIX or "/api/v1").rstrip("/")
+    return f"{prefix}/advanced/visitor/snapshots/{snapshot_id}/file"
+
+
 def notify_multi_channel(
     db: Session,
     *,
@@ -184,7 +189,8 @@ def notify_multi_channel(
 def create_snapshot_audit(
     db: Session,
     *,
-    resident_id: str,
+    resident_id: str | None = None,
+    homeowner_id: str | None = None,
     media_bytes: bytes,
     filename_hint: str,
     media_type: str,
@@ -192,6 +198,9 @@ def create_snapshot_audit(
     appointment_id: str | None = None,
     source: str = "visitor_device",
 ) -> dict[str, Any]:
+    effective_resident_id = str(resident_id or homeowner_id or "").strip()
+    if not effective_resident_id:
+        raise AppException("Resident context is required for snapshot storage.", status_code=400)
     ext = Path(filename_hint or "capture.jpg").suffix.lower() or ".jpg"
     if ext not in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}:
         ext = ".bin"
@@ -199,12 +208,12 @@ def create_snapshot_audit(
     storage_bucket = _get_storage_bucket()
     media_path = ""
     if storage_bucket is not None:
-        storage_path = f"visitor-media/{resident_id}/{media_id}{ext}"
+        storage_path = f"visitor-media/{effective_resident_id}/{media_id}{ext}"
         try:
             blob = storage_bucket.blob(storage_path)
             blob.cache_control = "private, max-age=0, no-transform"
             blob.metadata = {
-                "residentId": resident_id,
+                "residentId": effective_resident_id,
                 "mediaId": media_id,
                 "visitorSessionId": visitor_session_id or "",
                 "appointmentId": appointment_id or "",
@@ -217,7 +226,7 @@ def create_snapshot_audit(
             media_path = ""
 
     if not media_path:
-        relative_path = Path(resident_id) / f"{media_id}{ext}"
+        relative_path = Path(effective_resident_id) / f"{media_id}{ext}"
         absolute_path = _media_base_dir() / relative_path
         absolute_path.parent.mkdir(parents=True, exist_ok=True)
         absolute_path.write_bytes(media_bytes)
@@ -225,7 +234,7 @@ def create_snapshot_audit(
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
-        resident_id=resident_id,
+        resident_id=effective_resident_id,
         visitor_session_id=visitor_session_id,
         appointment_id=appointment_id,
         media_type=(media_type or "photo").strip().lower(),
@@ -246,6 +255,8 @@ def create_snapshot_audit(
         "mediaSha256": row.media_sha256,
         "source": row.source,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
+        "fileUrl": _build_snapshot_file_url(row.id),
+        "url": _build_snapshot_file_url(row.id),
     }
 
 
