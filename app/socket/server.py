@@ -4,13 +4,14 @@ import socketio
 
 from app.core.redis import describe_redis_configuration
 from app.core.config import get_settings
+from app.core.cors import get_allowed_origins
 from app.services.realtime_runtime_service import append_startup_diagnostic, mark_realtime_state
 from app.socket.events import register_socket_events
 
 settings = get_settings()
 
-socket_cors_origins = list(settings.cors_origins)
-for origin in ("https://useqring.online", "https://localhost", "capacitor://localhost", "ionic://localhost"):
+socket_cors_origins = get_allowed_origins(settings)
+for origin in ("https://localhost", "capacitor://localhost", "ionic://localhost"):
     if origin not in socket_cors_origins:
         socket_cors_origins.append(origin)
 

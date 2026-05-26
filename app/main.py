@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes import api_router
 from app.core.config import get_settings
+from app.core.cors import get_cors_settings, is_allowed_origin
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.redis import describe_redis_configuration, get_async_redis_health
@@ -38,15 +39,12 @@ from app.services.subscription_lifecycle_service import run_subscription_lifecyc
 
 settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
+cors_settings = get_cors_settings(settings)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 fastapi_app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_origin_regex=settings.cors_allow_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    **cors_settings,
 )
 fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 fastapi_app.add_middleware(RequestContextMiddleware)
@@ -76,18 +74,47 @@ async def remove_coop_header(request: Request, call_next):
 @fastapi_app.middleware("http")
 async def log_origin_and_cors(request: Request, call_next):
     origin = request.headers.get("origin")
+    origin_allowed = is_allowed_origin(settings, origin)
+    if request.method == "OPTIONS":
+        logging.info(
+            "[CORS] preflight origin=%s allowed=%s path=%s requested_method=%s",
+            origin,
+            origin_allowed,
+            request.url.path,
+            request.headers.get("access-control-request-method"),
+        )
     response = await call_next(request)
     cors_header = response.headers.get("access-control-allow-origin")
     coop_header = response.headers.get("cross-origin-opener-policy")
     logging.info(
-        "[CORS] origin=%s allow_origin=%s method=%s path=%s coop=%s",
+        "[CORS] origin=%s allowed=%s allow_origin=%s method=%s path=%s status=%s coop=%s auth_user_id=%s",
         origin,
+        origin_allowed,
         cors_header,
         request.method,
         request.url.path,
+        response.status_code,
         coop_header,
+        getattr(request.state, "authenticated_user_id", ""),
     )
     return response
+
+
+@fastapi_app.middleware("http")
+async def structured_error_logging(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        logging.exception(
+            "request.unhandled method=%s path=%s query=%s origin=%s request_id=%s auth_user_id=%s",
+            request.method,
+            request.url.path,
+            dict(request.query_params),
+            request.headers.get("origin"),
+            getattr(request.state, "request_id", ""),
+            getattr(request.state, "authenticated_user_id", ""),
+        )
+        raise exc
 
 
 def _seed_dev_data(db: Session):
@@ -906,9 +933,10 @@ async def on_startup():
         )
 
 
-app = socketio.ASGIApp(
+socket_app = socketio.ASGIApp(
     sio,
     other_asgi_app=fastapi_app,
     socketio_path=settings.SOCKET_PATH.lstrip("/"),
 )
+app = CORSMiddleware(socket_app, **cors_settings)
 mark_realtime_state(socketServerMounted=True)

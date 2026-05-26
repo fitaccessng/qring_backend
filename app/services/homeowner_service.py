@@ -156,7 +156,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     if not session_by_id:
         return []
 
-    appointment_ids = [session.appointment_id for session, _ in sessions if session.appointment_id]
+    appointment_ids = [session.appointment_id for session, _, _, _ in sessions if session.appointment_id]
     appointment_by_id: dict[str, Appointment] = {}
     if appointment_ids:
         appointment_rows = db.query(Appointment).filter(Appointment.id.in_(appointment_ids)).all()

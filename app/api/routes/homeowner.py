@@ -191,7 +191,13 @@ def homeowner_messages(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    return {"data": list_homeowner_message_threads(db, homeowner_id=user.id)}
+    try:
+        return {"data": list_homeowner_message_threads(db, homeowner_id=user.id)}
+    except AppException:
+        raise
+    except Exception as exc:
+        logger.exception("homeowner.messages.failed homeowner_id=%s", user.id)
+        raise AppException("Unable to load homeowner messages right now.", status_code=500, code="HOMEOWNER_MESSAGES_FAILED") from exc
 
 
 @router.get("/messages/{session_id}")
@@ -200,8 +206,14 @@ def homeowner_session_messages(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("homeowner")),
 ):
-    rows = list_homeowner_session_messages(db, homeowner_id=user.id, session_id=session_id)
-    return {"data": rows}
+    try:
+        rows = list_homeowner_session_messages(db, homeowner_id=user.id, session_id=session_id)
+        return {"data": rows}
+    except AppException:
+        raise
+    except Exception as exc:
+        logger.exception("homeowner.session_messages.failed homeowner_id=%s session_id=%s", user.id, session_id)
+        raise AppException("Unable to load session messages right now.", status_code=500, code="HOMEOWNER_SESSION_MESSAGES_FAILED") from exc
 
 
 @router.post("/messages/{session_id}")
