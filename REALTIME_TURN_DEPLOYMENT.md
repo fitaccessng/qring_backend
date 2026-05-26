@@ -75,14 +75,26 @@ VITE_RTC_MONITORING_URL=https://YOUR_MONITORING_ENDPOINT/rtc
 ## Backend env
 
 ```env
+REDIS_URL=redis://default:<password>@<render-internal-host>:6379
+REDIS_CONNECT_TIMEOUT_SECONDS=2
+REDIS_SOCKET_TIMEOUT_SECONDS=2
+REDIS_HEALTHCHECK_INTERVAL_SECONDS=30
 WEBRTC_STUN_URL=stun:stun.l.google.com:19302
+WEBRTC_TURN_URLS=turn:turn.yourdomain.com:3478?transport=udp,turn:turn.yourdomain.com:3478?transport=tcp,turns:turn.yourdomain.com:5349?transport=tcp
 WEBRTC_TURN_URL=turn:turn.yourdomain.com:3478
 WEBRTC_TURN_TLS_URL=turns:turn.yourdomain.com:5349
 WEBRTC_TURN_USERNAME=user
 WEBRTC_TURN_CREDENTIAL=password
+WEBRTC_REQUIRE_TURN=false
 SOCKET_PATH=/socket.io
 SIGNALING_NAMESPACE=/realtime/signaling
 ```
+
+Redis notes:
+
+- On Render, do not use guessed hosts like `redis.internal:6379`.
+- Open the Render Key Value instance, click `Connect`, and copy the exact internal `redis://...` URL.
+- Keep the backend service and Key Value instance in the same Render workspace and region.
 
 ## Coturn baseline
 
@@ -134,3 +146,11 @@ Production notes:
 - Reconnect storms:
   - verify Socket.IO health on Render
   - verify Redis/socket fanout if multiple backend instances are running
+
+## Production acceptance checks
+
+1. `GET /api/v1/health` returns `status=ok`
+2. `redis.healthy=true`
+3. `socketState.adapterConnected=true`
+4. `turn.productionReady=true`
+5. `degradedReasons=[]`

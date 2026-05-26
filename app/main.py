@@ -16,6 +16,7 @@ from app.api.routes import api_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
+from app.core.redis import describe_redis_configuration, get_async_redis_health
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.models import Door, Home, Notification, QRCode, User, UserRole
@@ -763,18 +764,49 @@ def _validate_realtime_runtime() -> tuple[bool, list[str]]:
     return (len(missing) == 0, missing)
 
 
+async def _validate_redis_runtime() -> dict[str, object]:
+    diagnostics = await get_async_redis_health(force=True)
+    config = describe_redis_configuration()
+    issues: list[str] = []
+    warnings: list[str] = []
+
+    if not config["configured"]:
+        warnings.append("REDIS_URL is not configured. Realtime fanout will run in single-instance memory mode.")
+    if config["looksPlaceholder"]:
+        issues.append(
+            "REDIS_URL points to a placeholder/local hostname. On Render, use the exact internal Key Value URL from Connect."
+        )
+    if config["configured"] and not diagnostics["healthy"]:
+        issues.append(str(diagnostics["error"] or "Redis is unreachable."))
+
+    return {
+        "configured": bool(config["configured"]),
+        "healthy": bool(diagnostics["healthy"]),
+        "issues": issues,
+        "warnings": warnings,
+        "diagnostics": diagnostics,
+    }
+
+
 @fastapi_app.on_event("startup")
 async def on_startup():
     env = settings.ENVIRONMENT.lower().strip()
+    redis_config = describe_redis_configuration()
     mark_realtime_state(
-        redisConnected=bool(settings.redis_enabled),
+        redisConfigured=bool(settings.redis_enabled),
+        redisConnected=False,
         redisError="",
+        redisUrl=redis_config["url"],
+        redisHost=redis_config["host"],
+        redisAdapterMode="redis" if settings.redis_enabled else "memory",
         socketServerMounted=True,
         socketPath=settings.SOCKET_PATH,
         socketNamespaces=[settings.DASHBOARD_NAMESPACE, settings.SIGNALING_NAMESPACE],
+        turnRequired=bool(settings.WEBRTC_REQUIRE_TURN),
     )
     append_startup_diagnostic(
-        f"Startup checks running for environment={settings.ENVIRONMENT} process_role={settings.PROCESS_ROLE}."
+        f"Startup checks running for environment={settings.ENVIRONMENT} process_role={settings.PROCESS_ROLE}.",
+        code="startup.begin",
     )
 
     # Fail fast on weak/default secrets in production-like environments.
@@ -788,10 +820,30 @@ async def on_startup():
         if settings.DEBUG:
             logging.warning("DEBUG=True while ENVIRONMENT=%s. This is not recommended.", settings.ENVIRONMENT)
 
+    redis_validation = await _validate_redis_runtime()
+    if redis_validation["warnings"]:
+        for warning in redis_validation["warnings"]:
+            append_startup_diagnostic(warning, level="warning", code="redis.warning")
+            logging.warning("%s", warning)
+    if redis_validation["issues"]:
+        redis_message = "; ".join(str(item) for item in redis_validation["issues"])
+        mark_realtime_state(redisConnected=False, redisError=redis_message)
+        append_startup_diagnostic(redis_message, level="warning", code="redis.unhealthy")
+        logging.warning("Realtime Redis check failed: %s", redis_message)
+    else:
+        latency_ms = redis_validation["diagnostics"].get("latencyMs")
+        mark_realtime_state(redisConnected=bool(redis_validation["healthy"]), redisError="")
+        append_startup_diagnostic(
+            f"Realtime Redis validated successfully (latencyMs={latency_ms}).",
+            code="redis.healthy",
+        )
+
     realtime_ok, missing = _validate_realtime_runtime()
+    turn = get_turn_diagnostics()
+    mark_realtime_state(turnConfigured=bool(turn["configured"]), turnWarnings=list(turn.get("warnings") or []))
     if not realtime_ok:
         message = f"WebRTC/TURN configuration missing: {', '.join(missing)}"
-        append_startup_diagnostic(message)
+        append_startup_diagnostic(message, level="warning", code="turn.missing")
         if settings.WEBRTC_REQUIRE_TURN:
             raise RuntimeError(message)
         logging.warning(
@@ -801,11 +853,14 @@ async def on_startup():
             settings.ENVIRONMENT,
         )
     else:
-        turn = get_turn_diagnostics()
         append_startup_diagnostic(
             "WebRTC/TURN configuration validated "
-            f"(tls={turn['tlsEnabled']}, tcp={turn['tcpEnabled']}, udp={turn['udpEnabled']})."
+            f"(tls={turn['tlsEnabled']}, tcp={turn['tcpEnabled']}, udp={turn['udpEnabled']}).",
+            code="turn.validated",
         )
+    for warning in turn.get("warnings") or []:
+        append_startup_diagnostic(warning, level="warning", code="turn.warning")
+        logging.warning("%s", warning)
 
     # Runtime schema mutations are intentionally disabled in favor of Alembic migrations.
     # Keep automatic table creation only for local development convenience.
@@ -835,10 +890,16 @@ async def on_startup():
         asyncio.create_task(_payment_reminder_loop())
         asyncio.create_task(_subscription_lifecycle_loop())
         logging.info("Scheduled background jobs enabled for process role '%s'.", settings.PROCESS_ROLE)
-        append_startup_diagnostic(f"Scheduled jobs enabled for process role {settings.PROCESS_ROLE}.")
+        append_startup_diagnostic(
+            f"Scheduled jobs enabled for process role {settings.PROCESS_ROLE}.",
+            code="jobs.enabled",
+        )
     else:
         logging.info("Scheduled background jobs disabled for process role '%s'.", settings.PROCESS_ROLE)
-        append_startup_diagnostic(f"Scheduled jobs disabled for process role {settings.PROCESS_ROLE}.")
+        append_startup_diagnostic(
+            f"Scheduled jobs disabled for process role {settings.PROCESS_ROLE}.",
+            code="jobs.disabled",
+        )
 
 
 app = socketio.ASGIApp(

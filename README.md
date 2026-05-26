@@ -71,6 +71,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `DEBUG` | `false` | Disable in production |
 | `DATABASE_URL` | `postgresql://user:pass@localhost/qring` | Use PostgreSQL for local and production |
 | `REDIS_URL` | `redis://localhost:6379/0` | Required for distributed rate limits, cache, and Socket.IO scaling. On Render, copy the exact internal Key Value URL from the instance's `Connect` menu. |
+| `REDIS_CONNECT_TIMEOUT_SECONDS` | `2` | Redis connect timeout for startup/health checks |
+| `REDIS_SOCKET_TIMEOUT_SECONDS` | `2` | Redis socket timeout for runtime operations |
+| `REDIS_HEALTHCHECK_INTERVAL_SECONDS` | `30` | Redis connection health checks |
 | `APP_WORKERS` | `4` | Number of Uvicorn worker processes |
 | `PROCESS_ROLE` | `web` | Use `worker` for the scheduled-jobs process |
 | `RUN_SCHEDULED_JOBS` | `false` | Keep `false` on web nodes; `true` only on one worker |
@@ -81,6 +84,10 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `VAPID_PUBLIC_KEY` | Web push key | From web push service |
 | `VAPID_PRIVATE_KEY` | Web push key | **Keep secret** |
 | `FRONTEND_BASE_URL` | `https://yourdomain.com` | Frontend URL |
+| `WEBRTC_TURN_URLS` | `turn:turn.example.com:3478?transport=udp,...` | Preferred production TURN list with UDP, TCP, and TLS entries |
+| `WEBRTC_TURN_USERNAME` | `turn-user` | TURN long-term auth username |
+| `WEBRTC_TURN_CREDENTIAL` | `turn-password` | TURN long-term auth credential |
+| `WEBRTC_REQUIRE_TURN` | `false` | Set `true` to fail deploys when TURN is missing |
 
 See [.env.example](.env.example) for all available options.
 
@@ -137,6 +144,13 @@ Namespaces:
   /realtime/dashboard    # Live dashboard updates
   /realtime/signaling    # WebRTC peer signaling
 ```
+
+Realtime health endpoints:
+```
+GET /api/v1/health
+GET /api/v1/health/realtime
+```
+These report Redis reachability, TURN readiness, Socket.IO adapter state, active rooms/sessions, and degraded reasons.
 
 TURN deployment checklist:
 - See `REALTIME_TURN_DEPLOYMENT.md`
@@ -212,6 +226,8 @@ This repo now includes:
 - [ ] Use PostgreSQL (not SQLite)
 - [ ] Set `REDIS_URL` for shared rate limits, cache, and Socket.IO
 - [ ] On Render, use the Key Value internal URL from the same workspace and region; do not use guessed hostnames
+- [ ] Confirm `/api/v1/health` shows Redis `healthy=true` and Socket.IO `adapterConnected=true`
+- [ ] Confirm TURN diagnostics show `productionReady=true` before testing production calls
 - [ ] Generate strong `JWT_SECRET_KEY` (`openssl rand -hex 32`)
 - [ ] Configure real CORS origins (not `*`)
 - [ ] Run web nodes behind nginx or a managed load balancer
@@ -233,7 +249,7 @@ See [loadtests/README.md](loadtests/README.md) for Locust commands covering:
 
 ```bash
 curl http://localhost:8000/health
-# Response: {"status": "healthy"}
+# Response includes Redis, TURN, Socket.IO, and degradedReasons diagnostics
 ```
 
 ## 📝 Demo Accounts (Development Only)

@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     REDIS_KEY_PREFIX: str = "qring"
     SOCKET_REDIS_CHANNEL: str = "qring-socketio"
+    REDIS_CONNECT_TIMEOUT_SECONDS: int = 2
+    REDIS_SOCKET_TIMEOUT_SECONDS: int = 2
+    REDIS_HEALTHCHECK_INTERVAL_SECONDS: int = 30
+    REDIS_RETRY_BASE_SECONDS: int = 1
+    REDIS_RETRY_MAX_SECONDS: int = 8
     CACHE_DEFAULT_TTL_SECONDS: int = 30
     CACHE_DASHBOARD_TTL_SECONDS: int = 15
     CACHE_ADMIN_TTL_SECONDS: int = 20
@@ -164,6 +169,7 @@ class Settings(BaseSettings):
     FIREBASE_STORAGE_BUCKET: str = ""
     ADMIN_SIGNUP_KEY: str = ""
     WEBRTC_STUN_URL: str = "stun:stun.l.google.com:19302"
+    WEBRTC_TURN_URLS: str = ""
     WEBRTC_TURN_URL: str = ""
     WEBRTC_TURN_TLS_URL: str = ""
     WEBRTC_TURN_USERNAME: str = ""
@@ -235,6 +241,42 @@ class Settings(BaseSettings):
     @property
     def redis_enabled(self) -> bool:
         return bool((self.REDIS_URL or "").strip())
+
+    @property
+    def redis_url_host(self) -> str:
+        value = str(self.REDIS_URL or "").strip()
+        if not value:
+            return ""
+        try:
+            parsed = urlparse(value)
+        except Exception:
+            return ""
+        return str(parsed.hostname or "").strip().lower()
+
+    @property
+    def redis_url_masked(self) -> str:
+        value = str(self.REDIS_URL or "").strip()
+        if not value:
+            return ""
+        try:
+            parsed = urlparse(value)
+        except Exception:
+            return value
+        if not parsed.scheme or not parsed.hostname:
+            return value
+        host = parsed.hostname
+        port = f":{parsed.port}" if parsed.port else ""
+        path = parsed.path or ""
+        return f"{parsed.scheme}://{host}{port}{path}"
+
+    @property
+    def redis_url_looks_placeholder(self) -> bool:
+        host = self.redis_url_host
+        return host in {"redis.internal", "localhost", "127.0.0.1", "0.0.0.0"}
+
+    @property
+    def production_like(self) -> bool:
+        return str(self.ENVIRONMENT or "").strip().lower() in {"production", "staging"}
 
     @property
     def database_backend(self) -> str:

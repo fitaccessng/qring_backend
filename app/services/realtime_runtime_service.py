@@ -9,13 +9,21 @@ logger = logging.getLogger(__name__)
 _startup_at = datetime.utcnow()
 _state: dict[str, Any] = {
     "websocketInitialized": False,
+    "redisConfigured": False,
     "redisConnected": False,
     "redisError": "",
+    "redisUrl": "",
+    "redisHost": "",
+    "redisAdapterMode": "memory",
     "socketNamespaces": [],
     "socketPath": "",
     "transportModes": ["polling", "websocket"],
     "socketServerMounted": False,
     "socketRedisAdapterAttached": False,
+    "turnConfigured": False,
+    "turnRequired": False,
+    "turnWarnings": [],
+    "degradedReasons": [],
     "startupDiagnostics": [],
 }
 
@@ -25,14 +33,17 @@ def mark_realtime_state(**updates: Any) -> None:
         _state[key] = value
 
 
-def append_startup_diagnostic(message: str) -> None:
+def append_startup_diagnostic(message: str, *, level: str = "info", code: str = "") -> None:
     row = {
         "message": message,
+        "level": str(level or "info").lower(),
+        "code": str(code or "").strip(),
         "at": datetime.utcnow().isoformat(),
     }
     _state.setdefault("startupDiagnostics", []).append(row)
     _state["startupDiagnostics"] = _state["startupDiagnostics"][-20:]
-    logger.info("realtime.startup %s", message)
+    log_method = getattr(logger, row["level"], logger.info)
+    log_method("realtime.startup code=%s %s", row["code"] or "n/a", message)
 
 
 def get_realtime_runtime_snapshot() -> dict[str, Any]:
