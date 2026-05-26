@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/health")
 async def health():
-    turn = get_turn_diagnostics()
+    turn = await get_turn_diagnostics()
     redis = await get_async_redis_health()
     runtime = get_realtime_runtime_snapshot()
     socket_diagnostics = await socket_state.diagnostics()
@@ -31,7 +31,7 @@ async def health():
     status = "degraded" if degraded_reasons else "ok"
     return {
         "status": status,
-        "realtimeConfigured": webrtc_realtime_configured(),
+        "realtimeConfigured": await webrtc_realtime_configured(),
         "turnConfigured": turn["configured"],
         "turnProductionReady": turn.get("productionReady"),
         "stunUrl": settings.WEBRTC_STUN_URL,
@@ -64,7 +64,7 @@ async def realtime_health():
             "degraded": True,
             "error": str(exc),
         }
-    turn = get_turn_diagnostics()
+    turn = await get_turn_diagnostics()
     degraded_reasons: list[str] = []
     if redis.get("configured") and not redis.get("healthy"):
         degraded_reasons.append(f"Redis unhealthy: {redis.get('error')}")

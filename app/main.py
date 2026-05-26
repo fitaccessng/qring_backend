@@ -40,8 +40,6 @@ settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
-fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
-# CORS middleware must be added before any custom middleware that modifies headers
 fastapi_app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -50,6 +48,7 @@ fastapi_app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 fastapi_app.add_middleware(RequestContextMiddleware)
 fastapi_app.add_middleware(
     RateLimitMiddleware,
@@ -80,8 +79,14 @@ async def log_origin_and_cors(request: Request, call_next):
     response = await call_next(request)
     cors_header = response.headers.get("access-control-allow-origin")
     coop_header = response.headers.get("cross-origin-opener-policy")
-    logging.info(f"[CORS] Incoming Origin: {origin} | CORS Decision: {cors_header} | COOP: {coop_header}")
-    logging.info(f"[HEADERS] Response headers: {dict(response.headers)}")
+    logging.info(
+        "[CORS] origin=%s allow_origin=%s method=%s path=%s coop=%s",
+        origin,
+        cors_header,
+        request.method,
+        request.url.path,
+        coop_header,
+    )
     return response
 
 
@@ -752,16 +757,14 @@ def _should_run_scheduled_jobs() -> bool:
     return role in {"worker", "scheduler", "jobs"}
 
 
-def _validate_realtime_runtime() -> tuple[bool, list[str]]:
-    turn = get_turn_diagnostics()
+async def _validate_realtime_runtime() -> tuple[bool, list[str], dict]:
+    turn = await get_turn_diagnostics(force_refresh=True)
     missing: list[str] = []
-    if not turn["urls"]:
-        missing.append("TURN_URLS/WEBRTC_TURN_URL/WEBRTC_TURN_TLS_URL")
-    if not turn["usernameConfigured"]:
-        missing.append("WEBRTC_TURN_USERNAME")
-    if not turn["credentialConfigured"]:
-        missing.append("WEBRTC_TURN_CREDENTIAL")
-    return (len(missing) == 0, missing)
+    if not turn["accountSidConfigured"]:
+        missing.append("TWILIO_ACCOUNT_SID")
+    if not turn["authTokenConfigured"]:
+        missing.append("TWILIO_AUTH_TOKEN")
+    return (len(missing) == 0, missing, turn)
 
 
 async def _validate_redis_runtime() -> dict[str, object]:
@@ -838,11 +841,13 @@ async def on_startup():
             code="redis.healthy",
         )
 
-    realtime_ok, missing = _validate_realtime_runtime()
-    turn = get_turn_diagnostics()
-    mark_realtime_state(turnConfigured=bool(turn["configured"]), turnWarnings=list(turn.get("warnings") or []))
+    realtime_ok, missing, turn = await _validate_realtime_runtime()
+    mark_realtime_state(
+        turnConfigured=bool(turn["configured"]),
+        turnWarnings=list(turn.get("warnings") or []),
+    )
     if not realtime_ok:
-        message = f"WebRTC/TURN configuration missing: {', '.join(missing)}"
+        message = f"Twilio Network Traversal configuration missing: {', '.join(missing)}"
         append_startup_diagnostic(message, level="warning", code="turn.missing")
         if settings.WEBRTC_REQUIRE_TURN:
             raise RuntimeError(message)
@@ -854,8 +859,7 @@ async def on_startup():
         )
     else:
         append_startup_diagnostic(
-            "WebRTC/TURN configuration validated "
-            f"(tls={turn['tlsEnabled']}, tcp={turn['tcpEnabled']}, udp={turn['udpEnabled']}).",
+            "Twilio Network Traversal Service initialized successfully.",
             code="turn.validated",
         )
     for warning in turn.get("warnings") or []:

@@ -1,145 +1,162 @@
 from __future__ import annotations
 
-import os
-from urllib.parse import urlparse
+import asyncio
+import logging
+import time
+from typing import Any
 
 from app.core.config import get_settings
+try:
+    from twilio.base.exceptions import TwilioRestException
+    from twilio.rest import Client
+except ModuleNotFoundError:  # pragma: no cover - dependency installed in deployed/runtime env
+    TwilioRestException = Exception
+    Client = None
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+_ICE_CACHE_TTL_SECONDS = 20 * 60
+_ice_cache: dict[str, Any] = {
+    "expires_at": 0.0,
+    "ice_servers": None,
+    "error": "",
+}
 
 
-def _read_env_value(*names: str) -> str:
-    for name in names:
-        value = os.getenv(name)
-        if value and str(value).strip():
-            return str(value).strip()
-    return ""
-
-
-def _configured_turn_urls() -> list[str]:
-    urls: list[str] = []
-    csv_urls = str(settings.WEBRTC_TURN_URLS or "").strip() or _read_env_value("WEBRTC_TURN_URLS", "TURN_URLS")
-    if csv_urls:
-        for part in csv_urls.split(","):
-            value = str(part or "").strip()
-            if value:
-                urls.append(value)
-    for raw in (
-        settings.WEBRTC_TURN_URL,
-        settings.WEBRTC_TURN_TLS_URL,
-        _read_env_value("TURN_URL", "TURN_UDP_URL", "WEBRTC_TURN_TCP_URL", "TURN_TCP_URL"),
-        _read_env_value("TURN_TLS_URL", "WEBRTC_TURN_TLS_TCP_URL"),
-    ):
-        value = str(raw or "").strip()
-        if value and value not in urls:
-            urls.append(value)
-    return urls
-
-
-def _turn_username() -> str:
-    return str(
-        settings.WEBRTC_TURN_USERNAME
-        or _read_env_value("TURN_USERNAME", "WEBRTC_TURN_USER")
-        or ""
-    ).strip()
-
-
-def _turn_credential() -> str:
-    return str(
-        settings.WEBRTC_TURN_CREDENTIAL
-        or _read_env_value("TURN_PASSWORD", "TURN_CREDENTIAL", "WEBRTC_TURN_PASSWORD")
-        or ""
-    ).strip()
-
-
-def _turn_transport_flags(urls: list[str]) -> dict[str, bool]:
-    normalized = [str(url or "").strip().lower() for url in urls if str(url or "").strip()]
-    return {
-        "tlsEnabled": any(url.startswith("turns:") for url in normalized),
-        "tcpEnabled": any("transport=tcp" in url or url.startswith("turns:") for url in normalized),
-        "udpEnabled": any("transport=udp" in url or url.startswith("turn:") for url in normalized),
-    }
-
-
-def _turn_hostnames(urls: list[str]) -> list[str]:
-    hosts: list[str] = []
-    for url in urls:
-        value = str(url or "").strip()
-        if not value:
-            continue
-        normalized = value.replace("turn:", "turn://", 1).replace("turns:", "turns://", 1)
-        try:
-            parsed = urlparse(normalized)
-        except Exception:
-            continue
-        host = str(parsed.hostname or "").strip().lower()
-        if host and host not in hosts:
-            hosts.append(host)
-    return hosts
-
-
-def build_webrtc_rtc_config(*, force_relay: bool = False) -> dict:
-    ice_servers: list[dict] = []
-
+def _stun_only_servers() -> list[dict[str, Any]]:
     stun_url = str(settings.WEBRTC_STUN_URL or "").strip() or "stun:stun.l.google.com:19302"
-    if stun_url:
-        ice_servers.append({"urls": stun_url})
+    backup = "stun:stun1.l.google.com:19302"
+    urls = [stun_url]
+    if stun_url != backup:
+        urls.append(backup)
+    return [{"urls": urls}]
 
-    turn_urls = _configured_turn_urls()
-    if turn_urls:
-        ice_servers.append(
+
+def twilio_credentials_configured() -> bool:
+    return bool(str(settings.TWILIO_ACCOUNT_SID or "").strip() and str(settings.TWILIO_AUTH_TOKEN or "").strip())
+
+
+def _build_twilio_client() -> Client:
+    if Client is None:
+        raise RuntimeError("Twilio SDK is not installed.")
+    return Client(
+        username=str(settings.TWILIO_ACCOUNT_SID or "").strip(),
+        password=str(settings.TWILIO_AUTH_TOKEN or "").strip(),
+    )
+
+
+def _fetch_twilio_ice_servers_sync() -> list[dict[str, Any]]:
+    if not twilio_credentials_configured():
+        raise RuntimeError("TWILIO_ACCOUNT_SID is not configured.")
+
+    try:
+        token = _build_twilio_client().tokens.create()
+    except TwilioRestException as exc:
+        logger.warning(
+            "twilio.ice_generation.rest_error status=%s code=%s message=%s",
+            getattr(exc, "status", ""),
+            getattr(exc, "code", ""),
+            getattr(exc, "msg", str(exc)),
+        )
+        raise RuntimeError(f"Twilio token request failed with HTTP {getattr(exc, 'status', 'unknown')}") from exc
+    except Exception as exc:
+        logger.warning("twilio.ice_generation.client_error error=%s", exc)
+        raise RuntimeError(f"Twilio token request failed: {exc}") from exc
+
+    ice_servers = getattr(token, "ice_servers", None)
+    if not isinstance(ice_servers, list) or not ice_servers:
+        logger.warning("twilio.ice_generation.missing_ice_servers sid=%s", getattr(token, "sid", ""))
+        raise RuntimeError("Twilio token response did not include ice_servers.")
+    return ice_servers
+
+
+async def get_dynamic_ice_servers(*, force_refresh: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    now = time.monotonic()
+    cached = _ice_cache.get("ice_servers")
+    expires_at = float(_ice_cache.get("expires_at") or 0.0)
+    if not force_refresh and cached and now < expires_at:
+        return list(cached), {
+            "provider": "twilio",
+            "cached": True,
+            "fallback": False,
+            "error": "",
+        }
+
+    if not twilio_credentials_configured():
+        error_message = "Twilio Network Traversal credentials are not configured."
+        _ice_cache.update({"expires_at": 0.0, "ice_servers": None, "error": error_message})
+        return _stun_only_servers(), {
+            "provider": "stun-fallback",
+            "cached": False,
+            "fallback": True,
+            "error": error_message,
+        }
+
+    try:
+        ice_servers = await asyncio.to_thread(_fetch_twilio_ice_servers_sync)
+        _ice_cache.update(
             {
-                "urls": turn_urls if len(turn_urls) > 1 else turn_urls[0],
-                "username": _turn_username(),
-                "credential": _turn_credential(),
+                "expires_at": now + _ICE_CACHE_TTL_SECONDS,
+                "ice_servers": list(ice_servers),
+                "error": "",
             }
         )
+        logger.info("twilio.ice_generation.success count=%s", len(ice_servers))
+        return list(ice_servers), {
+            "provider": "twilio",
+            "cached": False,
+            "fallback": False,
+            "error": "",
+        }
+    except Exception as exc:
+        error_message = str(exc)
+        _ice_cache.update({"expires_at": 0.0, "ice_servers": None, "error": error_message})
+        logger.exception("twilio.ice_generation.failed")
+        return _stun_only_servers(), {
+            "provider": "stun-fallback",
+            "cached": False,
+            "fallback": True,
+            "error": error_message,
+        }
 
+
+def build_webrtc_rtc_config(*, force_relay: bool = False, ice_servers: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
-        "iceServers": ice_servers,
+        "iceServers": list(ice_servers or _stun_only_servers()),
         "iceTransportPolicy": "relay" if force_relay else "all",
     }
 
 
-def webrtc_realtime_configured() -> bool:
-    diagnostics = get_turn_diagnostics()
-    return bool(diagnostics["productionReady"])
-
-
-def get_turn_diagnostics() -> dict:
-    turn_urls = _configured_turn_urls()
-    transport = _turn_transport_flags(turn_urls)
-    hostnames = _turn_hostnames(turn_urls)
+async def get_turn_diagnostics(*, force_refresh: bool = False) -> dict[str, Any]:
     warnings: list[str] = []
-    if turn_urls and not _turn_username():
-        warnings.append("TURN URLs are set but TURN username is missing.")
-    if turn_urls and not _turn_credential():
-        warnings.append("TURN URLs are set but TURN credential is missing.")
-    if turn_urls and not transport["udpEnabled"]:
-        warnings.append("TURN over UDP is not configured.")
-    if turn_urls and not transport["tcpEnabled"]:
-        warnings.append("TURN over TCP is not configured.")
-    if turn_urls and not transport["tlsEnabled"]:
-        warnings.append("TURN over TLS is not configured.")
-    if settings.production_like and not turn_urls:
-        warnings.append("TURN is not configured for production-like environment.")
+    configured = twilio_credentials_configured()
+    ice_servers, metadata = await get_dynamic_ice_servers(force_refresh=force_refresh)
+    production_ready = configured and not metadata["fallback"] and not metadata["error"]
+    if not configured:
+        warnings.append("Twilio Network Traversal Service credentials are not configured.")
+    elif metadata["error"]:
+        warnings.append(f"Twilio Network Traversal token generation failed: {metadata['error']}")
+
     return {
-        "configured": bool(turn_urls and _turn_username() and _turn_credential()),
-        "urls": turn_urls,
-        "hostnames": hostnames,
-        "usernameConfigured": bool(_turn_username()),
-        "credentialConfigured": bool(_turn_credential()),
-        "tlsEnabled": transport["tlsEnabled"],
-        "tcpEnabled": transport["tcpEnabled"],
-        "udpEnabled": transport["udpEnabled"],
-        "stunConfigured": bool(str(settings.WEBRTC_STUN_URL or "").strip()),
+        "provider": "twilio",
+        "configured": configured,
+        "productionReady": production_ready,
+        "accountSidConfigured": bool(str(settings.TWILIO_ACCOUNT_SID or "").strip()),
+        "authTokenConfigured": bool(str(settings.TWILIO_AUTH_TOKEN or "").strip()),
+        "stunConfigured": bool(_stun_only_servers()),
+        "tlsEnabled": production_ready,
+        "tcpEnabled": production_ready,
+        "udpEnabled": production_ready,
         "warnings": warnings,
-        "productionReady": bool(
-            turn_urls
-            and _turn_username()
-            and _turn_credential()
-            and transport["udpEnabled"]
-            and transport["tcpEnabled"]
-            and transport["tlsEnabled"]
-        ),
+        "iceServersCount": len(ice_servers),
+        "iceServerUrlsPreview": [entry.get("urls") for entry in ice_servers[:3]],
+        "fallback": bool(metadata["fallback"]),
+        "cached": bool(metadata["cached"]),
+        "error": str(metadata["error"] or ""),
     }
+
+
+async def webrtc_realtime_configured() -> bool:
+    diagnostics = await get_turn_diagnostics()
+    return bool(diagnostics["productionReady"])

@@ -21,6 +21,7 @@ from app.api.routes import (
     safety,
     security,
     visitor,
+    webrtc,
     ws_gateway,
 )
 
@@ -42,5 +43,6 @@ api_router.include_router(subscription_policy.router, prefix="/payment", tags=["
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(ws_gateway.router, tags=["websocket"])
 api_router.include_router(calls.router, prefix="/calls", tags=["calls"])
+api_router.include_router(webrtc.router, tags=["webrtc"])
 api_router.include_router(advanced.router, prefix="/advanced", tags=["advanced"])
 api_router.include_router(media.router, tags=["media"])

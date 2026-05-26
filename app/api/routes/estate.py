@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
 from app.core.cache import cache_key, get_or_set_json
 from app.core.config import get_settings
+from app.core.exceptions import AppException
 from app.db.models import User
 from app.db.session import get_db
 from app.services.estate_alert_service import (
@@ -52,6 +54,18 @@ from app.services.estate_service import (
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+def _route_context(request: Request, user: User, **extra) -> dict[str, object]:
+    return {
+        "request_id": request.headers.get("x-request-id", ""),
+        "path": request.url.path,
+        "query": dict(request.query_params),
+        "user_id": getattr(user, "id", ""),
+        "role": getattr(user, "role", ""),
+        **extra,
+    }
 
 
 class EstateCreate(BaseModel):
@@ -198,30 +212,62 @@ def estate_add_home(
 
 @router.get("/overview")
 def estate_overview(
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
-    return {
-        "data": get_or_set_json(
-            cache_key("estate-overview", user.id),
-            lambda: list_estate_overview(db, owner_id=user.id),
-            settings.CACHE_ESTATE_TTL_SECONDS,
-        )
-    }
+    context = _route_context(request, user)
+    try:
+        return {
+            "data": get_or_set_json(
+                cache_key("estate-overview", user.id),
+                lambda: list_estate_overview(db, owner_id=user.id),
+                settings.CACHE_ESTATE_TTL_SECONDS,
+            )
+        }
+    except AppException:
+        raise
+    except Exception as exc:
+        logger.exception("estate.overview.failed context=%s", context)
+        raise AppException(
+            "Unable to load estate overview right now.",
+            status_code=500,
+            code="ESTATE_OVERVIEW_FAILED",
+            extra={"context": {"path": context["path"], "userId": context["user_id"]}},
+        ) from exc
 
 
 @router.get("/settings-summary")
 def estate_settings_summary(
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
-    return {
-        "data": get_or_set_json(
+    context = _route_context(request, user)
+    try:
+        overview = get_or_set_json(
             cache_key("estate-settings-summary", user.id),
             lambda: list_estate_overview(db, owner_id=user.id),
             settings.CACHE_ESTATE_TTL_SECONDS,
         )
-    }
+        return {
+            "data": {
+                "estates": overview.get("estates", []),
+                "doors": overview.get("doors", []),
+                "subscription": overview.get("subscription", {}),
+                "securityRules": overview.get("securityRules", []),
+            }
+        }
+    except AppException:
+        raise
+    except Exception as exc:
+        logger.exception("estate.settings_summary.failed context=%s", context)
+        raise AppException(
+            "Unable to load estate settings summary right now.",
+            status_code=500,
+            code="ESTATE_SETTINGS_SUMMARY_FAILED",
+            extra={"context": {"path": context["path"], "userId": context["user_id"]}},
+        ) from exc
 
 
 @router.get("/{estate_id}/settings")
