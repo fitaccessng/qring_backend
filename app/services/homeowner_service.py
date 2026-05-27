@@ -156,6 +156,29 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     if not session_by_id:
         return []
 
+    session_ids = list(session_by_id.keys())
+    request_payload_by_session: dict[str, dict[str, Any]] = {}
+    if session_ids:
+        access_notifications = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == homeowner_id,
+                Notification.kind.in_(("access_request", "visitor.request")),
+                Notification.payload.isnot(None),
+            )
+            .order_by(Notification.created_at.desc())
+            .all()
+        )
+
+        for row in access_notifications:
+            try:
+                payload = json.loads(row.payload or "{}")
+            except Exception:
+                continue
+            session_id = str(payload.get("sessionId") or "").strip()
+            if session_id and session_id in session_ids and session_id not in request_payload_by_session:
+                request_payload_by_session[session_id] = payload
+
     appointment_ids = [session.appointment_id for session, _, _, _ in sessions if session.appointment_id]
     appointment_by_id: dict[str, Appointment] = {}
     if appointment_ids:
@@ -214,6 +237,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "visitorPhone": session.visitor_phone,
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
                 "photoUrl": session.photo_url,
+                "snapshotAuditId": request_payload_by_session.get(session_id, {}).get("snapshotAuditId"),
                 "appointmentId": session.appointment_id,
                 "homeName": home.name if home else None,
                 "buildingName": home.name if home else None,
