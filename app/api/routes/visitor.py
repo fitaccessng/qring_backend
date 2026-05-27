@@ -28,6 +28,12 @@ from app.services.session_service import create_visitor_session, rotate_visitor_
 from app.services.visitor_session_auth import require_visitor_session_access
 from app.services.advanced_service import create_snapshot_audit
 from app.services.homeowner_service import create_visitor_session_message
+from app.services.realtime_notification_service import (
+    build_notification_envelope,
+    build_notification_idempotency_key,
+    emit_dashboard_notification,
+    emit_signaling_notification,
+)
 from app.socket.server import sio
 
 router = APIRouter()
@@ -169,11 +175,30 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                         source="visitor_qr_scan",
                     )
                     try:
-                        await sio.emit(
-                            "visitor.snapshot",
-                            {"data": snapshot_audit},
-                            room=f"user:{session.homeowner_id}",
-                            namespace=settings.DASHBOARD_NAMESPACE,
+                        await emit_dashboard_notification(
+                            event_name="visitor.snapshot",
+                            rooms=[f"user:{session.homeowner_id}"],
+                            payload={"data": build_notification_envelope(
+                                notification_id=snapshot_audit.get("id"),
+                                event_type="visitor.snapshot",
+                                idempotency_key=build_notification_idempotency_key(
+                                    event_type="visitor.snapshot",
+                                    user_id=session.homeowner_id,
+                                    session_id=session.id,
+                                    entity_id=str(snapshot_audit.get("id") or ""),
+                                ),
+                                session_id=session.id,
+                                user_id=session.homeowner_id,
+                                source="visitor.request.snapshot",
+                                payload=snapshot_audit,
+                            )},
+                            idempotency_key=build_notification_idempotency_key(
+                                event_type="visitor.snapshot",
+                                user_id=session.homeowner_id,
+                                session_id=session.id,
+                                entity_id=str(snapshot_audit.get("id") or ""),
+                            ),
+                            source="visitor.request.snapshot",
                         )
                     except Exception:
                         logger.exception("Failed to emit visitor.snapshot realtime event")
@@ -215,6 +240,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "creatorRole": session.creator_role or "visitor",
                 "message": f"New visitor request from {session.visitor_label or 'Visitor'}",
             },
+            idempotency_key=build_notification_idempotency_key(
+                event_type="visitor.request",
+                user_id=session.homeowner_id,
+                session_id=session.id,
+                entity_id=str(request_id or session.id),
+                action=session.status,
+            ),
+            source="visitor.request",
         )
         notify_security_request(db, session)
 
@@ -240,9 +273,20 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             {"data": serialize_security_session(db, session)},
             namespace=settings.DASHBOARD_NAMESPACE,
         )
-        await sio.emit(
-            "incoming-call",
-            {
+        incoming_call_key = build_notification_idempotency_key(
+            event_type="incoming-call",
+            user_id=session.homeowner_id,
+            session_id=session.id,
+            entity_id=str(appointment.id if appointment else session.id),
+            action="ringing",
+        )
+        incoming_call_payload = build_notification_envelope(
+            event_type="incoming-call",
+            idempotency_key=incoming_call_key,
+            session_id=session.id,
+            user_id=session.homeowner_id,
+            source="visitor.request.arrival",
+            payload={
                 "sessionId": session.id,
                 "callSessionId": "",
                 "appointmentId": appointment.id if appointment else None,
@@ -254,24 +298,20 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "state": "ringing",
                 "message": f"{effective_visitor_name} arrived at your gate.",
             },
-            room=f"user:{session.homeowner_id}",
-            namespace=settings.DASHBOARD_NAMESPACE,
         )
-        await sio.emit(
-            "incoming-call",
-            {
-                "sessionId": session.id,
-                "callSessionId": "",
-                "appointmentId": appointment.id if appointment else None,
-                "homeownerId": session.homeowner_id,
-                "visitorId": session.id,
-                "visitorName": effective_visitor_name,
-                "doorId": session.door_id,
-                "hasVideo": False,
-                "state": "ringing",
-            },
-            room=f"homeowner:{session.homeowner_id}",
-            namespace=settings.SIGNALING_NAMESPACE,
+        await emit_dashboard_notification(
+            event_name="incoming-call",
+            rooms=[f"user:{session.homeowner_id}"],
+            payload=incoming_call_payload,
+            idempotency_key=f"dashboard:{incoming_call_key}",
+            source="visitor.request.arrival",
+        )
+        await emit_signaling_notification(
+            event_name="incoming-call",
+            rooms=[f"homeowner:{session.homeowner_id}"],
+            payload=incoming_call_payload,
+            idempotency_key=f"signaling:{incoming_call_key}",
+            source="visitor.request.arrival",
         )
 
         elapsed_ms = (perf_counter() - started) * 1000
@@ -373,26 +413,20 @@ async def visitor_appointment_arrival(
         },
         namespace=settings.DASHBOARD_NAMESPACE,
     )
-    await sio.emit(
-        "incoming-call",
-        {
-            "sessionId": data.get("sessionId"),
-            "callSessionId": "",
-            "appointmentId": appointment_id,
-            "homeownerId": data.get("homeownerId"),
-            "visitorId": data.get("visitorId") or data.get("sessionId"),
-            "visitorName": data.get("visitorName") or "Visitor",
-            "doorId": data.get("doorId"),
-            "hasVideo": False,
-            "state": "ringing",
-            "message": f"{data.get('visitorName') or 'Visitor'} arrived for appointment.",
-        },
-        room=f"user:{data.get('homeownerId')}",
-        namespace=settings.DASHBOARD_NAMESPACE,
+    arrival_key = build_notification_idempotency_key(
+        event_type="incoming-call",
+        user_id=str(data.get("homeownerId") or ""),
+        session_id=str(data.get("sessionId") or ""),
+        entity_id=str(appointment_id or ""),
+        action="arrived",
     )
-    await sio.emit(
-        "incoming-call",
-        {
+    arrival_payload = build_notification_envelope(
+        event_type="incoming-call",
+        idempotency_key=arrival_key,
+        session_id=str(data.get("sessionId") or ""),
+        user_id=str(data.get("homeownerId") or ""),
+        source="visitor.appointment.arrival",
+        payload={
             "sessionId": data.get("sessionId"),
             "callSessionId": "",
             "appointmentId": appointment_id,
@@ -404,8 +438,20 @@ async def visitor_appointment_arrival(
             "state": "ringing",
             "message": f"{data.get('visitorName') or 'Visitor'} arrived for appointment.",
         },
-        room=f"homeowner:{data.get('homeownerId')}",
-        namespace=settings.SIGNALING_NAMESPACE,
+    )
+    await emit_dashboard_notification(
+        event_name="incoming-call",
+        rooms=[f"user:{data.get('homeownerId')}"],
+        payload=arrival_payload,
+        idempotency_key=f"dashboard:{arrival_key}",
+        source="visitor.appointment.arrival",
+    )
+    await emit_signaling_notification(
+        event_name="incoming-call",
+        rooms=[f"homeowner:{data.get('homeownerId')}"],
+        payload=arrival_payload,
+        idempotency_key=f"signaling:{arrival_key}",
+        source="visitor.appointment.arrival",
     )
     return {"data": data}
 

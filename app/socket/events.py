@@ -417,6 +417,8 @@ def register_socket_events(sio):
         session_id = (payload or {}).get("sessionId")
         if not session_id:
             return {"ok": False, "reason": "session_id_required"}
+        normalized_session_id = str(session_id)
+        already_joined = await socket_state.is_session_allowed(sid, normalized_session_id)
         visitor_token = (payload or {}).get("visitorToken")
         sender_user_id = await socket_state.get_user_id(sid)
 
@@ -466,7 +468,8 @@ def register_socket_events(sio):
             db.close()
 
         room = f"session:{session_id}"
-        await sio.enter_room(sid, room, namespace=settings.SIGNALING_NAMESPACE)
+        if not already_joined:
+            await sio.enter_room(sid, room, namespace=settings.SIGNALING_NAMESPACE)
         now_iso = datetime.utcnow().isoformat()
         participant_count = await socket_state.allow_session(
             sid,
@@ -489,18 +492,19 @@ def register_socket_events(sio):
             display_name=(payload or {}).get("displayName"),
             user_id=sender_user_id,
         )
-        await sio.emit(
-            RealtimeEvent.SESSION_PARTICIPANT_JOINED,
-            {
-                "sid": sid,
-                "displayName": (payload or {}).get("displayName") or "Participant",
-                "participantType": participant_type,
-                "count": participant_count,
-            },
-            room=room,
-            skip_sid=sid,
-            namespace=settings.SIGNALING_NAMESPACE,
-        )
+        if not already_joined:
+            await sio.emit(
+                RealtimeEvent.SESSION_PARTICIPANT_JOINED,
+                {
+                    "sid": sid,
+                    "displayName": (payload or {}).get("displayName") or "Participant",
+                    "participantType": participant_type,
+                    "count": participant_count,
+                },
+                room=room,
+                skip_sid=sid,
+                namespace=settings.SIGNALING_NAMESPACE,
+            )
         await sio.emit(
             RealtimeEvent.SESSION_JOINED,
             {"sid": sid, "count": participant_count, "sessionId": str(session_id)},
@@ -520,44 +524,6 @@ def register_socket_events(sio):
             namespace=settings.SIGNALING_NAMESPACE,
         )
 
-        db = SessionLocal()
-        try:
-            active_call = (
-                db.query(CallSession)
-                .filter(
-                    CallSession.visitor_session_id == str(session_id),
-                    CallSession.status.in_(["pending", "ringing"]),
-                )
-                .order_by(CallSession.created_at.desc())
-                .first()
-            )
-            if active_call and active_call.caller_id != sender_user_id:
-                _socket_log(
-                    "call_invite_replayed",
-                    sid=sid,
-                    session_id=session_id,
-                    call_session_id=active_call.id,
-                    caller_id=active_call.caller_id,
-                )
-                await sio.emit(
-                    RealtimeEvent.CALL_INVITE,
-                    {
-                        "sessionId": str(session_id),
-                        "callSessionId": active_call.id,
-                        "appointmentId": active_call.appointment_id,
-                        "roomName": active_call.room_name,
-                        "status": active_call.status,
-                        "visitorId": active_call.visitor_id,
-                        "hasVideo": active_call.call_type == "video",
-                        "type": active_call.call_type,
-                        "replayed": True,
-                    },
-                    to=sid,
-                    namespace=settings.SIGNALING_NAMESPACE,
-                )
-                await socket_state.record_metric("inviteReplayHits")
-        finally:
-            db.close()
         return {
             "ok": True,
             "sessionId": str(session_id),

@@ -13,6 +13,11 @@ from app.db.models import Door, Home, User
 from app.db.session import get_db
 from app.services.advanced_service import create_snapshot_audit
 from app.services.notification_service import create_notification
+from app.services.realtime_notification_service import (
+    build_notification_envelope,
+    build_notification_idempotency_key,
+    emit_dashboard_notification,
+)
 from app.services.session_service import create_visitor_session
 from app.services.security_service import (
     create_security_session_message,
@@ -211,6 +216,14 @@ async def security_register_request(
             "creatorRole": "security",
             "message": f"Gate security registered {updated.visitor_label or 'a visitor'} for your approval.",
         },
+        idempotency_key=build_notification_idempotency_key(
+            event_type="visitor.request",
+            user_id=updated.homeowner_id,
+            session_id=updated.id,
+            entity_id=str(payload.requestId or updated.id),
+            action=updated.status,
+        ),
+        source="security.register_visitor",
     )
 
     serialized = serialize_security_session(db, updated)
@@ -231,21 +244,36 @@ async def security_register_request(
         room=f"session:{updated.id}",
         namespace=settings.SIGNALING_NAMESPACE,
     )
-    await sio.emit(
-        "incoming-call",
-        {
-            "sessionId": updated.id,
-            "callSessionId": "",
-            "homeownerId": updated.homeowner_id,
-            "visitorId": updated.id,
-            "visitorName": updated.visitor_label or "Visitor",
-            "doorId": updated.door_id,
-            "hasVideo": False,
-            "state": "ringing",
-            "message": f"Security registered {updated.visitor_label or 'a visitor'} at your gate.",
-        },
-        room=f"user:{updated.homeowner_id}",
-        namespace=settings.DASHBOARD_NAMESPACE,
+    incoming_call_key = build_notification_idempotency_key(
+        event_type="incoming-call",
+        user_id=updated.homeowner_id,
+        session_id=updated.id,
+        entity_id=updated.id,
+        action="security_forward",
+    )
+    await emit_dashboard_notification(
+        event_name="incoming-call",
+        rooms=[f"user:{updated.homeowner_id}"],
+        payload=build_notification_envelope(
+            event_type="incoming-call",
+            idempotency_key=incoming_call_key,
+            session_id=updated.id,
+            user_id=updated.homeowner_id,
+            source="security.register_visitor",
+            payload={
+                "sessionId": updated.id,
+                "callSessionId": "",
+                "homeownerId": updated.homeowner_id,
+                "visitorId": updated.id,
+                "visitorName": updated.visitor_label or "Visitor",
+                "doorId": updated.door_id,
+                "hasVideo": False,
+                "state": "ringing",
+                "message": f"Security registered {updated.visitor_label or 'a visitor'} at your gate.",
+            },
+        ),
+        idempotency_key=f"dashboard:{incoming_call_key}",
+        source="security.register_visitor",
     )
     return {"data": serialized}
 

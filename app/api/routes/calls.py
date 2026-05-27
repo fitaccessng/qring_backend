@@ -20,6 +20,11 @@ from app.services.call_service import (
     start_call_session,
 )
 from app.services.realtime_config_service import build_webrtc_rtc_config
+from app.services.realtime_notification_service import (
+    build_notification_envelope,
+    build_notification_idempotency_key,
+    emit_signaling_notification,
+)
 from app.socket.server import sio
 
 router = APIRouter()
@@ -158,27 +163,40 @@ async def start_call(
         linked_session = visit.id if visit else None
 
     if linked_session:
-        event_payload = {
-            "eventId": row.id,
-            "sessionId": linked_session,
-            "callSessionId": row.id,
-            "appointmentId": row.appointment_id,
-            "roomName": row.room_name,
-            "deliveryRoom": f"session:{linked_session}",
-            "status": row.status,
-            "visitorId": row.visitor_id,
-            "hasVideo": bool(payload.hasVideo),
-            "type": row.call_type,
-            "userId": user.id if user else None,
-            "role": user.role.value if user else "visitor",
-            "timestamp": row.created_at.isoformat() if row.created_at else None,
-            "idempotencyKey": row.id,
-        }
-        await sio.emit(
-            "call.invite",
-            event_payload,
-            room=f"session:{linked_session}",
-            namespace=settings.SIGNALING_NAMESPACE,
+        call_invite_key = build_notification_idempotency_key(
+            event_type="call.invite",
+            user_id=row.homeowner_id,
+            session_id=linked_session,
+            entity_id=row.id,
+            action=row.status,
+        )
+        event_payload = build_notification_envelope(
+            notification_id=row.id,
+            event_type="call.invite",
+            idempotency_key=call_invite_key,
+            session_id=linked_session,
+            user_id=user.id if user else None,
+            source="calls.start",
+            payload={
+                "eventId": row.id,
+                "sessionId": linked_session,
+                "callSessionId": row.id,
+                "appointmentId": row.appointment_id,
+                "roomName": row.room_name,
+                "deliveryRoom": f"session:{linked_session}",
+                "status": row.status,
+                "visitorId": row.visitor_id,
+                "hasVideo": bool(payload.hasVideo),
+                "type": row.call_type,
+                "role": user.role.value if user else "visitor",
+            },
+        )
+        await emit_signaling_notification(
+            event_name="call.invite",
+            rooms=[f"session:{linked_session}"],
+            payload=event_payload,
+            idempotency_key=call_invite_key,
+            source="calls.start",
         )
 
     return {
@@ -319,29 +337,40 @@ async def end_call(
     if row.visitor_id and row.visitor_id not in session_ids:
         session_ids.append(row.visitor_id)
 
-    event_payload = {
-        "eventId": row.id,
-        "sessionId": session_ids[0] if session_ids else None,
-        "callSessionId": row.id,
-        "appointmentId": row.appointment_id,
-        "visitorId": row.visitor_id,
-        "roomName": row.room_name,
-        "status": row.status,
-        "endedAt": row.ended_at.isoformat() if row.ended_at else None,
-        "userId": user.id if user else None,
-        "role": user.role.value if user else (participant_type or "visitor"),
-        "timestamp": row.ended_at.isoformat() if row.ended_at else None,
-        "idempotencyKey": row.id,
-    }
+    event_payload = build_notification_envelope(
+        notification_id=row.id,
+        event_type="call.ended",
+        idempotency_key=build_notification_idempotency_key(
+            event_type="call.ended",
+            user_id=row.homeowner_id,
+            session_id=session_ids[0] if session_ids else row.visitor_session_id,
+            entity_id=row.id,
+            action=row.status,
+        ),
+        session_id=session_ids[0] if session_ids else None,
+        user_id=user.id if user else None,
+        source="calls.end",
+        payload={
+            "eventId": row.id,
+            "sessionId": session_ids[0] if session_ids else None,
+            "callSessionId": row.id,
+            "appointmentId": row.appointment_id,
+            "visitorId": row.visitor_id,
+            "roomName": row.room_name,
+            "status": row.status,
+            "endedAt": row.ended_at.isoformat() if row.ended_at else None,
+            "role": user.role.value if user else (participant_type or "visitor"),
+        },
+    )
 
     target_rooms = {f"homeowner:{row.homeowner_id}"}
     target_rooms.update({f"session:{session_id}" for session_id in session_ids})
-    for room_name in target_rooms:
-        await sio.emit(
-            "call.ended",
-            event_payload,
-            room=room_name,
-            namespace=settings.SIGNALING_NAMESPACE,
-        )
+    await emit_signaling_notification(
+        event_name="call.ended",
+        rooms=target_rooms,
+        payload=event_payload,
+        idempotency_key=str(event_payload.get("idempotencyKey") or row.id),
+        source="calls.end",
+    )
 
     return {"data": {"callSessionId": row.id, "status": row.status, "endedAt": row.ended_at.isoformat() if row.ended_at else None}}

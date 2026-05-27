@@ -32,6 +32,11 @@ from app.services.advanced_service import (
     register_or_recognize_visitor,
     trigger_emergency_signal,
 )
+from app.services.realtime_notification_service import (
+    build_notification_envelope,
+    build_notification_idempotency_key,
+    emit_dashboard_notification,
+)
 from app.socket.server import sio
 
 router = APIRouter()
@@ -154,10 +159,28 @@ async def advanced_upload_snapshot(
         message="New visitor snapshot received.",
         payload={"snapshotId": data["id"], "mediaType": data["mediaType"]},
     )
-    await sio.emit(
-        "visitor.snapshot",
-        {"data": data},
-        room=f"user:{homeownerId}",
+    snapshot_key = build_notification_idempotency_key(
+        event_type="visitor.snapshot",
+        user_id=homeownerId,
+        session_id=visitorSessionId,
+        entity_id=str(data["id"]),
+    )
+    await emit_dashboard_notification(
+        event_name="visitor.snapshot",
+        rooms=[f"user:{homeownerId}"],
+        payload={
+            "data": build_notification_envelope(
+                notification_id=data["id"],
+                event_type="visitor.snapshot",
+                idempotency_key=snapshot_key,
+                session_id=visitorSessionId,
+                user_id=homeownerId,
+                source="advanced.upload_snapshot",
+                payload=data,
+            )
+        },
+        idempotency_key=snapshot_key,
+        source="advanced.upload_snapshot",
     )
     return {"data": data}
 
