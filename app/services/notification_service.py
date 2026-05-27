@@ -48,6 +48,16 @@ def _claim_notification_create_once(idempotency_key: str, *, ttl_seconds: int = 
     except Exception:
         return True
 
+
+def _safe_json_payload(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
 def create_notification(
     db: Session,
     user_id: str,
@@ -267,6 +277,7 @@ def mark_notification_read(db: Session, user_id: str, notification_id: str) -> d
     row.read_at = row.read_at or datetime.utcnow()
     db.commit()
     db.refresh(row)
+    parsed_payload = _safe_json_payload(row.payload)
     payload = {
         "id": row.id,
         "kind": row.kind,
@@ -284,7 +295,7 @@ def mark_notification_read(db: Session, user_id: str, notification_id: str) -> d
             "eventId": row.id,
             "idempotencyKey": f"notification.updated:{row.id}:{payload['readAt']}",
             "type": row.kind,
-            "sessionId": json.loads(row.payload or "{}").get("sessionId"),
+            "sessionId": str(parsed_payload.get("sessionId") or "").strip() or None,
             "userId": user_id,
         },
         idempotency_key=f"dashboard:notification.updated:{row.id}:{payload['readAt']}",
