@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+import httpx
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,7 @@ from app.services.provider_integrations import (
     send_push_fcm,
     send_sms_provider,
 )
+from app.services.cloudinary_service import upload_snapshot_to_cloudinary
 
 settings = get_settings()
 
@@ -207,32 +209,50 @@ def create_snapshot_audit(
     if ext not in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}:
         ext = ".bin"
     media_id = str(uuid.uuid4())
-    storage_bucket = _get_storage_bucket()
     media_path = ""
-    if storage_bucket is not None:
-        storage_path = f"visitor-media/{effective_resident_id}/{media_id}{ext}"
-        try:
-            blob = storage_bucket.blob(storage_path)
-            blob.cache_control = "private, max-age=0, no-transform"
-            blob.metadata = {
-                "residentId": effective_resident_id,
-                "mediaId": media_id,
-                "visitorSessionId": visitor_session_id or "",
-                "appointmentId": appointment_id or "",
-                "mediaType": (media_type or "photo").strip().lower(),
-            }
-            blob.upload_from_string(media_bytes, content_type="application/octet-stream")
-            media_path = f"firebase:{storage_path}"
-        except Exception:
-            # Fall back to local storage if cloud upload fails.
-            media_path = ""
+    media_url = ""
+    cloudinary_public_id = ""
 
-    if not media_path:
-        relative_path = Path(effective_resident_id) / f"{media_id}{ext}"
-        absolute_path = _media_base_dir() / relative_path
-        absolute_path.parent.mkdir(parents=True, exist_ok=True)
-        absolute_path.write_bytes(media_bytes)
-        media_path = str(relative_path).replace("\\", "/")
+    try:
+        cloudinary_result = upload_snapshot_to_cloudinary(
+            media_bytes=media_bytes,
+            mime_type="image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}",
+            filename_hint=filename_hint or f"capture{ext}",
+            folder=f"{settings.CLOUDINARY_UPLOAD_FOLDER}/{effective_resident_id}",
+            public_id_prefix=f"{effective_resident_id}/{media_id}",
+        )
+    except Exception:
+        cloudinary_result = None
+
+    if cloudinary_result:
+        media_path = f"cloudinary:{cloudinary_result.public_id}"
+        media_url = cloudinary_result.secure_url
+        cloudinary_public_id = cloudinary_result.public_id
+    else:
+        storage_bucket = _get_storage_bucket()
+        if storage_bucket is not None:
+            storage_path = f"visitor-media/{effective_resident_id}/{media_id}{ext}"
+            try:
+                blob = storage_bucket.blob(storage_path)
+                blob.cache_control = "private, max-age=0, no-transform"
+                blob.metadata = {
+                    "residentId": effective_resident_id,
+                    "mediaId": media_id,
+                    "visitorSessionId": visitor_session_id or "",
+                    "appointmentId": appointment_id or "",
+                    "mediaType": (media_type or "photo").strip().lower(),
+                }
+                blob.upload_from_string(media_bytes, content_type="application/octet-stream")
+                media_path = f"firebase:{storage_path}"
+            except Exception:
+                media_path = ""
+
+        if not media_path:
+            relative_path = Path(effective_resident_id) / f"{media_id}{ext}"
+            absolute_path = _media_base_dir() / relative_path
+            absolute_path.parent.mkdir(parents=True, exist_ok=True)
+            absolute_path.write_bytes(media_bytes)
+            media_path = str(relative_path).replace("\\", "/")
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
@@ -241,6 +261,8 @@ def create_snapshot_audit(
         appointment_id=appointment_id,
         media_type=(media_type or "photo").strip().lower(),
         media_path=media_path,
+        media_url=media_url or None,
+        cloudinary_public_id=cloudinary_public_id or None,
         media_sha256=digest,
         source=source,
     )
@@ -254,11 +276,13 @@ def create_snapshot_audit(
         "appointmentId": row.appointment_id,
         "mediaType": row.media_type,
         "mediaPath": row.media_path,
+        "mediaUrl": row.media_url,
+        "cloudinaryPublicId": row.cloudinary_public_id,
         "mediaSha256": row.media_sha256,
         "source": row.source,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
-        "fileUrl": _build_snapshot_file_url(row.id),
-        "url": _build_snapshot_file_url(row.id),
+        "fileUrl": row.media_url or _build_snapshot_file_url(row.id),
+        "url": row.media_url or _build_snapshot_file_url(row.id),
     }
 
 
@@ -297,6 +321,18 @@ def load_snapshot_bytes(
     media_path = str(row.media_path or "")
     logical_type = row.media_type if row.media_type in {"photo", "video"} else "binary"
     content_type = _snapshot_content_type_from_path(media_path, logical_type)
+    if row.media_url:
+        try:
+            with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+                response = client.get(row.media_url)
+            if response.status_code >= 400:
+                raise AppException("Snapshot file is unavailable.", status_code=404)
+            returned_type = response.headers.get("content-type") or content_type
+            return response.content, logical_type, returned_type
+        except AppException:
+            raise
+        except Exception as exc:
+            raise AppException("Snapshot file is unavailable.", status_code=404) from exc
     if media_path.startswith("firebase:"):
         storage_path = media_path.split("firebase:", 1)[1]
         bucket = _get_storage_bucket()

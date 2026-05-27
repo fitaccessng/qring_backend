@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import base64
 from time import perf_counter
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header
@@ -25,7 +26,7 @@ from app.services.appointment_service import (
 from app.services.qr_service import resolve_qr
 from app.services.security_service import notify_security_request, serialize_security_session
 from app.services.session_service import create_visitor_session, rotate_visitor_session_token
-from app.services.visitor_session_auth import require_visitor_session_access
+from app.services.visitor_session_auth import issue_visitor_session_token, require_visitor_session_access
 from app.services.advanced_service import create_snapshot_audit
 from app.services.homeowner_service import create_visitor_session_message
 from app.services.realtime_notification_service import (
@@ -39,6 +40,8 @@ from app.socket.server import sio
 router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
+VISITOR_CONSENT_MAX_AGE_HOURS = max(1, int(getattr(settings, "VISITOR_CONSENT_MAX_AGE_HOURS", 24) or 24))
+MAX_VISITOR_SNAPSHOT_BYTES = max(1, int(getattr(settings, "MAX_VISITOR_SNAPSHOT_BYTES", 3 * 1024 * 1024) or 3 * 1024 * 1024))
 
 
 class VisitorAppointmentAcceptPayload(BaseModel):
@@ -60,12 +63,28 @@ class VisitorSessionMessagePayload(BaseModel):
     clientId: Optional[str] = None
 
 
+def _validate_visitor_consent(payload: VisitorRequestCreate) -> None:
+    if not payload.consentAccepted:
+        raise AppException("Visitor consent is required before submitting a request.", status_code=400)
+    if not payload.consentAcceptedAt:
+        raise AppException("Visitor consent timestamp is required.", status_code=400)
+    accepted_at = payload.consentAcceptedAt
+    if accepted_at.tzinfo is not None:
+        accepted_at = accepted_at.replace(tzinfo=None)
+    age_seconds = (datetime.utcnow() - accepted_at).total_seconds()
+    if age_seconds < 0 or age_seconds > VISITOR_CONSENT_MAX_AGE_HOURS * 3600:
+        raise AppException("Visitor consent has expired. Please accept the privacy notice again.", status_code=400)
+    if str(payload.consentStorage or "").strip().lower() not in {"session", "sessionstorage", "local", "localstorage"}:
+        raise AppException("Visitor consent storage is invalid.", status_code=400)
+
+
 @router.post("/request")
 async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(get_db)):
     started = perf_counter()
     phase = "resolve_qr"
     session = None
     try:
+        _validate_visitor_consent(payload)
         request_id = str(payload.requestId or "").strip() or None
         if request_id:
             from app.db.models import VisitorSession
@@ -84,7 +103,17 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     existing.id,
                     existing.status,
                 )
-                return {"data": {"sessionId": existing.id, "status": existing.status}}
+                visitor_token = issue_visitor_session_token(db, session=existing)
+                snapshot_url = str(existing.snapshot_url or existing.photo_url or "").strip() or None
+                return {
+                    "data": {
+                        "sessionId": existing.id,
+                        "status": existing.status,
+                        "visitorToken": visitor_token,
+                        "snapshotUrl": snapshot_url,
+                        "photoUrl": snapshot_url,
+                    }
+                }
 
         appointment = None
         if str(payload.qrId or "").startswith("qt1."):
@@ -123,7 +152,8 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             delivery_option=payload.deliveryOption,
             request_source="visitor_qr",
             creator_role="visitor",
-            )
+        )
+        visitor_token = issue_visitor_session_token(db, session=session)
         missing_fields = [
             field_name
             for field_name, field_value in {
@@ -154,7 +184,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 media_bytes = b""
             if media_bytes:
                 try:
-                    if len(media_bytes) > 2 * 1024 * 1024:
+                    if len(media_bytes) > MAX_VISITOR_SNAPSHOT_BYTES:
                         raise AppException("Snapshot is too large. Please retake the photo.", status_code=400)
 
                     mime = (payload.snapshotMime or "image/jpeg").strip().lower()
@@ -211,6 +241,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
 
         if snapshot_audit and isinstance(snapshot_audit, dict):
             session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
+            session.snapshot_url = session.photo_url
             db.commit()
             db.refresh(session)
             logger.info(
@@ -233,7 +264,8 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "visitorName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
-                "photoUrl": session.photo_url,
+                "photoUrl": session.snapshot_url or session.photo_url,
+                "snapshotUrl": session.snapshot_url or session.photo_url,
                 "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
                 "estateId": session.estate_id,
                 "requestSource": session.request_source or "visitor_qr",
@@ -322,8 +354,15 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             payload.qrId,
             session.id,
         )
-        visitor_token = rotate_visitor_session_token(db, session=session)
-        return {"data": {"sessionId": session.id, "status": session.status, "visitorToken": visitor_token}}
+        return {
+            "data": {
+                "sessionId": session.id,
+                "status": session.status,
+                "visitorToken": visitor_token,
+                "snapshotUrl": session.snapshot_url or session.photo_url,
+                "photoUrl": session.snapshot_url or session.photo_url,
+            }
+        }
     except Exception as exc:
         if isinstance(exc, ValueError):
             raise AppException(str(exc), status_code=409) from exc
@@ -500,6 +539,7 @@ def visitor_session_status(
             "sessionId": row.id,
             "status": row.status,
             "sessionStatus": row.status,
+            "snapshotUrl": row.snapshot_url or row.photo_url,
             "startedAt": row.started_at.isoformat() if row.started_at else None,
             "endedAt": row.ended_at.isoformat() if row.ended_at else None,
             "sessionRoute": data.get("sessionRoute"),
@@ -512,7 +552,8 @@ def visitor_session_status(
                 "fullName": row.visitor_label or "Visitor",
                 "phoneNumber": row.visitor_phone or "",
                 "purpose": row.purpose or "",
-                "photoUrl": row.photo_url,
+                "photoUrl": row.snapshot_url or row.photo_url,
+                "snapshotUrl": row.snapshot_url or row.photo_url,
                 "timestamp": row.started_at.isoformat() if row.started_at else None,
             },
             "location": {
@@ -572,23 +613,49 @@ def visitor_session_messages(
         .order_by(Message.created_at.asc())
         .all()
     )
+    snapshot_url = session.snapshot_url or session.photo_url
+    snapshot_message = None
+    if snapshot_url:
+        snapshot_message = {
+            "messageId": f"snapshot:{session.id}",
+            "id": f"snapshot:{session.id}",
+            "sessionId": session.id,
+            "text": "Visitor snapshot submitted.",
+            "messageType": "visitor_snapshot",
+            "snapshotUrl": snapshot_url,
+            "photoUrl": snapshot_url,
+            "senderRole": "visitor",
+            "senderType": "visitor",
+            "displayName": session.visitor_label or "Visitor",
+            "visitorName": session.visitor_label or "Visitor",
+            "visitorPhone": session.visitor_phone or "",
+            "purpose": session.purpose or "",
+            "doorId": session.door_id,
+            "timestamp": session.started_at.isoformat() if session.started_at else None,
+            "at": session.started_at.isoformat() if session.started_at else None,
+            "persisted": True,
+        }
+    serialized_rows = [
+        {
+            "messageId": message_row.id,
+            "id": message_row.id,
+            "sessionId": message_row.session_id,
+            "text": message_row.body,
+            "messageType": "text",
+            "snapshotUrl": None,
+            "photoUrl": None,
+            "senderRole": "homeowner" if message_row.sender_type == "homeowner" else "visitor",
+            "senderType": message_row.sender_type,
+            "displayName": "Homeowner" if message_row.sender_type == "homeowner" else "Visitor",
+            "timestamp": message_row.created_at.isoformat(),
+            "at": message_row.created_at.isoformat(),
+        }
+        for message_row in rows
+    ]
+    if snapshot_message and not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized_rows):
+        serialized_rows.insert(0, snapshot_message)
     return {
-        "data": [
-            {
-                "messageId": row.id,
-                "id": row.id,
-                "sessionId": row.session_id,
-                "text": row.body,
-                "messageType": "text",
-                "snapshotUrl": None,
-                "senderRole": "homeowner" if row.sender_type == "homeowner" else "visitor",
-                "senderType": row.sender_type,
-                "displayName": "Homeowner" if row.sender_type == "homeowner" else "Visitor",
-                "timestamp": row.created_at.isoformat(),
-                "at": row.created_at.isoformat(),
-            }
-            for row in rows
-        ]
+        "data": serialized_rows
     }
 
 

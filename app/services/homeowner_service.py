@@ -47,7 +47,13 @@ def _resolve_session_snapshot_payload(
 ) -> dict[str, Any]:
     source = payload or {}
     snapshot_url = (
-        str(source.get("snapshotUrl") or source.get("photoUrl") or session.photo_url or "").strip()
+        str(
+            source.get("snapshotUrl")
+            or source.get("photoUrl")
+            or session.snapshot_url
+            or session.photo_url
+            or ""
+        ).strip()
     )
     return {
         "messageId": f"snapshot:{session.id}",
@@ -56,6 +62,7 @@ def _resolve_session_snapshot_payload(
         "text": source.get("message") or "Visitor snapshot submitted.",
         "messageType": "visitor_snapshot",
         "snapshotUrl": snapshot_url or None,
+        "photoUrl": snapshot_url or None,
         "senderRole": "visitor",
         "senderType": "visitor",
         "displayName": session.visitor_label or "Visitor",
@@ -79,6 +86,7 @@ def _serialize_session_message(row: Message, *, visitor_name: str) -> dict[str, 
         "text": row.body,
         "messageType": "text",
         "snapshotUrl": None,
+        "photoUrl": None,
         "senderRole": sender_role,
         "senderType": sender_role,
         "senderId": row.sender_id,
@@ -181,7 +189,8 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "purpose": (session.purpose or request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
             "phoneNumber": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
             "visitorPhone": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
-            "photoUrl": session.photo_url,
+            "photoUrl": session.snapshot_url or session.photo_url,
+            "snapshotUrl": session.snapshot_url or session.photo_url,
             "snapshotAuditId": request_payload_by_session.get(session.id, {}).get("snapshotAuditId"),
             "time": session.started_at.isoformat(),
             "timestamp": session.started_at.isoformat(),
@@ -273,7 +282,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
         )
         snapshot_payload = request_payload_by_session.get(session_id, {})
         has_snapshot = bool(
-            str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url or "").strip()
+            str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url or "").strip()
         )
         last_text = (
             latest.body
@@ -301,8 +310,8 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "sessionStatus": session.status,
                 "visitorPhone": session.visitor_phone,
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
-                "photoUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url,
-                "snapshotUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url,
+                "photoUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url,
+                "snapshotUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url,
                 "snapshotAuditId": request_payload_by_session.get(session_id, {}).get("snapshotAuditId"),
                 "lastMessageType": "text" if latest else ("visitor_snapshot" if has_snapshot else "system"),
                 "appointmentId": session.appointment_id,
@@ -366,7 +375,7 @@ def list_homeowner_session_messages(
             break
 
     serialized = [_serialize_session_message(row, visitor_name=session.visitor_label or "Visitor") for row in rows]
-    snapshot_url = str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url or "").strip()
+    snapshot_url = str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url or "").strip()
     if snapshot_url:
         snapshot_message = _resolve_session_snapshot_payload(session, snapshot_payload)
         if not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized):
@@ -406,6 +415,7 @@ def create_homeowner_session_message(
         "text": message.body,
         "messageType": "text",
         "snapshotUrl": None,
+        "photoUrl": None,
         "senderRole": "homeowner",
         "senderType": message.sender_type,
         "displayName": "Homeowner",
@@ -442,6 +452,7 @@ def create_visitor_session_message(
         "text": message.body,
         "messageType": "text",
         "snapshotUrl": None,
+        "photoUrl": None,
         "senderRole": "visitor",
         "senderType": message.sender_type,
         "displayName": session.visitor_label or "Visitor",

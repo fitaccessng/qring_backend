@@ -22,6 +22,8 @@ class VisitorSnapshotAudit(Base):
     appointment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("appointments.id"), nullable=True, index=True)
     media_type: Mapped[str] = mapped_column(String(20), default="photo")
     media_path: Mapped[str] = mapped_column(Text, nullable=False)
+    media_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cloudinary_public_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     media_sha256: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     source: Mapped[str] = mapped_column(String(30), default="visitor_device")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)

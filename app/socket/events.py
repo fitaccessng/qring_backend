@@ -184,7 +184,7 @@ def register_socket_events(sio):
                 continue
             return {
                 "snapshotAuditId": str(payload.get("snapshotAuditId") or "").strip() or None,
-                "photoUrl": str(payload.get("photoUrl") or "").strip() or None,
+                "photoUrl": str(payload.get("snapshotUrl") or payload.get("photoUrl") or "").strip() or None,
             }
         return {"snapshotAuditId": None, "photoUrl": None}
 
@@ -202,7 +202,8 @@ def register_socket_events(sio):
             "visitorName": session.visitor_label if session and session.visitor_label else "Visitor",
             "visitorPhone": session.visitor_phone if session else None,
             "purpose": session.purpose if session else None,
-            "photoUrl": snapshot_meta["photoUrl"] or (str(session.photo_url or "").strip() if session else None),
+            "photoUrl": snapshot_meta["photoUrl"] or (str(session.snapshot_url or session.photo_url or "").strip() if session else None),
+            "snapshotUrl": snapshot_meta["photoUrl"] or (str(session.snapshot_url or session.photo_url or "").strip() if session else None),
             "snapshotAuditId": snapshot_meta["snapshotAuditId"],
         }
 
@@ -690,6 +691,7 @@ def register_socket_events(sio):
                 "at": created_at,
                 "persisted": False,
                 "photoUrl": snapshot_meta.get("photoUrl"),
+                "snapshotUrl": snapshot_meta.get("photoUrl"),
                 "snapshotAuditId": snapshot_meta.get("snapshotAuditId"),
             },
             idempotency_key=message_dedupe_key or message_id,

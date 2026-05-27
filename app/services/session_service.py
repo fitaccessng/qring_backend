@@ -24,6 +24,7 @@ def create_visitor_session(
     visitor_phone: str | None = None,
     purpose: str | None = None,
     photo_url: str | None = None,
+    snapshot_url: str | None = None,
     visitor_type: str | None = None,
     delivery_option: str | None = None,
     request_source: str | None = None,
@@ -82,6 +83,7 @@ def create_visitor_session(
     clean_delivery_option = (delivery_option or "").strip().lower() or None
     clean_request_source = (request_source or "visitor_qr").strip().lower() or "visitor_qr"
     clean_creator_role = (creator_role or "visitor").strip().lower() or "visitor"
+    effective_snapshot_url = (snapshot_url or photo_url or "").strip() or None
     session = VisitorSession(
         request_id=request_id,
         qr_id=qr_id,
@@ -93,6 +95,7 @@ def create_visitor_session(
         visitor_phone=(visitor_phone or "").strip() or None,
         purpose=(purpose or "").strip() or None,
         photo_url=(photo_url or "").strip() or None,
+        snapshot_url=effective_snapshot_url,
         visitor_type=clean_visitor_type if clean_visitor_type in {"guest", "delivery"} else "guest",
         request_source=clean_request_source if clean_request_source in {"visitor_qr", "gateman_assisted"} else "visitor_qr",
         creator_role=clean_creator_role if clean_creator_role in {"visitor", "security"} else "visitor",

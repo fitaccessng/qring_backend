@@ -167,6 +167,12 @@ class Settings(BaseSettings):
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
     FIREBASE_SERVICE_ACCOUNT_BASE64: str = ""
     FIREBASE_STORAGE_BUCKET: str = ""
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
+    CLOUDINARY_UPLOAD_FOLDER: str = "qring/visitor-snapshots"
+    VISITOR_CONSENT_MAX_AGE_HOURS: int = 24
+    MAX_VISITOR_SNAPSHOT_BYTES: int = 3 * 1024 * 1024
     ADMIN_SIGNUP_KEY: str = ""
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""

@@ -148,7 +148,7 @@ async def security_register_request(
         raise AppException("The captured visitor photo could not be processed.", status_code=400) from exc
     if not media_bytes:
         raise AppException("A live visitor photo is required.", status_code=400)
-    if len(media_bytes) > 2 * 1024 * 1024:
+    if len(media_bytes) > max(1, int(getattr(settings, "MAX_VISITOR_SNAPSHOT_BYTES", 3 * 1024 * 1024) or 3 * 1024 * 1024)):
         raise AppException("Snapshot is too large. Please retake the photo.", status_code=400)
 
     session = create_visitor_session(
@@ -184,6 +184,7 @@ async def security_register_request(
     )
     if snapshot_audit and isinstance(snapshot_audit, dict):
         session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
+        session.snapshot_url = session.photo_url
         db.commit()
         db.refresh(session)
         logger.info(
@@ -210,7 +211,8 @@ async def security_register_request(
             "visitorName": updated.visitor_label or "Visitor",
             "phoneNumber": updated.visitor_phone or "",
             "purpose": updated.purpose or "",
-            "photoUrl": updated.photo_url,
+            "photoUrl": updated.snapshot_url or updated.photo_url,
+            "snapshotUrl": updated.snapshot_url or updated.photo_url,
             "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
             "requestSource": "gateman_assisted",
             "creatorRole": "security",
@@ -240,6 +242,7 @@ async def security_register_request(
             "gateStatus": updated.gate_status,
             "communicationStatus": updated.communication_status,
             "homeownerId": updated.homeowner_id,
+            "snapshotUrl": updated.snapshot_url or updated.photo_url,
         },
         room=f"session:{updated.id}",
         namespace=settings.SIGNALING_NAMESPACE,

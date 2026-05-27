@@ -234,7 +234,8 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         "visitorName": session.visitor_label or "Visitor",
         "visitorPhone": session.visitor_phone,
         "purpose": session.purpose or "",
-        "photoUrl": session.photo_url,
+        "photoUrl": session.snapshot_url or session.photo_url,
+        "snapshotUrl": session.snapshot_url or session.photo_url,
         "doorId": session.door_id,
         "doorName": door.name if door else "",
         "gateId": session.gate_id or (door.gate_label if door else None),
@@ -284,14 +285,14 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         "startedAt": session.started_at.isoformat() if session.started_at else None,
         "endedAt": session.ended_at.isoformat() if session.ended_at else None,
         "waitingSeconds": max(0, int((datetime.utcnow() - (session.started_at or datetime.utcnow())).total_seconds())),
-        "snapshotMissing": not bool(session.photo_url),
+        "snapshotMissing": not bool(session.snapshot_url or session.photo_url),
         "detailsMissing": [
             field_name
             for field_name, field_value in {
                 "visitorName": session.visitor_label,
                 "phoneNumber": session.visitor_phone,
                 "purpose": session.purpose,
-                "photoUrl": session.photo_url,
+                "photoUrl": session.snapshot_url or session.photo_url,
             }.items()
             if not str(field_value or "").strip()
         ],
@@ -375,7 +376,8 @@ def notify_security_request(db: Session, session: VisitorSession) -> None:
                 "visitorName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
-                "photoUrl": session.photo_url,
+                "photoUrl": session.snapshot_url or session.photo_url,
+                "snapshotUrl": session.snapshot_url or session.photo_url,
                 "estateId": estate.id,
                 "homeownerId": session.homeowner_id,
                 "message": f"Visitor awaiting security review for {session.visitor_label or 'Visitor'}",
@@ -433,6 +435,8 @@ def update_security_session_status(
                     "visitorName": session.visitor_label or "Visitor",
                     "doorId": session.door_id,
                     "purpose": session.purpose or "",
+                    "photoUrl": session.snapshot_url or session.photo_url,
+                    "snapshotUrl": session.snapshot_url or session.photo_url,
                     "message": f"Security forwarded {session.visitor_label or 'a visitor'} for your decision.",
                 },
             )
@@ -600,7 +604,8 @@ def list_security_session_messages(
 
     rows = db.query(Message).filter(Message.session_id == session_id).order_by(Message.created_at.asc()).limit(limit).all()
     security_user_obj = _get_security_user(db, security_user_id)
-    return [
+    snapshot_url = session.snapshot_url or session.photo_url
+    serialized = [
         {
             "id": row.id,
             "sessionId": row.session_id,
@@ -615,6 +620,23 @@ def list_security_session_messages(
         }
         for row in rows
     ]
+    if snapshot_url:
+        serialized.insert(
+            0,
+            {
+                "id": f"snapshot:{session.id}",
+                "messageId": f"snapshot:{session.id}",
+                "sessionId": session.id,
+                "text": "Visitor snapshot submitted.",
+                "messageType": "visitor_snapshot",
+                "snapshotUrl": snapshot_url,
+                "photoUrl": snapshot_url,
+                "senderType": "visitor",
+                "displayName": session.visitor_label or "Visitor",
+                "at": session.started_at.isoformat() if session.started_at else datetime.utcnow().isoformat(),
+            },
+        )
+    return serialized
 
 
 def create_security_session_message(

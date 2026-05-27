@@ -34,6 +34,7 @@ class VisitorSession(Base):
     visitor_phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     purpose: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     photo_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    snapshot_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True, index=True)
     gate_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     handled_by_security_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)

@@ -117,6 +117,22 @@ async def structured_error_logging(request: Request, call_next):
         raise exc
 
 
+@fastapi_app.middleware("http")
+async def enforce_visitor_request_size(request: Request, call_next):
+    if request.method == "POST" and (
+        request.url.path.endswith("/visitor/request") or request.url.path.endswith("/security/requests/register")
+    ):
+        content_length = request.headers.get("content-length")
+        try:
+            if content_length and int(content_length) > settings.MAX_VISITOR_SNAPSHOT_BYTES + 1024 * 1024:
+                from starlette.responses import JSONResponse
+
+                return JSONResponse({"detail": "Visitor request payload is too large."}, status_code=413)
+        except Exception:
+            pass
+    return await call_next(request)
+
+
 def _seed_dev_data(db: Session):
     if db.query(User).count() > 0:
         return
@@ -345,6 +361,7 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "visitor_sessions", "visitor_phone", "VARCHAR(40)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "purpose", "TEXT")
             _add_column_if_missing(conn, columns, "visitor_sessions", "photo_url", "TEXT")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "snapshot_url", "TEXT")
             _add_column_if_missing(conn, columns, "visitor_sessions", "estate_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "gate_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "handled_by_security_id", "VARCHAR(36)")
@@ -640,6 +657,13 @@ def _ensure_advanced_features_schema() -> None:
         Base.metadata.tables[table].create(bind=engine, checkfirst=True)
     Base.metadata.tables["gate_logs"].create(bind=engine, checkfirst=True)
     Base.metadata.tables["digital_access_passes"].create(bind=engine, checkfirst=True)
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "visitor_snapshot_audits" in table_names:
+        columns = {col["name"] for col in inspector.get_columns("visitor_snapshot_audits")}
+        with engine.begin() as conn:
+            _add_column_if_missing(conn, columns, "visitor_snapshot_audits", "media_url", "TEXT")
+            _add_column_if_missing(conn, columns, "visitor_snapshot_audits", "cloudinary_public_id", "VARCHAR(255)")
 
 
 def _ensure_estate_alert_schema() -> None:
