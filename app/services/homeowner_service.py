@@ -33,6 +33,66 @@ STATUS_LABELS = {
 }
 
 
+def _safe_json(value: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_session_snapshot_payload(
+    session: VisitorSession,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = payload or {}
+    snapshot_url = (
+        str(source.get("snapshotUrl") or source.get("photoUrl") or session.photo_url or "").strip()
+    )
+    return {
+        "messageId": f"snapshot:{session.id}",
+        "id": f"snapshot:{session.id}",
+        "sessionId": session.id,
+        "text": source.get("message") or "Visitor snapshot submitted.",
+        "messageType": "visitor_snapshot",
+        "snapshotUrl": snapshot_url or None,
+        "senderRole": "visitor",
+        "senderType": "visitor",
+        "displayName": session.visitor_label or "Visitor",
+        "visitorName": session.visitor_label or "Visitor",
+        "visitorPhone": (source.get("phoneNumber") or session.visitor_phone or "").strip() or None,
+        "purpose": (source.get("purpose") or session.purpose or "").strip() or None,
+        "doorId": session.door_id,
+        "timestamp": session.started_at.isoformat() if session.started_at else datetime.utcnow().isoformat(),
+        "at": session.started_at.isoformat() if session.started_at else datetime.utcnow().isoformat(),
+        "persisted": True,
+        "snapshotAuditId": str(source.get("snapshotAuditId") or "").strip() or None,
+    }
+
+
+def _serialize_session_message(row: Message, *, visitor_name: str) -> dict[str, Any]:
+    sender_role = "homeowner" if row.sender_type == "homeowner" else "visitor"
+    return {
+        "messageId": row.id,
+        "id": row.id,
+        "sessionId": row.session_id,
+        "text": row.body,
+        "messageType": "text",
+        "snapshotUrl": None,
+        "senderRole": sender_role,
+        "senderType": sender_role,
+        "senderId": row.sender_id,
+        "displayName": "Homeowner" if sender_role == "homeowner" else (visitor_name or "Visitor"),
+        "visitorName": visitor_name or "Visitor",
+        "visitorPhone": None,
+        "purpose": None,
+        "doorId": None,
+        "timestamp": row.created_at.isoformat(),
+        "at": row.created_at.isoformat(),
+        "persisted": True,
+    }
+
+
 def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
     row = (
         db.query(Home)
@@ -171,10 +231,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
         )
 
         for row in access_notifications:
-            try:
-                payload = json.loads(row.payload or "{}")
-            except Exception:
-                continue
+            payload = _safe_json(row.payload)
             session_id = str(payload.get("sessionId") or "").strip()
             if session_id and session_id in session_ids and session_id not in request_payload_by_session:
                 request_payload_by_session[session_id] = payload
@@ -214,13 +271,21 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 else session.started_at
             )
         )
+        snapshot_payload = request_payload_by_session.get(session_id, {})
+        has_snapshot = bool(
+            str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url or "").strip()
+        )
         last_text = (
             latest.body
             if latest
             else (
-                "Visitor accepted appointment. Start the conversation."
-                if linked_appointment
-                else "Visitor scanned QR code. Start the conversation."
+                "Visitor snapshot received."
+                if has_snapshot
+                else (
+                    "Visitor accepted appointment. Start the conversation."
+                    if linked_appointment
+                    else "Visitor scanned QR code. Start the conversation."
+                )
             )
         )
         threads.append(
@@ -236,8 +301,10 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "sessionStatus": session.status,
                 "visitorPhone": session.visitor_phone,
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
-                "photoUrl": session.photo_url,
+                "photoUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url,
+                "snapshotUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url,
                 "snapshotAuditId": request_payload_by_session.get(session_id, {}).get("snapshotAuditId"),
+                "lastMessageType": "text" if latest else ("visitor_snapshot" if has_snapshot else "system"),
                 "appointmentId": session.appointment_id,
                 "homeName": home.name if home else None,
                 "buildingName": home.name if home else None,
@@ -281,18 +348,30 @@ def list_homeowner_session_messages(
         .limit(limit)
         .all()
     )
-    return [
-        {
-            "id": row.id,
-            "sessionId": row.session_id,
-            "text": row.body,
-            "senderType": row.sender_type,
-            "senderId": row.sender_id,
-            "displayName": "Homeowner" if row.sender_type == "homeowner" else (session.visitor_label or "Visitor"),
-            "at": row.created_at.isoformat(),
-        }
-        for row in rows
-    ]
+    request_notification = (
+        db.query(Notification)
+        .filter(
+            Notification.user_id == homeowner_id,
+            Notification.kind.in_(("access_request", "visitor.request")),
+            Notification.payload.isnot(None),
+        )
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
+    snapshot_payload = {}
+    for item in request_notification:
+        payload = _safe_json(item.payload)
+        if str(payload.get("sessionId") or "").strip() == session_id:
+            snapshot_payload = payload
+            break
+
+    serialized = [_serialize_session_message(row, visitor_name=session.visitor_label or "Visitor") for row in rows]
+    snapshot_url = str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.photo_url or "").strip()
+    if snapshot_url:
+        snapshot_message = _resolve_session_snapshot_payload(session, snapshot_payload)
+        if not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized):
+            serialized.insert(0, snapshot_message)
+    return serialized
 
 
 def create_homeowner_session_message(
@@ -321,11 +400,16 @@ def create_homeowner_session_message(
     db.commit()
     db.refresh(message)
     return {
+        "messageId": message.id,
         "id": message.id,
         "sessionId": message.session_id,
         "text": message.body,
+        "messageType": "text",
+        "snapshotUrl": None,
+        "senderRole": "homeowner",
         "senderType": message.sender_type,
         "displayName": "Homeowner",
+        "timestamp": message.created_at.isoformat(),
         "at": message.created_at.isoformat(),
     }
 
@@ -352,11 +436,16 @@ def create_visitor_session_message(
     db.commit()
     db.refresh(message)
     return {
+        "messageId": message.id,
         "id": message.id,
         "sessionId": message.session_id,
         "text": message.body,
+        "messageType": "text",
+        "snapshotUrl": None,
+        "senderRole": "visitor",
         "senderType": message.sender_type,
         "displayName": session.visitor_label or "Visitor",
+        "timestamp": message.created_at.isoformat(),
         "at": message.created_at.isoformat(),
     }
 

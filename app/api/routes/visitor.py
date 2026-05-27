@@ -575,11 +575,16 @@ def visitor_session_messages(
     return {
         "data": [
             {
+                "messageId": row.id,
                 "id": row.id,
                 "sessionId": row.session_id,
                 "text": row.body,
+                "messageType": "text",
+                "snapshotUrl": None,
+                "senderRole": "homeowner" if row.sender_type == "homeowner" else "visitor",
                 "senderType": row.sender_type,
                 "displayName": "Homeowner" if row.sender_type == "homeowner" else "Visitor",
+                "timestamp": row.created_at.isoformat(),
                 "at": row.created_at.isoformat(),
             }
             for row in rows

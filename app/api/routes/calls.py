@@ -201,10 +201,12 @@ async def start_call(
 
     return {
         "data": {
+            "status": "ok",
             "roomName": row.room_name,
             "callSessionId": row.id,
             "visitorId": row.visitor_id,
-            "status": row.status,
+            "callStatus": row.status,
+            "state": "connecting",
             "rtcConfig": build_webrtc_rtc_config(),
         }
     }
