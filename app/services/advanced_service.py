@@ -151,7 +151,9 @@ def _summary_window(week_start_iso: str | None = None) -> tuple[datetime, dateti
 
 def _build_snapshot_file_url(snapshot_id: str) -> str:
     prefix = str(settings.API_V1_PREFIX or "/api/v1").rstrip("/")
-    return f"{prefix}/advanced/visitor/snapshots/{snapshot_id}/file"
+    frontend_base = str(settings.FRONTEND_BASE_URL or "").strip().rstrip("/")
+    relative_path = f"{prefix}/advanced/visitor/snapshots/{snapshot_id}/file"
+    return f"{frontend_base}{relative_path}" if frontend_base else relative_path
 
 
 def notify_multi_channel(

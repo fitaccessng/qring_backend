@@ -8,7 +8,7 @@ from datetime import datetime
 
 from app.core.config import get_settings
 from app.core.security import decode_token
-from app.db.models import CallSession, Estate, ResidentSetting, Message, User, UserRole, VisitorSession
+from app.db.models import CallSession, Estate, ResidentSetting, Message, Notification, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
 from app.socket.contracts import RealtimeEvent
 from app.socket.manager import socket_state
@@ -91,6 +91,48 @@ def _socket_log(event: str, **fields) -> None:
 
 
 def register_socket_events(sio):
+    async def _event_context(db, *, sid: str, session_id: str | None, payload: dict | None) -> tuple[str | None, str]:
+        user_id = await socket_state.get_user_id(sid)
+        role = "visitor"
+        normalized_session_id = str(session_id or "").strip()
+        if user_id and normalized_session_id:
+            session = db.query(VisitorSession).filter(VisitorSession.id == normalized_session_id).first()
+            if session and user_id == session.homeowner_id:
+                role = "homeowner"
+            else:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user and user.role == UserRole.security:
+                    role = "security"
+        elif payload and str((payload or {}).get("senderType") or "").strip():
+            role = str((payload or {}).get("senderType") or "visitor").strip()
+        return user_id, role
+
+    def _event_envelope(
+        *,
+        event_id: str,
+        session_id: str | None,
+        user_id: str | None,
+        role: str,
+        payload: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        return {
+            **(payload or {}),
+            "eventId": str(event_id or "").strip(),
+            "sessionId": str(session_id or (payload or {}).get("sessionId") or "").strip() or None,
+            "userId": str(user_id or "").strip() or None,
+            "role": str(role or "").strip() or "visitor",
+            "timestamp": datetime.utcnow().isoformat(),
+            "idempotencyKey": str(
+                idempotency_key
+                or (payload or {}).get("idempotencyKey")
+                or (payload or {}).get("clientId")
+                or event_id
+                or ""
+            ).strip()
+            or None,
+        }
+
     async def _participant_type_for_sid(db, sid: str, sender_user_id: str | None, session: VisitorSession) -> str:
         if sender_user_id and sender_user_id == session.homeowner_id:
             return "homeowner"
@@ -122,6 +164,62 @@ def register_socket_events(sio):
             "answeredAt": row.answered_at.isoformat() if row.answered_at else None,
             "createdAt": row.created_at.isoformat() if row.created_at else None,
         }
+
+    def _latest_snapshot_meta(db, session_id: str) -> dict:
+        row = (
+            db.query(Notification)
+            .filter(
+                Notification.kind.in_(["visitor.request", "access_request"]),
+                Notification.payload.isnot(None),
+            )
+            .order_by(Notification.created_at.desc())
+            .all()
+        )
+        for item in row:
+            try:
+                payload = json.loads(item.payload or "{}")
+            except Exception:
+                continue
+            if str(payload.get("sessionId") or "").strip() != str(session_id):
+                continue
+            return {
+                "snapshotAuditId": str(payload.get("snapshotAuditId") or "").strip() or None,
+                "photoUrl": str(payload.get("photoUrl") or "").strip() or None,
+            }
+        return {"snapshotAuditId": None, "photoUrl": None}
+
+    async def _build_session_snapshot_payload(db, session_id: str, *, joined_at: str | None = None) -> dict:
+        session = db.query(VisitorSession).filter(VisitorSession.id == str(session_id)).first()
+        participants = await socket_state.session_participants(str(session_id))
+        active_call = await _active_call_snapshot(db, str(session_id))
+        snapshot_meta = _latest_snapshot_meta(db, str(session_id))
+        return {
+            "sessionId": str(session_id),
+            "status": str(session.status or "") if session else "",
+            "participants": participants,
+            "activeCall": active_call,
+            "joinedAt": joined_at,
+            "visitorName": session.visitor_label if session and session.visitor_label else "Visitor",
+            "visitorPhone": session.visitor_phone if session else None,
+            "purpose": session.purpose if session else None,
+            "photoUrl": snapshot_meta["photoUrl"] or (str(session.photo_url or "").strip() if session else None),
+            "snapshotAuditId": snapshot_meta["snapshotAuditId"],
+        }
+
+    async def _emit_session_snapshot(session_id: str, *, to: str | None = None) -> None:
+        if not session_id:
+            return
+        db = SessionLocal()
+        try:
+            payload = await _build_session_snapshot_payload(db, str(session_id))
+        finally:
+            db.close()
+        emit_kwargs = {"namespace": settings.SIGNALING_NAMESPACE}
+        if to:
+            emit_kwargs["to"] = to
+        else:
+            emit_kwargs["room"] = f"session:{session_id}"
+        await sio.emit(RealtimeEvent.SESSION_SNAPSHOT, payload, **emit_kwargs)
 
     async def _emit_session_presence(session_id: str) -> None:
         if not session_id:
@@ -410,15 +508,14 @@ def register_socket_events(sio):
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await _emit_session_presence(str(session_id))
+        db = SessionLocal()
+        try:
+            snapshot_payload = await _build_session_snapshot_payload(db, str(session_id), joined_at=now_iso)
+        finally:
+            db.close()
         await sio.emit(
             RealtimeEvent.SESSION_SNAPSHOT,
-            {
-                "sessionId": str(session_id),
-                "status": session_status,
-                "participants": await socket_state.session_participants(str(session_id)),
-                "activeCall": active_call,
-                "joinedAt": now_iso,
-            },
+            snapshot_payload,
             to=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
@@ -549,6 +646,33 @@ def register_socket_events(sio):
             body = body[:2000]
         await socket_state.record_metric("chatMessages")
         sender_user_id = await socket_state.get_user_id(sid)
+        message_dedupe_key = str((payload or {}).get("idempotencyKey") or client_id or "").strip()
+        if message_dedupe_key and not await socket_state.claim_event_once(
+            f"chat.message:{session_id}:{sender_user_id or sid}",
+            message_dedupe_key,
+            ttl_seconds=180,
+        ):
+            _socket_log(
+                "chat_message_duplicate_suppressed",
+                sid=sid,
+                session_id=session_id,
+                sender_user_id=sender_user_id,
+                client_id=client_id,
+                idempotency_key=message_dedupe_key,
+            )
+            await sio.emit(
+                RealtimeEvent.CHAT_ACK,
+                {
+                    "id": "",
+                    "sessionId": session_id,
+                    "clientId": client_id,
+                    "at": datetime.utcnow().isoformat(),
+                    "status": "duplicate",
+                },
+                to=sid,
+                namespace=settings.SIGNALING_NAMESPACE,
+            )
+            return {"ok": True, "sessionId": session_id, "status": "duplicate"}
         _socket_log(
             "chat_message",
             sid=sid,
@@ -563,6 +687,7 @@ def register_socket_events(sio):
         display_name = (payload or {}).get("displayName") or "Participant"
         created_at = datetime.utcnow().isoformat()
         message_id = str(uuid.uuid4())
+        snapshot_meta = {"snapshotAuditId": None, "photoUrl": None}
 
         # Validate visitor token again for unauthenticated senders to avoid replay after disconnects.
         if not sender_user_id:
@@ -572,14 +697,25 @@ def register_socket_events(sio):
                 if not session:
                     return
                 require_visitor_session_access(db, session=session, visitor_token=visitor_token)
+                snapshot_meta = _latest_snapshot_meta(db, str(session_id))
+            finally:
+                db.close()
+        else:
+            db = SessionLocal()
+            try:
+                snapshot_meta = _latest_snapshot_meta(db, str(session_id))
             finally:
                 db.close()
 
-        await sio.emit(
-            RealtimeEvent.CHAT_MESSAGE,
-            {
+        event_payload = _event_envelope(
+            event_id=message_id,
+            session_id=str(session_id),
+            user_id=sender_user_id,
+            role=optimistic_sender_type,
+            payload={
                 "id": message_id,
                 "sessionId": session_id,
+                "roomId": f"session:{session_id}",
                 "text": body,
                 "clientId": client_id,
                 "senderType": optimistic_sender_type,
@@ -587,7 +723,15 @@ def register_socket_events(sio):
                 "displayName": display_name,
                 "at": created_at,
                 "persisted": False,
+                "photoUrl": snapshot_meta.get("photoUrl"),
+                "snapshotAuditId": snapshot_meta.get("snapshotAuditId"),
             },
+            idempotency_key=message_dedupe_key or message_id,
+        )
+
+        await sio.emit(
+            RealtimeEvent.CHAT_MESSAGE,
+            event_payload,
             room=f"session:{session_id}",
             namespace=settings.SIGNALING_NAMESPACE,
         )
@@ -683,16 +827,34 @@ def register_socket_events(sio):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
-        _socket_log("call_invite", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        dedupe_key = str((payload or {}).get("idempotencyKey") or call_session_id or "").strip()
+        if dedupe_key and not await socket_state.claim_event_once(f"call.invite:{session_id}", dedupe_key):
+            _socket_log("call_invite_duplicate_suppressed", sid=sid, session_id=session_id, call_session_id=call_session_id)
+            return {"ok": True, "sessionId": session_id, "status": "duplicate"}
+        _socket_log("call_invite", sid=sid, session_id=session_id, call_session_id=call_session_id)
+        db = SessionLocal()
+        try:
+            user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
+        finally:
+            db.close()
         await socket_state.update_session_participant(sid, session_id, callState="ringing", presence="ringing", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
             RealtimeEvent.CALL_INVITE,
-            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            _event_envelope(
+                event_id=call_session_id,
+                session_id=session_id,
+                user_id=user_id,
+                role=role,
+                payload={**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+                idempotency_key=dedupe_key or call_session_id,
+            ),
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await _emit_session_presence(session_id)
+        await _emit_session_snapshot(session_id)
         return {"ok": True, "sessionId": session_id}
 
     @sio.on(RealtimeEvent.CALL_INVITE_RECEIVED, namespace=settings.SIGNALING_NAMESPACE)
@@ -716,22 +878,41 @@ def register_socket_events(sio):
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
         call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        dedupe_key = str((payload or {}).get("idempotencyKey") or call_session_id or "").strip()
+        if dedupe_key and not await socket_state.claim_event_once(f"call.accepted:{session_id}", dedupe_key):
+            _socket_log("call_accepted_duplicate_suppressed", sid=sid, session_id=session_id, call_session_id=call_session_id)
+            return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id, "status": "duplicate"}
         _socket_log("call_accepted", sid=sid, session_id=session_id, call_session_id=call_session_id)
         if call_session_id:
             db = SessionLocal()
             try:
                 mark_call_session_answered(db, call_session_id=call_session_id)
+                user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
+            finally:
+                db.close()
+        else:
+            db = SessionLocal()
+            try:
+                user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
             finally:
                 db.close()
         await socket_state.update_session_participant(sid, session_id, callState="connecting", presence="in_call", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
             RealtimeEvent.CALL_ACCEPTED,
-            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            _event_envelope(
+                event_id=call_session_id,
+                session_id=session_id,
+                user_id=user_id,
+                role=role,
+                payload={**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+                idempotency_key=dedupe_key or call_session_id,
+            ),
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await _emit_session_presence(session_id)
+        await _emit_session_snapshot(session_id)
         return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id}
 
     @sio.on(RealtimeEvent.CALL_REJECTED, namespace=settings.SIGNALING_NAMESPACE)
@@ -740,22 +921,41 @@ def register_socket_events(sio):
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
         call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        dedupe_key = str((payload or {}).get("idempotencyKey") or call_session_id or "").strip()
+        if dedupe_key and not await socket_state.claim_event_once(f"call.rejected:{session_id}", dedupe_key):
+            _socket_log("call_rejected_duplicate_suppressed", sid=sid, session_id=session_id, call_session_id=call_session_id)
+            return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id, "status": "duplicate"}
         _socket_log("call_rejected", sid=sid, session_id=session_id, call_session_id=call_session_id)
         if call_session_id:
             db = SessionLocal()
             try:
                 mark_call_session_rejected(db, call_session_id=call_session_id)
+                user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
+            finally:
+                db.close()
+        else:
+            db = SessionLocal()
+            try:
+                user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
             finally:
                 db.close()
         await socket_state.update_session_participant(sid, session_id, callState="idle", presence="online", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
             RealtimeEvent.CALL_REJECTED,
-            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            _event_envelope(
+                event_id=call_session_id,
+                session_id=session_id,
+                user_id=user_id,
+                role=role,
+                payload={**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+                idempotency_key=dedupe_key or call_session_id,
+            ),
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await _emit_session_presence(session_id)
+        await _emit_session_snapshot(session_id)
         return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id}
 
     @sio.on(RealtimeEvent.CALL_ENDED, namespace=settings.SIGNALING_NAMESPACE)
@@ -763,16 +963,34 @@ def register_socket_events(sio):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
-        _socket_log("call_ended", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        dedupe_key = str((payload or {}).get("idempotencyKey") or call_session_id or "").strip()
+        if dedupe_key and not await socket_state.claim_event_once(f"call.ended:{session_id}", dedupe_key):
+            _socket_log("call_ended_duplicate_suppressed", sid=sid, session_id=session_id, call_session_id=call_session_id)
+            return {"ok": True, "sessionId": session_id, "status": "duplicate"}
+        _socket_log("call_ended", sid=sid, session_id=session_id, call_session_id=call_session_id)
+        db = SessionLocal()
+        try:
+            user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
+        finally:
+            db.close()
         await socket_state.update_session_participant(sid, session_id, callState="idle", presence="online", lastSeenAt=datetime.utcnow().isoformat())
         await sio.emit(
             RealtimeEvent.CALL_ENDED,
-            {**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+            _event_envelope(
+                event_id=call_session_id,
+                session_id=session_id,
+                user_id=user_id,
+                role=role,
+                payload={**(payload or {}), "senderSid": sid, "at": datetime.utcnow().isoformat()},
+                idempotency_key=dedupe_key or call_session_id,
+            ),
             room=f"session:{session_id}",
             skip_sid=sid,
             namespace=settings.SIGNALING_NAMESPACE,
         )
         await _emit_session_presence(session_id)
+        await _emit_session_snapshot(session_id)
         return {"ok": True, "sessionId": session_id}
 
     @sio.on("visitor-arrived", namespace=settings.SIGNALING_NAMESPACE)

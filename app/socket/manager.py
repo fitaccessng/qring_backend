@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from typing import Any
+from time import time
 
 from app.core.redis import get_async_redis_client, prefixed_key
 from app.services.realtime_runtime_service import mark_realtime_state
@@ -20,6 +21,7 @@ class SocketState:
         self._room_members: dict[str, set[str]] = {}
         self._user_sids: dict[str, set[str]] = {}
         self._session_participants: dict[str, dict[str, dict[str, Any]]] = {}
+        self._idempotency_seen: dict[str, float] = {}
         self._metrics: dict[str, int] = {
             "binds": 0,
             "disconnects": 0,
@@ -31,6 +33,7 @@ class SocketState:
             "relayCandidates": 0,
             "iceFailures": 0,
             "reconnectRecoveries": 0,
+            "duplicateEventsSuppressed": 0,
         }
 
     async def _mark_redis_failure(self, action: str, exc: Exception) -> None:
@@ -49,6 +52,9 @@ class SocketState:
     async def _allow_session_local(self, sid: str, session_id: str, participant: dict[str, Any]) -> int:
         room = f"session:{session_id}"
         async with self._lock:
+            if session_id in self._sid_sessions.get(sid, set()):
+                self._session_participants.setdefault(session_id, {})[sid] = participant
+                return len(self._room_members.get(room, set()))
             self._sid_sessions.setdefault(sid, set()).add(session_id)
             self._room_members.setdefault(room, set()).add(sid)
             self._session_participants.setdefault(session_id, {})[sid] = participant
@@ -115,6 +121,42 @@ class SocketState:
 
     def _session_participants_key(self, session_id: str) -> str:
         return prefixed_key("socket", "session-participants", session_id)
+
+    def _idempotency_key(self, scope: str, event_id: str) -> str:
+        return prefixed_key("socket", "idempotency", scope, event_id)
+
+    async def claim_event_once(self, scope: str, event_id: str, ttl_seconds: int = 120) -> bool:
+        normalized_scope = str(scope or "").strip()
+        normalized_event_id = str(event_id or "").strip()
+        if not normalized_scope or not normalized_event_id:
+            return True
+
+        cache_key = f"{normalized_scope}:{normalized_event_id}"
+        now = time()
+        async with self._lock:
+            expired = [key for key, expires_at in self._idempotency_seen.items() if expires_at <= now]
+            for key in expired:
+                self._idempotency_seen.pop(key, None)
+            if cache_key in self._idempotency_seen:
+                self._metrics["duplicateEventsSuppressed"] = int(self._metrics.get("duplicateEventsSuppressed", 0)) + 1
+                return False
+            self._idempotency_seen[cache_key] = now + max(5, int(ttl_seconds))
+
+        if self._redis is not None:
+            try:
+                claimed = await self._redis.set(
+                    self._idempotency_key(normalized_scope, normalized_event_id),
+                    "1",
+                    ex=max(5, int(ttl_seconds)),
+                    nx=True,
+                )
+                await self._mark_redis_success()
+                if not claimed:
+                    await self._increment_metric("duplicateEventsSuppressed")
+                    return False
+            except Exception as exc:
+                await self._mark_redis_failure("claim_event_once", exc)
+        return True
 
     async def bind(self, user_id: str, sid: str) -> None:
         await self._bind_local(user_id, sid)
@@ -343,6 +385,7 @@ class SocketState:
             self._room_members.clear()
             self._user_sids.clear()
             self._session_participants.clear()
+            self._idempotency_seen.clear()
             self._metrics = {
                 "binds": 0,
                 "disconnects": 0,
@@ -354,6 +397,7 @@ class SocketState:
                 "relayCandidates": 0,
                 "iceFailures": 0,
                 "reconnectRecoveries": 0,
+                "duplicateEventsSuppressed": 0,
             }
 
 

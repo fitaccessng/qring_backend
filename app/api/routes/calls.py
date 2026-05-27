@@ -158,18 +158,25 @@ async def start_call(
         linked_session = visit.id if visit else None
 
     if linked_session:
+        event_payload = {
+            "eventId": row.id,
+            "sessionId": linked_session,
+            "callSessionId": row.id,
+            "appointmentId": row.appointment_id,
+            "roomName": row.room_name,
+            "deliveryRoom": f"session:{linked_session}",
+            "status": row.status,
+            "visitorId": row.visitor_id,
+            "hasVideo": bool(payload.hasVideo),
+            "type": row.call_type,
+            "userId": user.id if user else None,
+            "role": user.role.value if user else "visitor",
+            "timestamp": row.created_at.isoformat() if row.created_at else None,
+            "idempotencyKey": row.id,
+        }
         await sio.emit(
             "call.invite",
-            {
-                "sessionId": linked_session,
-                "callSessionId": row.id,
-                "appointmentId": row.appointment_id,
-                "roomName": row.room_name,
-                "status": row.status,
-                "visitorId": row.visitor_id,
-                "hasVideo": bool(payload.hasVideo),
-                "type": row.call_type,
-            },
+            event_payload,
             room=f"session:{linked_session}",
             namespace=settings.SIGNALING_NAMESPACE,
         )
@@ -313,12 +320,18 @@ async def end_call(
         session_ids.append(row.visitor_id)
 
     event_payload = {
+        "eventId": row.id,
         "sessionId": session_ids[0] if session_ids else None,
         "callSessionId": row.id,
         "appointmentId": row.appointment_id,
         "visitorId": row.visitor_id,
         "roomName": row.room_name,
         "status": row.status,
+        "endedAt": row.ended_at.isoformat() if row.ended_at else None,
+        "userId": user.id if user else None,
+        "role": user.role.value if user else (participant_type or "visitor"),
+        "timestamp": row.ended_at.isoformat() if row.ended_at else None,
+        "idempotencyKey": row.id,
     }
 
     target_rooms = {f"homeowner:{row.homeowner_id}"}
