@@ -64,18 +64,37 @@ class VisitorSessionMessagePayload(BaseModel):
 
 
 def _validate_visitor_consent(payload: VisitorRequestCreate) -> None:
-    if not payload.consentAccepted:
-        raise AppException("Visitor consent is required before submitting a request.", status_code=400)
-    if not payload.consentAcceptedAt:
-        raise AppException("Visitor consent timestamp is required.", status_code=400)
-    accepted_at = payload.consentAcceptedAt
+    consent_accepted = bool(getattr(payload, "consentAccepted", False))
+    consent_accepted_at = getattr(payload, "consentAcceptedAt", None)
+    consent_storage = getattr(payload, "consentStorage", None)
+    if not consent_accepted:
+        raise AppException(
+            "Visitor consent is required before submitting a request.",
+            status_code=400,
+            code="VISITOR_CONSENT_REQUIRED",
+        )
+    if not consent_accepted_at:
+        raise AppException(
+            "Visitor consent timestamp is required.",
+            status_code=400,
+            code="VISITOR_CONSENT_TIMESTAMP_REQUIRED",
+        )
+    accepted_at = consent_accepted_at
     if accepted_at.tzinfo is not None:
         accepted_at = accepted_at.replace(tzinfo=None)
     age_seconds = (datetime.utcnow() - accepted_at).total_seconds()
     if age_seconds < 0 or age_seconds > VISITOR_CONSENT_MAX_AGE_HOURS * 3600:
-        raise AppException("Visitor consent has expired. Please accept the privacy notice again.", status_code=400)
-    if str(payload.consentStorage or "").strip().lower() not in {"session", "sessionstorage", "local", "localstorage"}:
-        raise AppException("Visitor consent storage is invalid.", status_code=400)
+        raise AppException(
+            "Visitor consent has expired. Please accept the privacy notice again.",
+            status_code=400,
+            code="VISITOR_CONSENT_EXPIRED",
+        )
+    if str(consent_storage or "").strip().lower() not in {"session", "sessionstorage", "local", "localstorage"}:
+        raise AppException(
+            "Visitor consent storage is invalid.",
+            status_code=400,
+            code="VISITOR_CONSENT_STORAGE_INVALID",
+        )
 
 
 @router.post("/request")

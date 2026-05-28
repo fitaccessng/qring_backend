@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
 
@@ -16,6 +17,9 @@ class VisitorRequestCreate(BaseModel):
     snapshotBase64: Optional[str] = None
     snapshotMime: Optional[str] = None
     deviceId: Optional[str] = None
+    consentAccepted: Optional[bool] = None
+    consentAcceptedAt: Optional[datetime] = None
+    consentStorage: Optional[str] = None
 
 
 class VisitorRequestResponse(BaseModel):
