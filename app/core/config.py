@@ -74,6 +74,13 @@ def _load_env_files(paths: list[str]) -> dict[str, str]:
     return merged
 
 
+def _strip_wrapping_quotes(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1].strip()
+    return text
+
+
 def _coerce_value(default, value):
     if value is None:
         return default
@@ -221,7 +228,7 @@ class Settings(BaseSettings):
     def cors_origins(self) -> List[str]:
         origins: list[str] = []
         for raw in self.CORS_ORIGINS.split(","):
-            value = raw.strip()
+            value = _strip_wrapping_quotes(raw)
             if not value:
                 continue
             if "://" not in value:
@@ -238,7 +245,7 @@ class Settings(BaseSettings):
 
     @property
     def cors_allow_origin_regex(self) -> Optional[str]:
-        value = (self.CORS_ALLOW_ORIGIN_REGEX or "").strip()
+        value = _strip_wrapping_quotes(self.CORS_ALLOW_ORIGIN_REGEX)
         return value or None
 
     @property
