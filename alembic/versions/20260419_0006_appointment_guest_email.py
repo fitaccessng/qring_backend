@@ -7,6 +7,7 @@ Create Date: 2026-04-19 15:35:00.000000
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect, text
 
 
 # revision identifiers, used by Alembic.
@@ -17,10 +18,34 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("appointments", sa.Column("visitor_email", sa.String(length=255), nullable=True))
-    op.create_index("ix_appointments_visitor_email", "appointments", ["visitor_email"], unique=False)
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    table_names = set(inspector.get_table_names())
+    if "appointments" not in table_names:
+        return
+
+    columns = {col["name"]: col for col in inspector.get_columns("appointments")}
+    indexes = {index["name"] for index in inspector.get_indexes("appointments")}
+
+    if "visitor_email" not in columns:
+        op.add_column("appointments", sa.Column("visitor_email", sa.String(length=255), nullable=True))
+
+    if "ix_appointments_visitor_email" not in indexes:
+        op.execute(text("CREATE INDEX IF NOT EXISTS ix_appointments_visitor_email ON appointments (visitor_email)"))
 
 
 def downgrade() -> None:
-    op.drop_index("ix_appointments_visitor_email", table_name="appointments")
-    op.drop_column("appointments", "visitor_email")
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    table_names = set(inspector.get_table_names())
+    if "appointments" not in table_names:
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("appointments")}
+    indexes = {index["name"] for index in inspector.get_indexes("appointments")}
+
+    if "ix_appointments_visitor_email" in indexes:
+        op.drop_index("ix_appointments_visitor_email", table_name="appointments")
+
+    if "visitor_email" in columns:
+        op.drop_column("appointments", "visitor_email")
