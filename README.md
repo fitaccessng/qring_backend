@@ -70,7 +70,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `ENVIRONMENT` | `production` | Set to `production` for prod |
 | `DEBUG` | `false` | Disable in production |
 | `DATABASE_URL` | `postgresql://user:pass@localhost/qring` | Use PostgreSQL for local and production |
-| `REDIS_URL` | `redis://localhost:6379/0` | Required for distributed rate limits, cache, and Socket.IO scaling. On Render, copy the exact internal Key Value URL from the instance's `Connect` menu. |
+| `REDIS_URL` | `redis://localhost:6379/0` | Required for distributed rate limits, cache, and Socket.IO scaling. On Railway, use the private service URL from the same project. |
 | `REDIS_CONNECT_TIMEOUT_SECONDS` | `2` | Redis connect timeout for startup/health checks |
 | `REDIS_SOCKET_TIMEOUT_SECONDS` | `2` | Redis socket timeout for runtime operations |
 | `REDIS_HEALTHCHECK_INTERVAL_SECONDS` | `30` | Redis connection health checks |

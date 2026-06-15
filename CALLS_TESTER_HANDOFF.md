@@ -2,7 +2,7 @@
 
 ## Test Setup
 
-- [ ] Open `https://qring-backend-1.onrender.com/api/v1/health` and confirm it loads
+- [ ] Open `https://qring-backend-production.up.railway.app/api/v1/health` and confirm it loads
 - [ ] Use 3 separate devices or browser profiles
 - [ ] Record `SESSION_ID: ________________________`
 

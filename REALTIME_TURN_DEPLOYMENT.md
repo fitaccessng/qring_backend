@@ -2,7 +2,7 @@
 
 This is the active production topology:
 
-`React + Capacitor app -> Socket.IO signaling on Render -> Coturn on VPS -> direct WebRTC media`
+`React + Capacitor app -> Socket.IO signaling on Railway -> Coturn on VPS -> direct WebRTC media`
 
 ## Core rules
 
@@ -13,7 +13,7 @@ This is the active production topology:
 
 ## Recommended hosting
 
-- Signaling/API: Render
+- Signaling/API: Railway
 - TURN: Hetzner Germany, Contabo Germany, or a UK VPS
 - STUN: `stun:stun.l.google.com:19302`
 
@@ -63,7 +63,7 @@ sudo systemctl status coturn
 ## Frontend env
 
 ```env
-VITE_SOCKET_URL=https://qring-backend-1.onrender.com
+VITE_SOCKET_URL=https://qring-backend-production.up.railway.app
 VITE_SOCKET_PATH=/socket.io
 VITE_SIGNALING_NAMESPACE=/realtime/signaling
 VITE_WEBRTC_ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":["turn:turn.example.com:3478?transport=udp","turn:turn.example.com:3478?transport=tcp"],"username":"TURN_USER","credential":"TURN_PASSWORD"},{"urls":"turns:turn.example.com:5349?transport=tcp","username":"TURN_USER","credential":"TURN_PASSWORD"}]
@@ -75,7 +75,7 @@ VITE_RTC_MONITORING_URL=https://YOUR_MONITORING_ENDPOINT/rtc
 ## Backend env
 
 ```env
-REDIS_URL=redis://default:<password>@<render-internal-host>:6379
+REDIS_URL=redis://default:<password>@<railway-private-host>:6379
 REDIS_CONNECT_TIMEOUT_SECONDS=2
 REDIS_SOCKET_TIMEOUT_SECONDS=2
 REDIS_HEALTHCHECK_INTERVAL_SECONDS=30
@@ -90,11 +90,10 @@ SOCKET_PATH=/socket.io
 SIGNALING_NAMESPACE=/realtime/signaling
 ```
 
-Redis notes:
+Railway database note:
 
-- On Render, do not use guessed hosts like `redis.internal:6379`.
-- Open the Render Key Value instance, click `Connect`, and copy the exact internal `redis://...` URL.
-- Keep the backend service and Key Value instance in the same Render workspace and region.
+- Set `DATABASE_URL` on the Railway backend service to your private internal PostgreSQL connection string.
+- Keep the backend service and PostgreSQL service in the same Railway project so the internal hostname resolves.
 
 ## Coturn baseline
 
@@ -144,7 +143,7 @@ Production notes:
   - verify ICE candidates are exchanged both ways
   - verify app is not stuck on a stale peer connection after resume
 - Reconnect storms:
-  - verify Socket.IO health on Render
+  - verify Socket.IO health on Railway
   - verify Redis/socket fanout if multiple backend instances are running
 
 ## Production acceptance checks

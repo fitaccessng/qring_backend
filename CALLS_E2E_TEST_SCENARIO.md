@@ -8,7 +8,7 @@ This runbook validates the current production design:
 
 ## Before testing
 
-1. Confirm backend health at `https://qring-backend-1.onrender.com/api/v1/health`.
+1. Confirm backend health at `https://qring-backend-production.up.railway.app/api/v1/health`.
 2. Confirm TURN is configured with relay candidates visible in trickle-ice.
 3. Confirm frontend env includes `VITE_WEBRTC_ICE_SERVERS`.
 4. Confirm backend env includes `WEBRTC_TURN_URL`, `WEBRTC_TURN_USERNAME`, and `WEBRTC_TURN_CREDENTIAL`.
