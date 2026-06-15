@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision = "20260527_0008"
@@ -17,10 +18,20 @@ branch_labels = None
 depends_on = None
 
 
+def column_exists(table_name: str, column_name: str) -> bool:
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    columns = {col["name"] for col in inspector.get_columns(table_name)}
+    return column_name in columns
+
+
 def upgrade() -> None:
-    op.add_column("visitor_sessions", sa.Column("snapshot_url", sa.Text(), nullable=True), if_not_exists=True)
-    op.add_column("visitor_snapshot_audits", sa.Column("media_url", sa.Text(), nullable=True), if_not_exists=True)
-    op.add_column("visitor_snapshot_audits", sa.Column("cloudinary_public_id", sa.String(length=255), nullable=True), if_not_exists=True)
+    if not column_exists("visitor_sessions", "snapshot_url"):
+        op.add_column("visitor_sessions", sa.Column("snapshot_url", sa.Text(), nullable=True))
+    if not column_exists("visitor_snapshot_audits", "media_url"):
+        op.add_column("visitor_snapshot_audits", sa.Column("media_url", sa.Text(), nullable=True))
+    if not column_exists("visitor_snapshot_audits", "cloudinary_public_id"):
+        op.add_column("visitor_snapshot_audits", sa.Column("cloudinary_public_id", sa.String(length=255), nullable=True))
     op.create_index(
         "ix_visitor_snapshot_audits_cloudinary_public_id",
         "visitor_snapshot_audits",
