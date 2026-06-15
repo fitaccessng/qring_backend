@@ -85,7 +85,9 @@ This document covers the modular advanced feature baseline added under `/api/v1/
 Add these to backend `.env`:
 
 - `MEDIA_STORAGE_PATH=/absolute/path/for/secure/media`
-- `SMTP_HOST=...`
+- `BREVO_API_KEY=...`
+- `BREVO_SENDER_NAME=QRing`
+- `SMTP_HOST=...` for legacy SMTP fallback only
 - `SMTP_PORT=587`
 - `SMTP_USERNAME=...`
 - `SMTP_PASSWORD=...`

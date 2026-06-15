@@ -278,7 +278,7 @@ def send_transactional_email(*, to_email: str, subject: str, body: str) -> dict:
     message["Subject"] = subject
     message["From"] = from_email
     message["To"] = to_email.strip()
-    # Add a deterministic-ish trace key so Brevo logs can be searched even if delivery is delayed/bounced.
+    # Add a deterministic-ish trace key so provider logs can be searched even if delivery is delayed/bounced.
     message_id = make_msgid(domain=domain)
     message["Message-ID"] = message_id
     message.set_content(body)
@@ -306,13 +306,13 @@ def send_transactional_email(*, to_email: str, subject: str, body: str) -> dict:
                 )
                 return {"status": "sent", "messageId": message_id}
             except Exception as fallback_exc:
-                logger.exception("SMTP send failed to %s on ports %s and 465", to_email, port)
+                logger.exception("Email delivery failed to %s on ports %s and 465", to_email, port)
                 return {
                     "status": "failed",
                     "reason": f"{primary_exc} | fallback_465: {fallback_exc}",
                     "messageId": message_id,
                 }
-        logger.exception("SMTP send failed to %s", to_email)
+        logger.exception("Email delivery failed to %s", to_email)
         return {"status": "failed", "reason": str(primary_exc), "messageId": message_id}
 
 
