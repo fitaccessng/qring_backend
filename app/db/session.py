@@ -24,7 +24,7 @@ else:
         }
     )
 
-engine = create_engine(settings.DATABASE_URL, **engine_kwargs)
+engine = create_engine(settings.database_url, **engine_kwargs)
 
 SessionLocal = sessionmaker(bind=engine, class_=Session, autoflush=False, autocommit=False)
 

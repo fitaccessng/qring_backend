@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
 
     DATABASE_URL: str = "sqlite:///./qring.db"
+    DATABASE_PUBLIC_URL: str = ""
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 40
     DB_POOL_TIMEOUT_SECONDS: int = 30
@@ -290,12 +291,19 @@ class Settings(BaseSettings):
 
     @property
     def database_backend(self) -> str:
-        value = str(self.DATABASE_URL or "").strip().lower()
+        value = str(self.database_url or "").strip().lower()
         if value.startswith("postgresql"):
             return "postgresql"
         if value.startswith("sqlite"):
             return "sqlite"
         return "other"
+
+    @property
+    def database_url(self) -> str:
+        public_url = _strip_wrapping_quotes(self.DATABASE_PUBLIC_URL)
+        if public_url:
+            return public_url
+        return _strip_wrapping_quotes(self.DATABASE_URL)
 
 
 @lru_cache
