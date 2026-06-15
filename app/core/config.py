@@ -188,6 +188,8 @@ class Settings(BaseSettings):
     WEBRTC_REQUIRE_TURN: bool = False
     APPOINTMENT_SHARE_BASE_URL: str = "https://www.useqring.online"
     MEDIA_STORAGE_PATH: str = ""
+    BREVO_API_KEY: str = ""
+    BREVO_SENDER_NAME: str = "QRing"
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = ""

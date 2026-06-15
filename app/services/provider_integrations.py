@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import smtplib
@@ -8,6 +9,7 @@ from email.utils import make_msgid
 from threading import Lock
 from urllib import error, request
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -221,7 +223,47 @@ def _send_email_via_transport(
         server.send_message(message)
 
 
+def _send_email_via_brevo_api(*, to_email: str, subject: str, body: str) -> dict:
+    api_key = (settings.BREVO_API_KEY or "").strip()
+    from_email = (settings.SMTP_FROM_EMAIL or "").strip()
+    sender_name = (settings.BREVO_SENDER_NAME or settings.APP_NAME or "QRing").strip() or "QRing"
+    if not api_key or not from_email:
+        return {"status": "disabled", "reason": "brevo_not_configured", "messageId": None}
+    if not to_email.strip():
+        return {"status": "skipped", "reason": "missing_recipient", "messageId": None}
+
+    payload = {
+        "sender": {"email": from_email, "name": sender_name},
+        "to": [{"email": to_email.strip()}],
+        "subject": subject,
+        "textContent": body,
+        "htmlContent": f"<pre style=\"font-family:inherit;white-space:pre-wrap;\">{html.escape(body)}</pre>",
+    }
+    try:
+        with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+            response = client.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "api-key": api_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json=payload,
+            )
+        response.raise_for_status()
+        parsed = response.json() if response.content else {}
+        message_id = str(parsed.get("messageId") or parsed.get("message_id") or parsed.get("id") or "").strip() or None
+        return {"status": "sent", "messageId": message_id}
+    except Exception as exc:
+        logger.exception("Brevo API send failed to %s", to_email)
+        return {"status": "failed", "reason": str(exc), "messageId": None}
+
+
 def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
+    brevo_result = _send_email_via_brevo_api(to_email=to_email, subject=subject, body=body)
+    if brevo_result.get("status") != "disabled":
+        return brevo_result
+
     host = (settings.SMTP_HOST or "").strip()
     username = (settings.SMTP_USERNAME or "").strip()
     password = (settings.SMTP_PASSWORD or "").strip()
