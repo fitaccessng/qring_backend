@@ -18,14 +18,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("visitor_sessions", sa.Column("snapshot_url", sa.Text(), nullable=True))
-    op.add_column("visitor_snapshot_audits", sa.Column("media_url", sa.Text(), nullable=True))
-    op.add_column("visitor_snapshot_audits", sa.Column("cloudinary_public_id", sa.String(length=255), nullable=True))
+    op.add_column("visitor_sessions", sa.Column("snapshot_url", sa.Text(), nullable=True), if_not_exists=True)
+    op.add_column("visitor_snapshot_audits", sa.Column("media_url", sa.Text(), nullable=True), if_not_exists=True)
+    op.add_column("visitor_snapshot_audits", sa.Column("cloudinary_public_id", sa.String(length=255), nullable=True), if_not_exists=True)
     op.create_index(
         "ix_visitor_snapshot_audits_cloudinary_public_id",
         "visitor_snapshot_audits",
         ["cloudinary_public_id"],
         unique=False,
+        if_not_exists=True,
     )
 
 
