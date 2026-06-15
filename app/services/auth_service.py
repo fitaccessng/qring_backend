@@ -6,8 +6,8 @@ import base64
 import logging
 import re
 import secrets
+from threading import Thread, Lock
 from urllib.parse import quote
-from threading import Lock
 from datetime import datetime, timedelta
 
 from redis.exceptions import RedisError
@@ -25,6 +25,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.models import DeviceSession, Notification, User, UserRole
+from app.db.session import SessionLocal
 from app.schemas.auth import AuthResponse
 from app.services.provider_integrations import send_email_smtp
 from app.db.models.user_token import UserToken, UserTokenType, generate_user_token, hash_user_token
@@ -225,6 +226,19 @@ def _resolve_referrer(db: Session, referral_code: str | None) -> User | None:
     return referrer
 
 
+def _queue_email_verification(email: str) -> None:
+    def _runner() -> None:
+        db = SessionLocal()
+        try:
+            request_email_verification(db, email)
+        except Exception:
+            logger.exception("Unable to send verification email for signup email=%s", email)
+        finally:
+            db.close()
+
+    Thread(target=_runner, daemon=True).start()
+
+
 def signup(
     db: Session,
     full_name: str,
@@ -235,6 +249,9 @@ def signup(
 ):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
+        if not existing.email_verified:
+            _queue_email_verification(existing.email)
+            return {"id": existing.id, "email": existing.email}
         raise AppException("Email already exists", status_code=409)
 
     _validate_password_strength(password)
@@ -263,12 +280,9 @@ def signup(
     db.add(user)
     db.commit()
     db.refresh(user)
-    # Send email verification (best-effort). Do not block signup on SMTP.
+    # Send email verification best-effort without blocking the signup response.
     if not user.email_verified:
-        try:
-            request_email_verification(db, user.email)
-        except Exception:
-            logger.exception("Unable to send verification email for user=%s", user.id)
+        _queue_email_verification(user.email)
     return {"id": user.id, "email": user.email}
 
 
