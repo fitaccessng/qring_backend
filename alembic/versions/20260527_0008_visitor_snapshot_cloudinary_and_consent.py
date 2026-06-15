@@ -1,7 +1,7 @@
 """visitor snapshot cloudinary and consent fields
 
 Revision ID: 20260527_0008
-Revises: 20260513_0007_scaling_indexes
+Revises: 20260513_0007
 Create Date: 2026-05-27 00:08:00.000000
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision = "20260527_0008"
-down_revision = "20260513_0007_scaling_indexes"
+down_revision = "20260513_0007"
 branch_labels = None
 depends_on = None
 
