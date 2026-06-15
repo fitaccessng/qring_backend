@@ -81,7 +81,7 @@ class AppointmentServiceTests(unittest.TestCase):
         ends_at = starts_at + timedelta(hours=1)
 
         with patch("app.services.appointment_service.require_subscription_feature"), patch(
-            "app.services.appointment_service.send_email_smtp"
+            "app.services.appointment_service.send_transactional_email"
         ) as send_email_mock:
             data = create_appointment(
                 self.db,
@@ -108,7 +108,7 @@ class AppointmentServiceTests(unittest.TestCase):
         ends_at = starts_at + timedelta(hours=2)
 
         with patch("app.services.appointment_service.require_subscription_feature"), patch(
-            "app.services.appointment_service.send_email_smtp"
+            "app.services.appointment_service.send_transactional_email"
         ):
             created = create_appointment(
                 self.db,

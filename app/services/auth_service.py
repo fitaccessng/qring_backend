@@ -27,7 +27,7 @@ from app.core.security import (
 from app.db.models import DeviceSession, Notification, User, UserRole
 from app.db.session import SessionLocal
 from app.schemas.auth import AuthResponse
-from app.services.provider_integrations import send_email_smtp
+from app.services.provider_integrations import send_transactional_email
 from app.db.models.user_token import UserToken, UserTokenType, generate_user_token, hash_user_token
 
 settings = get_settings()
@@ -497,7 +497,7 @@ def request_password_reset(db: Session, email: str, user_agent: str = "", ip_add
         f"Reset link (expires in 30 minutes):\n{reset_link}\n\n"
         "If you did not request this, you can ignore this email."
     )
-    send_email_smtp(to_email=user.email, subject="QRing password reset", body=body)
+    send_transactional_email(to_email=user.email, subject="QRing password reset", body=body)
 
     # Token is never returned in normal responses.
     return {"status": "ok", **({"debugToken": token} if settings.DEBUG else {})}
@@ -606,7 +606,7 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
         f"Or enter this OTP code in the app:\n{otp}\n\n"
         "If you did not create an account, you can ignore this email."
     )
-    delivery = send_email_smtp(to_email=user.email, subject="Verify your QRing email", body=body) or {}
+    delivery = send_transactional_email(to_email=user.email, subject="Verify your QRing email", body=body) or {}
     email_status = str(delivery.get("status") or "unknown")
     email_reason = delivery.get("reason")
     email_message_id = delivery.get("messageId")

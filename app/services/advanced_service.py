@@ -36,7 +36,7 @@ from app.services.notification_service import create_notification
 from app.services.provider_integrations import (
     get_user_contact,
     recognize_face_provider,
-    send_email_smtp,
+    send_transactional_email,
     send_push_fcm,
     send_sms_provider,
 )
@@ -179,7 +179,7 @@ def notify_multi_channel(
         data={"kind": kind, **{k: str(v) for k, v in (payload or {}).items()}},
     )
     email_result = (
-        send_email_smtp(to_email=user.email, subject="Qring Alert", body=message)
+        send_transactional_email(to_email=user.email, subject="Qring Alert", body=message)
         if user and user.email
         else {"status": "skipped", "reason": "missing_email"}
     )

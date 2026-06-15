@@ -259,7 +259,7 @@ def _send_email_via_brevo_api(*, to_email: str, subject: str, body: str) -> dict
         return {"status": "failed", "reason": str(exc), "messageId": None}
 
 
-def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
+def send_transactional_email(*, to_email: str, subject: str, body: str) -> dict:
     brevo_result = _send_email_via_brevo_api(to_email=to_email, subject=subject, body=body)
     if brevo_result.get("status") != "disabled":
         return brevo_result
@@ -314,6 +314,10 @@ def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
                 }
         logger.exception("SMTP send failed to %s", to_email)
         return {"status": "failed", "reason": str(primary_exc), "messageId": message_id}
+
+
+def send_email_smtp(*, to_email: str, subject: str, body: str) -> dict:
+    return send_transactional_email(to_email=to_email, subject=subject, body=body)
 
 
 def send_sms_provider(*, phone_number: str, message: str) -> dict:

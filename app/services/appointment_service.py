@@ -13,7 +13,7 @@ from app.core.exceptions import AppException
 from app.db.models import Appointment, Door, Home, User, VisitorSession
 from app.services.payment_service import require_subscription_feature
 from app.services.notification_service import create_notification
-from app.services.provider_integrations import send_email_smtp
+from app.services.provider_integrations import send_transactional_email
 from app.services.security_service import list_security_accounts_for_estate
 from app.services.qr_token_service import (
     build_qr_token_payload,
@@ -292,7 +292,7 @@ def create_appointment(
             f"Invite code: {share_data.get('shareToken')}\n\n"
             "When you get close to the property after accepting, QRing will notify the homeowner automatically."
         )
-        delivery = send_email_smtp(
+        delivery = send_transactional_email(
             to_email=appt.visitor_email,
             subject=f"QRing appointment invitation for {start_label}",
             body=email_body,
@@ -601,7 +601,7 @@ def report_appointment_arrival(
         entry_point = ((door.gate_label or door.name) if door else "your property").strip()
         arrival_label = appt.arrived_at.strftime("%b %d, %Y %I:%M %p") if appt.arrived_at else datetime.utcnow().strftime("%b %d, %Y %I:%M %p")
         try:
-            send_email_smtp(
+            send_transactional_email(
                 to_email=homeowner_email,
                 subject="QRing arrival alert",
                 body=(

@@ -32,7 +32,7 @@ from app.db.models import (
     UserRole,
 )
 from app.socket.server import sio
-from app.services.provider_integrations import send_email_smtp, send_push_fcm
+from app.services.provider_integrations import send_push_fcm, send_transactional_email
 from app.services.payment_proof_service import save_payment_proof
 
 settings = get_settings()
@@ -1483,7 +1483,7 @@ def send_payment_reminders(db: Session, *, alert_id: str, estate_admin_id: str) 
             pass
         homeowner = homeowner_by_id.get(homeowner_id)
         if homeowner and str(homeowner.email or "").strip():
-            delivery = send_email_smtp(
+            delivery = send_transactional_email(
                 to_email=homeowner.email,
                 subject=f"Payment Reminder: {alert.title}",
                 body=_build_estate_due_reminder_email_body(
@@ -1691,7 +1691,7 @@ def run_scheduled_payment_reminders(db: Session) -> dict:
             homeowner = homeowner_by_id.get(homeowner_id)
             estate = estate_by_id.get(alert.estate_id)
             if homeowner and estate and str(homeowner.email or "").strip():
-                delivery = send_email_smtp(
+                delivery = send_transactional_email(
                     to_email=homeowner.email,
                     subject=f"Payment Reminder: {alert.title}",
                     body=_build_estate_due_reminder_email_body(

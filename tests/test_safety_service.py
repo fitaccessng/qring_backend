@@ -149,7 +149,7 @@ class SafetyServiceTests(unittest.TestCase):
         self.assertIn(result["watchlistEntry"]["riskLevel"], {"high", "critical"})
 
     def test_trigger_panic_event_notifies_estate_manager_security_and_other_homeowners(self):
-        with patch("app.services.notification_service.send_push_fcm"), patch("app.services.safety_service.send_email_smtp") as send_email:
+        with patch("app.services.notification_service.send_push_fcm"), patch("app.services.safety_service.send_transactional_email") as send_email:
             payload = trigger_panic_event(
                 self.db,
                 actor=self.homeowner,

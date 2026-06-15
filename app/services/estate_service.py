@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.models import Door, Estate, GateLog, Home, Notification, QRCode, User, UserRole, VisitorSession
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired, require_subscription_feature
-from app.services.provider_integrations import send_email_smtp, send_push_fcm
+from app.services.provider_integrations import send_push_fcm, send_transactional_email
 settings = get_settings()
 FREE_ESTATE_LIMIT = 5
 
@@ -993,7 +993,7 @@ def invite_homeowner(
         invite_token=token,
     )
 
-    delivery = send_email_smtp(
+    delivery = send_transactional_email(
         to_email=homeowner.email,
         subject="Qring Estate Access Invitation",
         body=email_body,

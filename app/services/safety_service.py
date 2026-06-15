@@ -41,7 +41,7 @@ from app.db.models import (
     WatchlistRiskLevel,
 )
 from app.services.notification_service import create_notification
-from app.services.provider_integrations import send_email_smtp
+from app.services.provider_integrations import send_transactional_email
 from app.socket.server import sio
 
 settings = get_settings()
@@ -807,7 +807,7 @@ def trigger_panic_event(
             },
         )
         if recipient.email:
-            send_email_smtp(
+            send_transactional_email(
                 to_email=recipient.email,
                 subject="Qring Panic Alert",
                 body=notification_message,
