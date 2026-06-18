@@ -8,7 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
-from app.db.models import AuditLog, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, User, UserRole, VisitorSession
+from app.db.models import AuditLog, Appointment, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, User, UserRole, VisitorSession
 from app.services.notification_service import create_notification
 
 OPEN_SECURITY_STATUSES = {"submitted", "received_by_security", "forwarded_to_homeowner", "approved"}
@@ -215,6 +215,27 @@ def _route_targets_for_session(db: Session, session: VisitorSession) -> tuple[Ho
     gate_id = session.gate_id or (door.gate_label if door else None)
     security_users = list_security_accounts_for_estate(db, estate.id, gate_id=gate_id) if estate else []
     return home, estate, security_users
+
+
+def resolve_security_call_target(
+    db: Session,
+    *,
+    visitor_session: VisitorSession | None = None,
+    appointment: Appointment | None = None,
+) -> User | None:
+    if visitor_session:
+        _, _, security_users = _route_targets_for_session(db, visitor_session)
+        return security_users[0] if security_users else None
+
+    if not appointment:
+        return None
+
+    home = db.query(Home).filter(Home.id == appointment.home_id).first()
+    estate = db.query(Estate).filter(Estate.id == (home.estate_id if home else None)).first()
+    door = db.query(Door).filter(Door.id == appointment.door_id).first()
+    gate_id = door.gate_label if door else None
+    security_users = list_security_accounts_for_estate(db, estate.id, gate_id=gate_id) if estate else []
+    return security_users[0] if security_users else None
 
 
 def serialize_security_session(db: Session, session: VisitorSession) -> dict[str, Any]:

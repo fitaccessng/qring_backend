@@ -10,7 +10,7 @@ import uuid
 from app.api.deps import get_optional_current_user
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import CallSession, User, VisitorSession
+from app.db.models import Appointment, CallSession, User, VisitorSession
 from app.db.session import get_db
 from app.services.call_service import (
     end_call_session,
@@ -26,6 +26,7 @@ from app.services.realtime_notification_service import (
     emit_dashboard_notification,
     emit_signaling_notification,
 )
+from app.services.security_service import resolve_security_call_target
 from app.socket.server import sio
 
 router = APIRouter()
@@ -41,6 +42,7 @@ class StartCallPayload(BaseModel):
     hasVideo: Optional[bool] = None
     type: Optional[str] = None
     visitorToken: Optional[str] = None
+    communicationTarget: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_target(self):
@@ -101,6 +103,15 @@ class EndCallPayload(BaseModel):
             raise ValueError("callSessionId must be a valid UUID") from exc
 
 
+def _caller_origin_label(role: str | None) -> str:
+    normalized_role = str(role or "").strip().lower()
+    if normalized_role == "security":
+        return "security dashboard"
+    if normalized_role == "homeowner":
+        return "homeowner dashboard"
+    return "approved-session screen"
+
+
 @router.post("/start")
 async def start_call(
     payload: StartCallPayload,
@@ -124,16 +135,45 @@ async def start_call(
         from app.services.visitor_session_auth import require_visitor_session_access
 
         require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)
+    visitor_session = db.query(VisitorSession).filter(VisitorSession.id == payload.sessionId).first() if payload.sessionId else None
+    appointment = db.query(Appointment).filter(Appointment.id == payload.appointmentId).first() if payload.appointmentId else None
+    if payload.appointmentId and not appointment:
+        raise AppException("Appointment not found.", status_code=404)
+
+    normalized_target = (payload.communicationTarget or "").strip().lower() or None
+    if normalized_target not in {None, "visitor", "gateman"}:
+        raise AppException("communicationTarget must be visitor or gateman.", status_code=400)
+    if normalized_target is None and visitor_session:
+        normalized_target = (visitor_session.preferred_communication_target or "").strip().lower() or None
+
+    security_user = None
+    if normalized_target == "gateman":
+        if user and user.role.value == "homeowner":
+            security_user = resolve_security_call_target(db, visitor_session=visitor_session, appointment=appointment)
+            if not security_user:
+                raise AppException("No security user is available for this estate.", status_code=404)
+        else:
+            normalized_target = None
     try:
+        homeowner_id = user.id if user and user.role.value == "homeowner" else None
+        receiver_id = None
+        if user and user.role.value == "security":
+            receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
+        elif security_user:
+            receiver_id = security_user.id
+        elif appointment:
+            receiver_id = appointment.homeowner_id
+        elif visitor_session:
+            receiver_id = visitor_session.homeowner_id
         row = await start_call_session(
             db,
             appointment_id=payload.appointmentId,
             visitor_session_id=payload.sessionId,
             visitor_id=payload.visitorId,
-            homeowner_id=user.id if user and user.role.value == "homeowner" else None,
-            security_user_id=user.id if user and user.role.value == "security" else None,
+            homeowner_id=homeowner_id,
+            security_user_id=security_user.id if security_user else (user.id if user and user.role.value == "security" else None),
             caller_id=user.id if user else None,
-            receiver_id=None,
+            receiver_id=receiver_id,
             call_type=payload.type or ("video" if payload.hasVideo else "audio"),
             visitor_name=payload.visitorName,
         )
@@ -163,10 +203,19 @@ async def start_call(
         )
         linked_session = visit.id if visit else None
 
+    incoming_room_user_id = row.security_user_id if (user and user.role.value == "homeowner" and row.security_user_id) else row.homeowner_id
+    caller_name = (user.full_name if user else "") or (payload.visitorName or row.visitor_id or "Visitor")
+    caller_role = row.initiated_by_role or (user.role.value if user else "visitor")
+    caller_origin = _caller_origin_label(caller_role)
+    homeowner_name = ""
+    if row.homeowner_id:
+        homeowner = db.query(User).filter(User.id == row.homeowner_id).first()
+        homeowner_name = (homeowner.full_name if homeowner else "") or ""
+
     if linked_session:
         call_invite_key = build_notification_idempotency_key(
             event_type="call.invite",
-            user_id=row.homeowner_id,
+            user_id=incoming_room_user_id,
             session_id=linked_session,
             entity_id=row.id,
             action=row.status,
@@ -190,6 +239,12 @@ async def start_call(
                 "hasVideo": bool(payload.hasVideo),
                 "type": row.call_type,
                 "role": user.role.value if user else "visitor",
+                "callerName": caller_name,
+                "callerRole": caller_role,
+                "callerOrigin": caller_origin,
+                "homeownerName": homeowner_name,
+                "receiverId": incoming_room_user_id,
+                "receiverRole": "security" if incoming_room_user_id == row.security_user_id and row.security_user_id else "homeowner",
             },
         )
         await emit_signaling_notification(
@@ -201,13 +256,13 @@ async def start_call(
         )
         await emit_dashboard_notification(
             event_name="incoming-call",
-            rooms=[f"user:{row.homeowner_id}"],
+            rooms=[f"user:{incoming_room_user_id}"],
             payload=build_notification_envelope(
                 notification_id=row.id,
                 event_type="incoming-call",
                 idempotency_key=f"dashboard:{call_invite_key}",
                 session_id=linked_session,
-                user_id=row.homeowner_id,
+                user_id=incoming_room_user_id,
                 source="calls.start",
                 payload={
                     "eventId": row.id,
@@ -221,7 +276,13 @@ async def start_call(
                     "hasVideo": bool(payload.hasVideo),
                     "type": row.call_type,
                     "role": user.role.value if user else "visitor",
-                    "message": f"{(payload.visitorName or row.visitor_id or 'Visitor')} is calling.",
+                    "callerName": caller_name,
+                    "callerRole": caller_role,
+                    "callerOrigin": caller_origin,
+                    "homeownerName": homeowner_name,
+                    "receiverId": incoming_room_user_id,
+                    "receiverRole": "security" if incoming_room_user_id == row.security_user_id and row.security_user_id else "homeowner",
+                    "message": f"{caller_name} is calling from the {caller_origin}.",
                 },
             ),
             idempotency_key=f"dashboard:{call_invite_key}",

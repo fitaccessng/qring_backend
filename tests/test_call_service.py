@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import Appointment, CallSession, DeviceSession, Door, Estate, Home, User, UserRole
+from app.db.models import Appointment, CallSession, DeviceSession, Door, Estate, Home, User, UserRole, VisitorSession
 from app.services.payment_service import activate_subscription
 from app.services.call_service import (
     mark_call_session_answered,
@@ -22,6 +22,7 @@ from app.services.call_service import (
     join_call_as_visitor,
     start_call_session,
 )
+from app.api.routes.calls import StartCallPayload, start_call
 
 
 class CallServiceTests(unittest.TestCase):
@@ -62,6 +63,20 @@ class CallServiceTests(unittest.TestCase):
         self.db.flush()
         activate_subscription(self.db, user_id=self.homeowner.id, plan="home_pro", billing_cycle="monthly")
 
+        self.security = User(
+            id=str(uuid.uuid4()),
+            full_name="Gateman A",
+            email="gateman-a@example.com",
+            password_hash="hashed",
+            role=UserRole.security,
+            email_verified=True,
+            estate_id=self.estate.id,
+            gate_id="Main Gate",
+            is_active=True,
+        )
+        self.db.add(self.security)
+        self.db.flush()
+
         self.appointment = Appointment(
             id=str(uuid.uuid4()),
             homeowner_id=self.homeowner.id,
@@ -76,6 +91,25 @@ class CallServiceTests(unittest.TestCase):
         )
         self.db.add(self.appointment)
         self.db.commit()
+
+    def _create_session(self, *, preferred_target: str | None = None, request_source: str = "visitor_qr") -> VisitorSession:
+        session = VisitorSession(
+            id=str(uuid.uuid4()),
+            qr_id="qr-test-session",
+            home_id=self.home.id,
+            door_id=self.door.id,
+            homeowner_id=self.homeowner.id,
+            appointment_id=self.appointment.id,
+            visitor_label="Visitor A",
+            status="approved",
+            request_source=request_source,
+            preferred_communication_target=preferred_target,
+            gate_id="Main Gate",
+            estate_id=self.estate.id,
+        )
+        self.db.add(session)
+        self.db.commit()
+        return session
 
     def tearDown(self):
         self.db.close()
@@ -97,6 +131,110 @@ class CallServiceTests(unittest.TestCase):
             self.assertTrue(row.room_name.startswith("qring-call-"))
             self.assertIn(row.id, row.room_name)
             notify_mock.assert_called_once()
+
+    def test_homeowner_to_security_call_start_uses_security_target(self):
+        session = self._create_session(preferred_target="gateman")
+        with patch("app.api.routes.calls.emit_dashboard_notification") as dashboard_mock, patch(
+            "app.api.routes.calls.emit_signaling_notification"
+        ) as signaling_mock:
+            response = asyncio.run(
+                start_call(
+                    StartCallPayload(sessionId=session.id, type="audio", hasVideo=False),
+                    db=self.db,
+                    user=self.homeowner,
+                )
+            )
+
+        data = response["data"]
+        row = self.db.query(CallSession).filter(CallSession.id == data["callSessionId"]).first()
+        self.assertIsNotNone(row)
+        self.assertEqual(row.security_user_id, self.security.id)
+        self.assertEqual(row.initiated_by_role, "homeowner")
+        self.assertEqual(row.receiver_id, self.security.id)
+        self.assertTrue(row.room_name.startswith("qring-call-"))
+        dashboard_mock.assert_awaited_once()
+        dashboard_kwargs = dashboard_mock.await_args.kwargs
+        self.assertEqual(dashboard_kwargs["rooms"], [f"user:{self.security.id}"])
+        self.assertEqual(dashboard_kwargs["payload"]["userId"], self.security.id)
+        self.assertEqual(dashboard_kwargs["payload"]["payload"]["receiverRole"], "security")
+        self.assertEqual(dashboard_kwargs["payload"]["payload"]["homeownerName"], self.homeowner.full_name)
+        signaling_mock.assert_awaited_once()
+
+    def test_homeowner_to_security_call_reports_clear_error_when_no_active_security_user(self):
+        session = self._create_session(preferred_target="gateman")
+        self.security.is_active = False
+        self.db.commit()
+
+        with self.assertRaises(Exception) as ctx:
+            asyncio.run(
+                start_call(
+                    StartCallPayload(sessionId=session.id, type="audio", hasVideo=False),
+                    db=self.db,
+                    user=self.homeowner,
+                )
+            )
+
+        self.assertIn("No security user is available for this estate.", str(ctx.exception))
+
+    def test_duplicate_active_homeowner_to_security_call_is_prevented(self):
+        session = self._create_session(preferred_target="gateman")
+        first = asyncio.run(
+            start_call_session(
+                self.db,
+                visitor_session_id=session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                receiver_id=self.security.id,
+                security_user_id=self.security.id,
+                call_type="audio",
+            )
+        )
+        second = asyncio.run(
+            start_call_session(
+                self.db,
+                visitor_session_id=session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                receiver_id=self.security.id,
+                security_user_id=self.security.id,
+                call_type="audio",
+            )
+        )
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.room_name, second.room_name)
+        self.assertEqual(second.security_user_id, self.security.id)
+
+    def test_retry_after_terminal_security_target_creates_fresh_room(self):
+        session = self._create_session(preferred_target="gateman")
+        first = asyncio.run(
+            start_call_session(
+                self.db,
+                visitor_session_id=session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                receiver_id=self.security.id,
+                security_user_id=self.security.id,
+                call_type="video",
+            )
+        )
+        first.status = "rejected"
+        first.ended_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+        second = asyncio.run(
+            start_call_session(
+                self.db,
+                visitor_session_id=session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                receiver_id=self.security.id,
+                security_user_id=self.security.id,
+                call_type="video",
+            )
+        )
+        self.assertNotEqual(first.id, second.id)
+        self.assertNotEqual(first.room_name, second.room_name)
+        self.assertEqual(second.security_user_id, self.security.id)
 
     def test_room_join_returns_webrtc_config_without_marking_call_active_early(self):
         call = CallSession(

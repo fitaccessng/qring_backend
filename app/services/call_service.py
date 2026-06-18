@@ -77,6 +77,25 @@ def _find_existing_active_call(
     )
 
 
+def _resolve_user_display_name(db: Session, user_id: str | None, fallback: str) -> str:
+    clean_user_id = str(user_id or "").strip()
+    if not clean_user_id:
+        return fallback
+    user = db.query(User).filter(User.id == clean_user_id).first()
+    if not user:
+        return fallback
+    return (user.full_name or "").strip() or fallback
+
+
+def _describe_call_origin(caller_role: str | None) -> str:
+    normalized_role = str(caller_role or "").strip().lower()
+    if normalized_role == "security":
+        return "security dashboard"
+    if normalized_role == "homeowner":
+        return "homeowner dashboard"
+    return "approved-session screen"
+
+
 async def start_call_session(
     db: Session,
     *,
@@ -121,6 +140,11 @@ async def start_call_session(
     if not effective_homeowner_id:
         raise AppException("Homeowner context is required to start call.", status_code=400)
     require_subscription_feature(db, effective_homeowner_id, "chat_call_verification", user_role="homeowner")
+
+    caller_user = db.query(User).filter(User.id == str(caller_id or "").strip()).first() if str(caller_id or "").strip() else None
+    caller_role = caller_user.role.value if caller_user and caller_user.role else None
+    initiated_by_role = caller_role or ("homeowner" if homeowner_id else ("security" if security_user_id else None))
+    caller_origin = _describe_call_origin(caller_role or initiated_by_role)
 
     visitor_identity = str(visitor_id or "").strip()
     if not visitor_identity and visitor_session:
@@ -181,7 +205,7 @@ async def start_call_session(
         visitor_id=visitor_identity,
         homeowner_id=effective_homeowner_id,
         visitor_request_id=visitor_request_id or None,
-        initiated_by_role="security" if security_user_id else ("homeowner" if homeowner_id else None),
+        initiated_by_role=initiated_by_role,
         status="ringing",
     )
     db.add(row)
@@ -230,6 +254,7 @@ async def start_call_session(
     effective_visitor_name = (visitor_name or "").strip() or (
         appointment.visitor_name if appointment else (visitor_session.visitor_label if visitor_session else "Visitor")
     )
+    caller_name = _resolve_user_display_name(db, caller_id, effective_visitor_name)
     create_notification(
         db=db,
         user_id=effective_homeowner_id,
@@ -242,9 +267,32 @@ async def start_call_session(
             "roomName": row.room_name,
             "visitorId": row.visitor_id,
             "visitorName": effective_visitor_name,
-            "message": f"{effective_visitor_name} is calling.",
+            "callerName": caller_name,
+            "callerRole": caller_role or initiated_by_role,
+            "callerOrigin": caller_origin,
+            "message": f"{caller_name} is calling from the {caller_origin}.",
         },
     )
+    receiver_user_id = str(receiver_id or "").strip() or None
+    if receiver_user_id and receiver_user_id != effective_homeowner_id:
+        create_notification(
+            db=db,
+            user_id=receiver_user_id,
+            kind="call.request",
+            payload={
+                "callSessionId": row.id,
+                "appointmentId": appointment.id if appointment else None,
+                "sessionId": visitor_session.id if visitor_session else None,
+                "visitorRequestId": row.visitor_request_id,
+                "roomName": row.room_name,
+                "visitorId": row.visitor_id,
+                "visitorName": effective_visitor_name,
+                "callerName": caller_name,
+                "callerRole": caller_role or initiated_by_role,
+                "callerOrigin": caller_origin,
+                "message": f"{caller_name} is calling from the {caller_origin}.",
+            },
+        )
     logger.info(
         "call.started call_session_id=%s appointment_id=%s visitor_session_id=%s homeowner_id=%s visitor_id=%s room_name=%s",
         row.id,

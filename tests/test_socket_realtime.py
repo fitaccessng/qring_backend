@@ -41,6 +41,19 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.db.add(self.homeowner)
         self.db.flush()
+        self.security = User(
+            id=str(uuid.uuid4()),
+            full_name="Realtime Gateman",
+            email="realtime-gateman@example.com",
+            password_hash="hashed",
+            role=UserRole.security,
+            email_verified=True,
+            estate_id=str(uuid.uuid4()),
+            gate_id="Main Gate",
+            is_active=True,
+        )
+        self.db.add(self.security)
+        self.db.flush()
 
         self.session = VisitorSession(
             id=str(uuid.uuid4()),
@@ -50,11 +63,14 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             homeowner_id=self.homeowner.id,
             visitor_label="Realtime Visitor",
             status="approved",
+            estate_id=self.security.estate_id,
+            gate_id="Main Gate",
         )
         self.db.add(self.session)
         self.db.commit()
         self.visitor_token = issue_visitor_session_token(self.db, session=self.session)
         self.homeowner_token = create_access_token(self.homeowner.id, self.homeowner.role.value)
+        self.security_token = create_access_token(self.security.id, self.security.role.value)
 
         await socket_state.reset_for_tests()
         self.session_local_patcher = patch("app.socket.events.SessionLocal", self.SessionLocal)
@@ -111,6 +127,12 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "visitorToken": self.visitor_token,
             },
         )
+
+    async def _join_security(self, sid: str = "sid-security"):
+        connect_handler = self.handlers["connect"]
+        join_handler = self.handlers[RealtimeEvent.SESSION_JOIN]
+        await connect_handler(sid, {}, {"token": self.security_token})
+        return await join_handler(sid, {"sessionId": self.session.id, "displayName": "Security"})
 
     async def test_join_chat_and_webrtc_signaling_flow(self):
         join_homeowner = await self._join_homeowner()
@@ -300,6 +322,70 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(end_ack["status"], "rejected")
         terminal_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
         self.assertEqual(terminal_row.status, "rejected")
+
+    async def test_security_accepts_call_flow_updates_db_and_emits(self):
+        call_session_id = str(uuid.uuid4())
+        self.db.add(
+            CallSession(
+                id=call_session_id,
+                visitor_session_id=self.session.id,
+                room_name=f"qring-call-{call_session_id}",
+                visitor_id=self.session.id,
+                homeowner_id=self.homeowner.id,
+                security_user_id=self.security.id,
+                caller_id=self.homeowner.id,
+                receiver_id=self.security.id,
+                call_type="audio",
+                status="ringing",
+            )
+        )
+        self.db.commit()
+
+        await self._join_security()
+        accepted_ack = await self.handlers[RealtimeEvent.CALL_ACCEPTED](
+            "sid-security",
+            {
+                "sessionId": self.session.id,
+                "callSessionId": call_session_id,
+                "hasVideo": False,
+            },
+        )
+        self.assertTrue(accepted_ack["ok"])
+        self.assertTrue(self._find_emit(RealtimeEvent.CALL_ACCEPTED))
+        accepted_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
+        self.assertEqual(accepted_row.status, "accepted")
+
+    async def test_security_rejects_call_flow_updates_db_and_emits(self):
+        call_session_id = str(uuid.uuid4())
+        self.db.add(
+            CallSession(
+                id=call_session_id,
+                visitor_session_id=self.session.id,
+                room_name=f"qring-call-{call_session_id}",
+                visitor_id=self.session.id,
+                homeowner_id=self.homeowner.id,
+                security_user_id=self.security.id,
+                caller_id=self.homeowner.id,
+                receiver_id=self.security.id,
+                call_type="video",
+                status="ringing",
+            )
+        )
+        self.db.commit()
+
+        await self._join_security()
+        rejected_ack = await self.handlers[RealtimeEvent.CALL_REJECTED](
+            "sid-security",
+            {
+                "sessionId": self.session.id,
+                "callSessionId": call_session_id,
+                "hasVideo": True,
+            },
+        )
+        self.assertTrue(rejected_ack["ok"])
+        self.assertTrue(self._find_emit(RealtimeEvent.CALL_REJECTED))
+        rejected_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
+        self.assertEqual(rejected_row.status, "rejected")
 
 
 if __name__ == "__main__":
