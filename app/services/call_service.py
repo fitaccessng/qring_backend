@@ -23,9 +23,9 @@ except Exception:  # pragma: no cover - local test dependency fallback
 from app.services.realtime_config_service import build_webrtc_rtc_config
 
 CALL_SETUP_STATUSES = {"pending", "ringing"}
-CALL_CONNECTED_STATUSES = {"active", "ongoing"}
-CALL_TERMINAL_STATUSES = {"ended", "missed"}
-CALL_ACTIVE_STATUSES = CALL_SETUP_STATUSES | CALL_CONNECTED_STATUSES
+CALL_ACTIVE_STATUSES = {"ringing", "accepted", "connecting", "connected", "reconnecting"}
+CALL_CONNECTED_STATUSES = {"connected"}
+CALL_TERMINAL_STATUSES = {"ended", "missed", "rejected", "failed", "cancelled"}
 logger = logging.getLogger(__name__)
 
 
@@ -166,7 +166,8 @@ async def start_call_session(
         if visitor_session and visitor_session.request_id
         else str(visitor_session.id if visitor_session else effective_appointment_id or visitor_identity).strip()
     )
-    room_name = f"qring-call-{visitor_request_id}"
+    # Room names must be unique per call attempt so ended/missed calls do not block retries.
+    room_name = f"qring-call-{call_session_id}"
 
     row = CallSession(
         id=call_session_id,
@@ -196,12 +197,7 @@ async def start_call_session(
             row.room_name,
             exc_info=True,
         )
-        existing = (
-            db.query(CallSession)
-            .filter(CallSession.room_name == row.room_name)
-            .order_by(CallSession.created_at.desc())
-            .first()
-        ) or _find_existing_active_call(
+        existing = _find_existing_active_call(
             db,
             appointment=appointment,
             visitor_session=visitor_session,
@@ -285,7 +281,35 @@ def mark_call_session_answered(db: Session, *, call_session_id: str) -> CallSess
     if row.status in CALL_TERMINAL_STATUSES:
         return row
     if row.status not in CALL_CONNECTED_STATUSES:
-        row.status = "ongoing"
+        row.status = "accepted"
+        row.answered_at = row.answered_at or utc_now()
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def mark_call_session_connecting(db: Session, *, call_session_id: str) -> CallSession | None:
+    row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+    if not row:
+        return None
+    if row.status in CALL_TERMINAL_STATUSES:
+        return row
+    if row.status != "connecting":
+        row.status = "connecting"
+        row.answered_at = row.answered_at or utc_now()
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def mark_call_session_connected(db: Session, *, call_session_id: str) -> CallSession | None:
+    row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+    if not row:
+        return None
+    if row.status in CALL_TERMINAL_STATUSES:
+        return row
+    if row.status != "connected":
+        row.status = "connected"
         row.answered_at = row.answered_at or utc_now()
         db.commit()
         db.refresh(row)
@@ -298,7 +322,7 @@ def mark_call_session_rejected(db: Session, *, call_session_id: str, reason: str
         return None
     if row.status in CALL_TERMINAL_STATUSES:
         return row
-    row.status = "missed" if row.status in CALL_SETUP_STATUSES else "ended"
+    row.status = "rejected"
     row.ended_at = row.ended_at or utc_now()
     row.ended_reason = str(reason or "").strip() or "rejected"
     db.commit()
@@ -391,7 +415,8 @@ async def end_call_session(db: Session, *, call_session_id: str, reason: str | N
         raise AppException("Call session not found.", status_code=404)
 
     if row.status not in CALL_TERMINAL_STATUSES:
-        row.status = "missed" if row.status in CALL_SETUP_STATUSES else "ended"
+        should_mark_missed = row.status in CALL_SETUP_STATUSES or row.status == "ringing"
+        row.status = "missed" if should_mark_missed else "ended"
         row.ended_at = row.ended_at or utc_now()
         row.ended_reason = str(reason or "").strip() or ("unanswered" if row.status == "missed" else "completed")
         db.commit()

@@ -134,11 +134,26 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self._find_emit(RealtimeEvent.CHAT_MESSAGE))
         self.assertTrue(self._find_emit(RealtimeEvent.CHAT_ACK))
 
+        call_session_id = str(uuid.uuid4())
+        self.db.add(
+            CallSession(
+                id=call_session_id,
+                visitor_session_id=self.session.id,
+                room_name=f"qring-call-{call_session_id}",
+                visitor_id=self.session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                call_type="video",
+                status="ringing",
+            )
+        )
+        self.db.commit()
+
         invite_ack = await self.handlers[RealtimeEvent.CALL_INVITE](
             "sid-homeowner",
             {
                 "sessionId": self.session.id,
-                "callSessionId": str(uuid.uuid4()),
+                "callSessionId": call_session_id,
                 "hasVideo": True,
                 "type": "video",
                 "visitorId": self.session.id,
@@ -151,41 +166,48 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "sid-visitor",
             {
                 "sessionId": self.session.id,
-                "callSessionId": self._find_emit(RealtimeEvent.CALL_INVITE)[0]["payload"]["callSessionId"],
+                "callSessionId": call_session_id,
                 "hasVideo": True,
             },
         )
         self.assertTrue(accepted_ack["ok"])
         self.assertTrue(self._find_emit(RealtimeEvent.CALL_ACCEPTED))
+        accepted_row = self.db.query(CallSession).filter(CallSession.id == accepted_ack["callSessionId"]).first()
+        self.assertEqual(accepted_row.status, "accepted")
 
         offer_ack = await self.handlers[RealtimeEvent.WEBRTC_OFFER](
             "sid-homeowner",
             {
                 "sessionId": self.session.id,
-                "callSessionId": self._find_emit(RealtimeEvent.CALL_INVITE)[0]["payload"]["callSessionId"],
+                "callSessionId": call_session_id,
                 "hasVideo": True,
+                "iceRestart": True,
                 "sdp": {"type": "offer", "sdp": "fake-offer"},
             },
         )
         self.assertTrue(offer_ack["ok"])
         self.assertTrue(self._find_emit(RealtimeEvent.WEBRTC_OFFER))
+        reconnecting_row = self.db.query(CallSession).filter(CallSession.id == accepted_ack["callSessionId"]).first()
+        self.assertEqual(reconnecting_row.status, "reconnecting")
 
         answer_ack = await self.handlers[RealtimeEvent.WEBRTC_ANSWER](
             "sid-visitor",
             {
                 "sessionId": self.session.id,
-                "callSessionId": self._find_emit(RealtimeEvent.CALL_INVITE)[0]["payload"]["callSessionId"],
+                "callSessionId": call_session_id,
                 "sdp": {"type": "answer", "sdp": "fake-answer"},
             },
         )
         self.assertTrue(answer_ack["ok"])
         self.assertTrue(self._find_emit(RealtimeEvent.WEBRTC_ANSWER))
+        connected_row = self.db.query(CallSession).filter(CallSession.id == accepted_ack["callSessionId"]).first()
+        self.assertEqual(connected_row.status, "connected")
 
         ice_ack = await self.handlers[RealtimeEvent.WEBRTC_ICE](
             "sid-visitor",
             {
                 "sessionId": self.session.id,
-                "callSessionId": self._find_emit(RealtimeEvent.CALL_INVITE)[0]["payload"]["callSessionId"],
+                "callSessionId": call_session_id,
                 "candidate": {
                     "candidate": "candidate:1 1 udp 2122260223 10.0.0.5 54000 typ relay",
                     "sdpMid": "0",
@@ -224,6 +246,60 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         diagnostics = await socket_state.diagnostics()
         self.assertGreaterEqual(int(diagnostics["metrics"].get("inviteReplayHits", 0)), 1)
+
+    async def test_rejected_call_stays_terminal_when_later_end_event_arrives(self):
+        call_session_id = str(uuid.uuid4())
+        self.db.add(
+            CallSession(
+                id=call_session_id,
+                visitor_session_id=self.session.id,
+                room_name=f"qring-call-{call_session_id}",
+                visitor_id=self.session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                call_type="audio",
+                status="ringing",
+            )
+        )
+        self.db.commit()
+
+        invite_ack = await self.handlers[RealtimeEvent.CALL_INVITE](
+            "sid-homeowner",
+            {
+                "sessionId": self.session.id,
+                "callSessionId": call_session_id,
+                "hasVideo": False,
+                "type": "audio",
+                "visitorId": self.session.id,
+            },
+        )
+        self.assertTrue(invite_ack["ok"])
+
+        reject_ack = await self.handlers[RealtimeEvent.CALL_REJECTED](
+            "sid-visitor",
+            {
+                "sessionId": self.session.id,
+                "callSessionId": call_session_id,
+                "visitorId": self.session.id,
+            },
+        )
+        self.assertTrue(reject_ack["ok"])
+        rejected_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
+        self.assertEqual(rejected_row.status, "rejected")
+
+        end_ack = await self.handlers[RealtimeEvent.CALL_ENDED](
+            "sid-homeowner",
+            {
+                "sessionId": self.session.id,
+                "callSessionId": call_session_id,
+                "visitorId": self.session.id,
+                "reason": "cleanup",
+            },
+        )
+        self.assertTrue(end_ack["ok"])
+        self.assertEqual(end_ack["status"], "rejected")
+        terminal_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
+        self.assertEqual(terminal_row.status, "rejected")
 
 
 if __name__ == "__main__":

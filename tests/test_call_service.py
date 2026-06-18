@@ -13,6 +13,10 @@ from app.db.base import Base
 from app.db.models import Appointment, CallSession, DeviceSession, Door, Estate, Home, User, UserRole
 from app.services.payment_service import activate_subscription
 from app.services.call_service import (
+    mark_call_session_answered,
+    mark_call_session_connected,
+    mark_call_session_connecting,
+    mark_call_session_rejected,
     end_call_session,
     join_call_as_homeowner,
     join_call_as_visitor,
@@ -90,7 +94,8 @@ class CallServiceTests(unittest.TestCase):
             self.assertIsNotNone(row.id)
             self.assertEqual(row.status, "ringing")
             self.assertEqual(row.appointment_id, self.appointment.id)
-            self.assertEqual(row.room_name, f"qring-call-{self.appointment.id}")
+            self.assertTrue(row.room_name.startswith("qring-call-"))
+            self.assertIn(row.id, row.room_name)
             notify_mock.assert_called_once()
 
     def test_room_join_returns_webrtc_config_without_marking_call_active_early(self):
@@ -143,6 +148,85 @@ class CallServiceTests(unittest.TestCase):
         self.assertEqual(joined["roomName"], call.room_name)
         self.assertEqual(joined["status"], "ringing")
         self.assertIn("rtcConfig", joined)
+
+    def test_start_call_after_terminal_session_creates_a_new_room(self):
+        first = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+        first.status = "ended"
+        first.ended_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+        second = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+        self.assertNotEqual(first.id, second.id)
+        self.assertNotEqual(first.room_name, second.room_name)
+        self.assertTrue(second.room_name.startswith("qring-call-"))
+
+    def test_start_call_reuses_existing_active_call(self):
+        first = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+        second = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.room_name, second.room_name)
+
+    def test_call_lifecycle_transitions_store_statuses(self):
+        call = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+
+        answered = mark_call_session_answered(self.db, call_session_id=call.id)
+        self.assertEqual(answered.status, "accepted")
+
+        connecting = mark_call_session_connecting(self.db, call_session_id=call.id)
+        self.assertEqual(connecting.status, "connecting")
+
+        connected = mark_call_session_connected(self.db, call_session_id=call.id)
+        self.assertEqual(connected.status, "connected")
+
+        rejected = mark_call_session_rejected(self.db, call_session_id=call.id)
+        self.assertEqual(rejected.status, "rejected")
+
+    def test_ringing_call_ends_as_missed(self):
+        call = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+        ended = asyncio.run(end_call_session(self.db, call_session_id=call.id))
+        self.assertEqual(ended.status, "missed")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from app.services.realtime_config_service import build_webrtc_rtc_config
 from app.services.realtime_notification_service import (
     build_notification_envelope,
     build_notification_idempotency_key,
+    emit_dashboard_notification,
     emit_signaling_notification,
 )
 from app.socket.server import sio
@@ -196,6 +197,34 @@ async def start_call(
             rooms=[f"session:{linked_session}"],
             payload=event_payload,
             idempotency_key=call_invite_key,
+            source="calls.start",
+        )
+        await emit_dashboard_notification(
+            event_name="incoming-call",
+            rooms=[f"user:{row.homeowner_id}"],
+            payload=build_notification_envelope(
+                notification_id=row.id,
+                event_type="incoming-call",
+                idempotency_key=f"dashboard:{call_invite_key}",
+                session_id=linked_session,
+                user_id=row.homeowner_id,
+                source="calls.start",
+                payload={
+                    "eventId": row.id,
+                    "sessionId": linked_session,
+                    "callSessionId": row.id,
+                    "appointmentId": row.appointment_id,
+                    "roomName": row.room_name,
+                    "deliveryRoom": f"session:{linked_session}",
+                    "status": row.status,
+                    "visitorId": row.visitor_id,
+                    "hasVideo": bool(payload.hasVideo),
+                    "type": row.call_type,
+                    "role": user.role.value if user else "visitor",
+                    "message": f"{(payload.visitorName or row.visitor_id or 'Visitor')} is calling.",
+                },
+            ),
+            idempotency_key=f"dashboard:{call_invite_key}",
             source="calls.start",
         )
 

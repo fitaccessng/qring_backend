@@ -12,7 +12,13 @@ from app.db.models import CallSession, Estate, ResidentSetting, Message, Notific
 from app.db.session import SessionLocal
 from app.socket.contracts import RealtimeEvent
 from app.socket.manager import socket_state
-from app.services.call_service import mark_call_session_answered, mark_call_session_rejected
+from app.services.call_service import (
+    end_call_session,
+    mark_call_session_answered,
+    mark_call_session_connected,
+    mark_call_session_connecting,
+    mark_call_session_rejected,
+)
 from app.services.visitor_session_auth import require_visitor_session_access
 
 settings = get_settings()
@@ -146,7 +152,7 @@ def register_socket_events(sio):
         row = (
             db.query(CallSession)
             .filter(CallSession.visitor_session_id == str(session_id))
-            .filter(CallSession.status.in_(["pending", "ringing", "active", "ongoing"]))
+            .filter(CallSession.status.in_(["ringing", "accepted", "connecting", "connected", "reconnecting"]))
             .order_by(CallSession.created_at.desc())
             .first()
         )
@@ -538,7 +544,22 @@ def register_socket_events(sio):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
-        _socket_log("webrtc_offer", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        _socket_log("webrtc_offer", sid=sid, session_id=session_id, call_session_id=call_session_id)
+        if call_session_id:
+            db = SessionLocal()
+            try:
+                if bool((payload or {}).get("iceRestart")):
+                    mark_call_session_connecting(db, call_session_id=call_session_id)
+                    row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+                    if row and row.status not in {"ended", "missed", "rejected", "failed", "cancelled"}:
+                        row.status = "reconnecting"
+                        db.commit()
+                        db.refresh(row)
+                else:
+                    mark_call_session_connecting(db, call_session_id=call_session_id)
+            finally:
+                db.close()
         await sio.emit(
             RealtimeEvent.WEBRTC_OFFER,
             {**(payload or {}), "sender": sid},
@@ -553,7 +574,14 @@ def register_socket_events(sio):
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
-        _socket_log("webrtc_answer", sid=sid, session_id=session_id, call_session_id=(payload or {}).get("callSessionId"))
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        _socket_log("webrtc_answer", sid=sid, session_id=session_id, call_session_id=call_session_id)
+        if call_session_id:
+            db = SessionLocal()
+            try:
+                mark_call_session_connected(db, call_session_id=call_session_id)
+            finally:
+                db.close()
         await sio.emit(
             RealtimeEvent.WEBRTC_ANSWER,
             {**(payload or {}), "sender": sid},
@@ -939,6 +967,7 @@ def register_socket_events(sio):
         _socket_log("call_ended", sid=sid, session_id=session_id, call_session_id=call_session_id)
         db = SessionLocal()
         try:
+            row = await end_call_session(db, call_session_id=call_session_id, reason=(payload or {}).get("reason"))
             user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
         finally:
             db.close()
@@ -959,7 +988,7 @@ def register_socket_events(sio):
         )
         await _emit_session_presence(session_id)
         await _emit_session_snapshot(session_id)
-        return {"ok": True, "sessionId": session_id}
+        return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id, "status": row.status if call_session_id else "ended"}
 
     @sio.on("visitor-arrived", namespace=settings.SIGNALING_NAMESPACE)
     async def visitor_arrived(sid, payload):
