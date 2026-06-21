@@ -10,6 +10,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 
 settings = get_settings()
 
@@ -82,7 +83,7 @@ def decode_secure_token(token: str, expected_prefix: str) -> dict:
         expires_at = datetime.fromisoformat(str(exp_raw))
     except ValueError:
         raise AppException("Token expiry metadata is invalid.", status_code=400)
-    if expires_at <= datetime.utcnow():
+    if expires_at <= utc_now():
         raise AppException("Token has expired.", status_code=400)
     return payload
 
@@ -117,4 +118,4 @@ def build_qr_token_payload(
 
 
 def token_expiry_from_now(minutes: int) -> datetime:
-    return datetime.utcnow() + timedelta(minutes=max(1, int(minutes or 1)))
+    return utc_now() + timedelta(minutes=max(1, int(minutes or 1)))

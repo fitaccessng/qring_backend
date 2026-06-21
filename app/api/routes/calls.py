@@ -222,7 +222,7 @@ async def start_call(
         )
         event_payload = build_notification_envelope(
             notification_id=row.id,
-            event_type="call.invite",
+            event_type="call.requested",
             idempotency_key=call_invite_key,
             session_id=linked_session,
             user_id=user.id if user else None,
@@ -248,7 +248,7 @@ async def start_call(
             },
         )
         await emit_signaling_notification(
-            event_name="call.invite",
+            event_name="call.requested",
             rooms=[f"session:{linked_session}"],
             payload=event_payload,
             idempotency_key=call_invite_key,

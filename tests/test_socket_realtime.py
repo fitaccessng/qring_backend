@@ -209,6 +209,7 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(offer_ack["ok"])
         self.assertTrue(self._find_emit(RealtimeEvent.WEBRTC_OFFER))
+        self.db.expire_all()
         reconnecting_row = self.db.query(CallSession).filter(CallSession.id == accepted_ack["callSessionId"]).first()
         self.assertEqual(reconnecting_row.status, "reconnecting")
 
@@ -222,6 +223,7 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(answer_ack["ok"])
         self.assertTrue(self._find_emit(RealtimeEvent.WEBRTC_ANSWER))
+        self.db.expire_all()
         connected_row = self.db.query(CallSession).filter(CallSession.id == accepted_ack["callSessionId"]).first()
         self.assertEqual(connected_row.status, "connected")
 

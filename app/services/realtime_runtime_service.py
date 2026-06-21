@@ -4,9 +4,11 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from app.core.time import utc_now
+
 logger = logging.getLogger(__name__)
 
-_startup_at = datetime.utcnow()
+_startup_at = utc_now()
 _state: dict[str, Any] = {
     "websocketInitialized": False,
     "redisConfigured": False,
@@ -38,7 +40,7 @@ def append_startup_diagnostic(message: str, *, level: str = "info", code: str = 
         "message": message,
         "level": str(level or "info").lower(),
         "code": str(code or "").strip(),
-        "at": datetime.utcnow().isoformat(),
+        "at": utc_now().isoformat(),
     }
     _state.setdefault("startupDiagnostics", []).append(row)
     _state["startupDiagnostics"] = _state["startupDiagnostics"][-20:]
@@ -49,5 +51,5 @@ def append_startup_diagnostic(message: str, *, level: str = "info", code: str = 
 def get_realtime_runtime_snapshot() -> dict[str, Any]:
     return {
         **_state,
-        "uptimeSeconds": max(0, int((datetime.utcnow() - _startup_at).total_seconds())),
+        "uptimeSeconds": max(0, int((utc_now() - _startup_at).total_seconds())),
     }

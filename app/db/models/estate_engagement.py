@@ -7,6 +7,7 @@ from enum import Enum
 from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.time import utc_now
 from app.db.base import Base
 
 
@@ -26,8 +27,8 @@ class EstateMeetingResponse(Base):
     estate_alert_id: Mapped[str] = mapped_column(String(36), ForeignKey("estate_alerts.id"), nullable=False, index=True)
     resident_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     response: Mapped[MeetingResponseType] = mapped_column(SqlEnum(MeetingResponseType), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class EstatePollVote(Base):
@@ -40,5 +41,5 @@ class EstatePollVote(Base):
     estate_alert_id: Mapped[str] = mapped_column(String(36), ForeignKey("estate_alerts.id"), nullable=False, index=True)
     resident_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     option_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)

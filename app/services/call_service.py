@@ -33,7 +33,7 @@ def _validate_appointment_for_call(appointment: Appointment) -> None:
     if appointment.status in {"cancelled", "completed", "closed", "ended", "rejected"}:
         raise AppException("Appointment is not valid for calling.", status_code=409)
     appointment_end = ensure_utc(appointment.ends_at)
-    if appointment_end and appointment_end < utc_now():
+    if appointment_end and appointment_end < ensure_utc(utc_now()):
         raise AppException("Appointment has expired.", status_code=409)
 
 

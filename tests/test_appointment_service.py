@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -77,7 +77,7 @@ class AppointmentServiceTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_create_appointment_without_email_returns_share_code(self):
-        starts_at = datetime.utcnow() + timedelta(hours=2)
+        starts_at = datetime.now(timezone.utc) + timedelta(hours=2)
         ends_at = starts_at + timedelta(hours=1)
 
         with patch("app.services.appointment_service.require_subscription_feature"), patch(
@@ -104,7 +104,7 @@ class AppointmentServiceTests(unittest.TestCase):
         send_email_mock.assert_not_called()
 
     def test_accept_appointment_notifies_homeowner_and_estate_security(self):
-        starts_at = datetime.utcnow() + timedelta(hours=3)
+        starts_at = datetime.now(timezone.utc) + timedelta(hours=3)
         ends_at = starts_at + timedelta(hours=2)
 
         with patch("app.services.appointment_service.require_subscription_feature"), patch(

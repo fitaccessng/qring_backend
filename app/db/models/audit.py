@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.time import utc_now
 from app.db.base import Base
 
 
@@ -19,7 +20,7 @@ class AuditLog(Base):
     resource_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     resource_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     meta_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 
 class GateLog(Base):
@@ -36,4 +37,4 @@ class GateLog(Base):
     resulting_status: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     meta_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)

@@ -51,6 +51,7 @@ def build_notification_envelope(
 
     return {
         **normalized_payload,
+        "payload": normalized_payload,
         "notificationId": effective_notification_id,
         "eventId": effective_event_id,
         "idempotencyKey": effective_idempotency_key,

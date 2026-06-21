@@ -5,6 +5,7 @@ import hmac
 import secrets
 from datetime import datetime, timedelta
 
+from app.core.time import utc_now
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
@@ -29,7 +30,7 @@ def issue_visitor_session_token(
     """
     raw = f"vst1_{secrets.token_urlsafe(32)}"
     session.visitor_token_hash = _hash_token(raw)
-    session.visitor_token_expires_at = datetime.utcnow() + timedelta(hours=max(1, int(ttl_hours)))
+    session.visitor_token_expires_at = utc_now() + timedelta(hours=max(1, int(ttl_hours)))
     db.commit()
     db.refresh(session)
     return raw
@@ -50,7 +51,7 @@ def require_visitor_session_access(
         raise AppException("Visitor token is required for this session.", status_code=401)
     if not session.visitor_token_hash or not session.visitor_token_expires_at:
         raise AppException("Visitor token is not available for this session.", status_code=401)
-    if session.visitor_token_expires_at <= datetime.utcnow():
+    if session.visitor_token_expires_at <= utc_now():
         raise AppException("Visitor token expired. Please rescan and try again.", status_code=401)
     provided_hash = _hash_token(token)
     if not hmac.compare_digest(provided_hash, session.visitor_token_hash):

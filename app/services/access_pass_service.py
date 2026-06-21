@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 from app.db.models import DigitalAccessPass, Door, GateLog, Home
 
 
@@ -83,7 +84,7 @@ def create_homeowner_access_pass(
         if clean_type == "pin"
         else f"acc_{secrets.token_urlsafe(8).replace('-', '').replace('_', '')[:12]}"
     )
-    now = datetime.utcnow()
+    now = utc_now()
     row = DigitalAccessPass(
         homeowner_id=homeowner_id,
         estate_id=home.estate_id,
@@ -131,7 +132,7 @@ def validate_access_pass(
     row = db.query(DigitalAccessPass).filter(DigitalAccessPass.code_value == clean_code).first()
     if not row:
         raise AppException("Access code not found", status_code=404)
-    now = datetime.utcnow()
+    now = utc_now()
     if not row.is_active:
         raise AppException("Access code is no longer active", status_code=400)
     if row.estate_id and estate_id and row.estate_id != estate_id:

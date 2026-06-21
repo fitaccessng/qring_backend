@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.core.config import get_settings
+from app.core.time import utc_now
 from app.core.security import hash_password
 from app.db.models import Door, Estate, GateLog, Home, Notification, QRCode, User, UserRole, VisitorSession
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired, require_subscription_feature
@@ -139,7 +140,7 @@ def _limited_log_cutoff(subscription: dict[str, Any]) -> datetime | None:
     retention_days = int(((subscription or {}).get("limits") or {}).get("logRetentionDays") or 0)
     if retention_days <= 0:
         return None
-    return datetime.utcnow() - timedelta(days=retention_days)
+    return utc_now() - timedelta(days=retention_days)
 
 
 def _notify_usage_threshold(
@@ -371,7 +372,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             "peakEntryTimes": peak_hours,
             "mostVisitedHouses": most_visited_houses,
             "averageApprovalTimeMinutes": avg_approval_time_minutes,
-            "totalDailyVisitors": len([row for row in session_rows if row.started_at and row.started_at.date() == datetime.utcnow().date()]),
+            "totalDailyVisitors": len([row for row in session_rows if row.started_at and row.started_at.date() == utc_now().date()]),
             "securityActivityLogs": [
                 {
                     "id": row.id,
@@ -1005,7 +1006,7 @@ def invite_homeowner(
 
     return {
         "inviteToken": token,
-        "sentAt": datetime.utcnow().isoformat(),
+        "sentAt": utc_now().isoformat(),
         "emailStatus": email_status,
         "emailReason": email_reason,
         "emailMessageId": email_message_id,

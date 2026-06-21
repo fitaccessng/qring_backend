@@ -36,6 +36,7 @@ from app.services.realtime_notification_service import (
     emit_signaling_notification,
 )
 from app.socket.server import sio
+from app.core.time import utc_now
 
 router = APIRouter()
 settings = get_settings()
@@ -82,7 +83,7 @@ def _validate_visitor_consent(payload: VisitorRequestCreate) -> None:
     accepted_at = consent_accepted_at
     if accepted_at.tzinfo is not None:
         accepted_at = accepted_at.replace(tzinfo=None)
-    age_seconds = (datetime.utcnow() - accepted_at).total_seconds()
+    age_seconds = (utc_now() - accepted_at).total_seconds()
     if age_seconds < 0 or age_seconds > VISITOR_CONSENT_MAX_AGE_HOURS * 3600:
         raise AppException(
             "Visitor consent has expired. Please accept the privacy notice again.",

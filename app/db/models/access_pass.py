@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.time import utc_now
 from app.db.base import Base
 
 
@@ -22,10 +23,10 @@ class DigitalAccessPass(Base):
     label: Mapped[str] = mapped_column(String(120), default="Guest Access")
     visitor_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     code_value: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
-    valid_from: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    valid_from: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     valid_until: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     max_uses: Mapped[int] = mapped_column(Integer, default=1)
     used_count: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 from app.core.redis import get_redis_client, prefixed_key
 from app.core.security import (
     create_access_token,
@@ -437,19 +438,19 @@ def rotate_refresh_token(db: Session, refresh_token: str):
         logger.warning("auth.refresh_token session_not_found user_id=%s", token_subject)
         raise AppException("Invalid refresh token", status_code=401)
     if str(session.user_id) != token_subject:
-        session.revoked_at = datetime.utcnow()
+        session.revoked_at = utc_now()
         db.commit()
         logger.warning("auth.refresh_token subject_mismatch expected=%s actual=%s", session.user_id, token_subject)
         raise AppException("Invalid refresh token", status_code=401)
     if not session.user or not session.user.is_active:
-        session.revoked_at = datetime.utcnow()
+        session.revoked_at = utc_now()
         db.commit()
         logger.warning("auth.refresh_token user_inactive user_id=%s", session.user_id)
         raise AppException("User not found", status_code=401)
 
     access_token = create_access_token(session.user_id, session.user.role.value)
     new_refresh = create_refresh_token(session.user_id)
-    session.revoked_at = datetime.utcnow()
+    session.revoked_at = utc_now()
     db.add(
         DeviceSession(
             user_id=session.user_id,
@@ -466,7 +467,7 @@ def rotate_refresh_token(db: Session, refresh_token: str):
 def logout(db: Session, refresh_token: str):
     session = db.query(DeviceSession).filter(DeviceSession.refresh_token == refresh_token).first()
     if session:
-        session.revoked_at = datetime.utcnow()
+        session.revoked_at = utc_now()
         db.commit()
 
 
@@ -480,7 +481,7 @@ def request_password_reset(db: Session, email: str, user_agent: str = "", ip_add
 
     token = generate_user_token()
     token_hash = hash_user_token(token)
-    expires_at = datetime.utcnow() + timedelta(minutes=30)
+    expires_at = utc_now() + timedelta(minutes=30)
     db.add(
         UserToken(
             user_id=user.id,
@@ -517,7 +518,7 @@ def reset_password(db: Session, email: str, token: str, new_password: str):
         raise AppException("Reset token is required", status_code=400)
 
     token_hash = hash_user_token(token_value)
-    now = datetime.utcnow()
+    now = utc_now()
     row = (
         db.query(UserToken)
         .filter(
@@ -552,7 +553,7 @@ def change_password(db: Session, user_id: str, current_password: str, new_passwo
         raise AppException("Current password is incorrect", status_code=400)
     _validate_password_strength(new_password)
     user.password_hash = hash_password(new_password)
-    now = datetime.utcnow()
+    now = utc_now()
     # Revoke all existing refresh sessions so stolen refresh tokens can't be used.
     db.query(DeviceSession).filter(DeviceSession.user_id == user.id, DeviceSession.revoked_at.is_(None)).update(
         {DeviceSession.revoked_at: now},
@@ -576,7 +577,7 @@ def request_email_verification(db: Session, email: str, user_agent: str = "", ip
     token_hash = hash_user_token(token)
     otp = f"{secrets.randbelow(1_000_000):06d}"
     otp_hash = hash_user_token(otp)
-    expires_at = datetime.utcnow() + timedelta(hours=24)
+    expires_at = utc_now() + timedelta(hours=24)
     db.add(
         UserToken(
             user_id=user.id,
@@ -638,7 +639,7 @@ def verify_email(db: Session, email: str, token: str):
     _enforce_email_verify_rate_limit(login_key=login_key, ip_address="")
 
     token_hash = hash_user_token(token_value)
-    now = datetime.utcnow()
+    now = utc_now()
     row = (
         db.query(UserToken)
         .filter(
@@ -662,7 +663,7 @@ def verify_email(db: Session, email: str, token: str):
 
 def _enforce_email_verify_rate_limit(login_key: str, ip_address: str) -> None:
     # Best-effort brute-force mitigation for OTP verification attempts.
-    now = datetime.utcnow().timestamp()
+    now = utc_now().timestamp()
     key = f"verify:{(login_key or '').strip().lower()}:{(ip_address or '').strip() or 'unknown'}"
     window_seconds = 15 * 60
     max_hits = 12
@@ -703,7 +704,7 @@ def _login_rate_redis_keys(login_key: str, ip_address: str) -> tuple[str, str]:
 
 
 def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
-    now = datetime.utcnow().timestamp()
+    now = utc_now().timestamp()
     redis_client = get_redis_client()
     if redis_client is not None:
         try:
@@ -727,7 +728,7 @@ def _enforce_login_rate_limit(login_key: str, ip_address: str) -> None:
 
 
 def _record_login_failure(login_key: str, ip_address: str) -> None:
-    now = datetime.utcnow().timestamp()
+    now = utc_now().timestamp()
     redis_client = get_redis_client()
     if redis_client is not None:
         try:
@@ -787,7 +788,7 @@ def _token_issue_rate_key(login_key: str, ip_address: str, purpose: str) -> str:
 
 
 def _enforce_token_issue_rate_limit(login_key: str, ip_address: str, purpose: str) -> None:
-    now = datetime.utcnow().timestamp()
+    now = utc_now().timestamp()
     key = _token_issue_rate_key(login_key, ip_address, purpose)
     with _auth_lock:
         hits = _token_issue_hits.setdefault(key, [])

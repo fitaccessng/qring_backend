@@ -44,6 +44,7 @@ from app.socket.server import sio
 from app.core.config import get_settings
 from app.services.estate_alert_service import create_homeowner_maintenance_request, attach_alert_payment_proof
 from app.services.estate_service import join_estate_by_token
+from app.core.time import utc_now
 
 router = APIRouter()
 settings = get_settings()
@@ -638,7 +639,7 @@ async def homeowner_end_visit(
             appointment.qr_token_hash = None
             appointment.qr_payload_encrypted = None
             appointment.qr_signature = None
-            appointment.qr_expires_at = datetime.utcnow()
+            appointment.qr_expires_at = utc_now()
             appointment.share_token_hash = None
             db.query(VisitorSession).filter(
                 VisitorSession.appointment_id == appointment.id,
@@ -646,7 +647,7 @@ async def homeowner_end_visit(
             ).update(
                 {
                     VisitorSession.status: "closed",
-                    VisitorSession.ended_at: datetime.utcnow(),
+                    VisitorSession.ended_at: utc_now(),
                 },
                 synchronize_session=False,
             )

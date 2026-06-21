@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
+from app.core.time import utc_now
 from app.db.models import Door, Estate, Home, HomeownerSetting, VisitorSession
 from app.services.security_service import evaluate_session_intelligence
 from app.services.door_routing_service import select_door
@@ -105,7 +106,7 @@ def create_visitor_session(
         communication_status="none",
         gate_status="waiting",
         delivery_option=clean_delivery_option,
-        state_updated_at=datetime.utcnow(),
+        state_updated_at=utc_now(),
     )
     db.add(session)
     try:
@@ -129,7 +130,7 @@ def create_visitor_session(
     evaluate_session_intelligence(db, session, estate=estate, homeowner_settings=homeowner_settings)
     if session.auto_approved:
         session.status = "approved"
-        session.homeowner_decision_at = datetime.utcnow()
+        session.homeowner_decision_at = utc_now()
         session.pre_approved = True
         session.pre_approved_reason = session.pre_approved_reason or "Auto-approved by trust rule"
     db.commit()
@@ -150,13 +151,13 @@ def mark_session_status(db: Session, session_id: str, status: str) -> VisitorSes
     if not session:
         return None
     session.status = status
-    session.state_updated_at = datetime.utcnow()
+    session.state_updated_at = utc_now()
     if status in {"rejected", "closed", "completed"}:
-        session.ended_at = session.ended_at or datetime.utcnow()
+        session.ended_at = session.ended_at or utc_now()
     if status == "approved":
-        session.homeowner_decision_at = session.homeowner_decision_at or datetime.utcnow()
+        session.homeowner_decision_at = session.homeowner_decision_at or utc_now()
     if status == "rejected":
-        session.homeowner_decision_at = session.homeowner_decision_at or datetime.utcnow()
+        session.homeowner_decision_at = session.homeowner_decision_at or utc_now()
         session.gate_status = session.gate_status or "denied_at_gate"
     db.commit()
     db.refresh(session)

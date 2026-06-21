@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 from app.db.models import AuditLog, Appointment, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, User, UserRole, VisitorSession
 from app.services.notification_service import create_notification
 
@@ -80,7 +81,7 @@ def detect_suspicious_pattern(db: Session, session: VisitorSession, estate: Esta
         query = query.filter(VisitorSession.visitor_phone == match_value)
     else:
         query = query.filter(func.lower(VisitorSession.visitor_label) == match_value)
-    window_start = datetime.utcnow() - timedelta(minutes=max(int(estate.suspicious_visit_window_minutes or 20), 5))
+    window_start = utc_now() - timedelta(minutes=max(int(estate.suspicious_visit_window_minutes or 20), 5))
     rows = query.filter(VisitorSession.started_at >= window_start).all()
     unique_houses = len({row.home_id for row in rows if row.home_id})
     rejection_count = len([row for row in rows if row.status == "rejected"])
@@ -305,7 +306,7 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         "stateUpdatedAt": session.state_updated_at.isoformat() if session.state_updated_at else None,
         "startedAt": session.started_at.isoformat() if session.started_at else None,
         "endedAt": session.ended_at.isoformat() if session.ended_at else None,
-        "waitingSeconds": max(0, int((datetime.utcnow() - (session.started_at or datetime.utcnow())).total_seconds())),
+        "waitingSeconds": max(0, int((utc_now() - (session.started_at or utc_now())).total_seconds())),
         "snapshotMissing": not bool(session.snapshot_url or session.photo_url),
         "detailsMissing": [
             field_name
@@ -420,7 +421,7 @@ def update_security_session_status(
         raise AppException("Visitor request not found", status_code=404)
 
     action = (action or "").strip().lower()
-    now = datetime.utcnow()
+    now = utc_now()
     normalized_channel = (preferred_communication_channel or "").strip().lower() or None
     if normalized_channel not in {None, "message", "audio", "video"}:
         raise AppException("Preferred communication channel is invalid.", status_code=400)
@@ -618,7 +619,7 @@ def list_security_session_messages(
         Message.sender_type != "security",
         Message.read_by_security_at.is_(None),
     ).update(
-        {Message.read_by_security_at: datetime.utcnow()},
+        {Message.read_by_security_at: utc_now()},
         synchronize_session=False,
     )
     db.commit()
@@ -654,7 +655,7 @@ def list_security_session_messages(
                 "photoUrl": snapshot_url,
                 "senderType": "visitor",
                 "displayName": session.visitor_label or "Visitor",
-                "at": session.started_at.isoformat() if session.started_at else datetime.utcnow().isoformat(),
+                "at": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
             },
         )
     return serialized
@@ -682,7 +683,7 @@ def create_security_session_message(
         sender_id=security_user.id,
         receiver_id=session.homeowner_id,
         body=body,
-        created_at=datetime.utcnow(),
+        created_at=utc_now(),
     )
     db.add(message)
     db.commit()

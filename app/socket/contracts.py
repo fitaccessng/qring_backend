@@ -21,12 +21,15 @@ class RealtimeEvent:
     CHAT_TYPING = "chat.typing"
     CHAT_READ = "chat.read"
 
+    CALL_REQUESTED = "call.requested"
     CALL_INVITE = "call.invite"
     CALL_INVITE_RECEIVED = "call.invite.received"
     CALL_ACCEPTED = "call.accepted"
     CALL_REJECTED = "call.rejected"
     CALL_ENDED = "call.ended"
+    CALL_FAILED = "call.failed"
 
     WEBRTC_OFFER = "webrtc.offer"
     WEBRTC_ANSWER = "webrtc.answer"
     WEBRTC_ICE = "webrtc.ice"
+    WEBRTC_ICE_CANDIDATE = "webrtc.ice_candidate"

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
+from app.core.time import utc_now
 from app.db.models import Appointment, Door, Home, User, VisitorSession
 from app.services.payment_service import require_subscription_feature
 from app.services.notification_service import create_notification
@@ -239,7 +240,7 @@ def create_appointment(
     ends_at = _to_dt(ends_at_iso)
     if ends_at <= starts_at:
         raise AppException("Appointment end time must be after start time.", status_code=400)
-    if ends_at <= datetime.utcnow():
+    if ends_at <= utc_now():
         raise AppException("Appointment must end in the future.", status_code=400)
 
     radius = int(geofence_radius_meters or settings.APPOINTMENT_DEFAULT_GEOFENCE_RADIUS_METERS)
@@ -320,14 +321,14 @@ def create_appointment_share(
     if appt.status in {"cancelled", "completed", "expired"}:
         raise AppException("Appointment cannot be shared in current state.", status_code=400)
 
-    expires_at = min(appt.ends_at + timedelta(hours=3), datetime.utcnow() + timedelta(days=3))
+    expires_at = min(appt.ends_at + timedelta(hours=3), utc_now() + timedelta(days=3))
     token_data = build_secure_token(
         "as1",
         build_share_token_payload(appointment_id=appt.id, homeowner_id=appt.homeowner_id),
         expires_at=expires_at,
     )
     appt.share_token_hash = token_data["tokenHash"]
-    appt.share_token_created_at = datetime.utcnow()
+    appt.share_token_created_at = utc_now()
     if appt.status == "created":
         appt.status = "shared"
     db.commit()
@@ -358,7 +359,7 @@ def resolve_appointment_share_token(db: Session, share_token: str) -> Appointmen
             raise AppException("Share token is no longer valid.", status_code=400)
         if appt.status in {"cancelled", "completed", "expired"}:
             raise AppException("Appointment is not active.", status_code=400)
-        if appt.ends_at <= datetime.utcnow():
+        if appt.ends_at <= utc_now():
             appt.status = "expired"
             db.commit()
             raise AppException("Appointment has expired.", status_code=400)
@@ -377,7 +378,7 @@ def resolve_appointment_share_token(db: Session, share_token: str) -> Appointmen
         raise AppException("Share token is no longer valid.", status_code=400)
     if appt.status in {"cancelled", "completed", "expired"}:
         raise AppException("Appointment is not active.", status_code=400)
-    if appt.ends_at <= datetime.utcnow():
+    if appt.ends_at <= utc_now():
         appt.status = "expired"
         db.commit()
         raise AppException("Appointment has expired.", status_code=400)
@@ -396,7 +397,7 @@ def accept_appointment_share(
     visitor_id = f"visitor-{uuid.uuid4().hex[:12]}"
     effective_name = (visitor_name or appt.visitor_name or "Visitor").strip() or "Visitor"
 
-    qr_expiry = min(appt.ends_at, datetime.utcnow() + timedelta(hours=3))
+    qr_expiry = min(appt.ends_at, utc_now() + timedelta(hours=3))
     qr_payload = build_qr_token_payload(
         visitor_id=visitor_id,
         homeowner_id=appt.homeowner_id,
@@ -408,7 +409,7 @@ def accept_appointment_share(
     qr_token_data = build_secure_token("qt1", qr_payload, expires_at=qr_expiry)
 
     appt.status = "accepted"
-    appt.accepted_at = datetime.utcnow()
+    appt.accepted_at = utc_now()
     appt.accepted_device_id = device
     appt.visitor_name = effective_name
     appt.qr_token_hash = qr_token_data["tokenHash"]
@@ -486,7 +487,7 @@ def resolve_qr_appointment_token_for_request(
         raise AppException("QR token is no longer valid.", status_code=400)
     if appt.qr_used_at:
         raise AppException("This QR token has already been used.", status_code=400)
-    if appt.qr_expires_at and appt.qr_expires_at <= datetime.utcnow():
+    if appt.qr_expires_at and appt.qr_expires_at <= utc_now():
         appt.status = "expired"
         db.commit()
         raise AppException("QR token expired.", status_code=400)
@@ -532,7 +533,7 @@ def mark_appointment_qr_used(
     appointment: Appointment,
     device_id: str | None,
 ) -> None:
-    appointment.qr_used_at = datetime.utcnow()
+    appointment.qr_used_at = utc_now()
     appointment.qr_used_device_id = str(device_id or "").strip() or appointment.qr_used_device_id
     appointment.status = "active"
     db.commit()
@@ -565,7 +566,7 @@ def report_appointment_arrival(
             f"Visitor is outside geofence ({int(distance_m)}m > {radius_m}m).",
             status_code=400,
         )
-    appt.arrived_at = datetime.utcnow()
+    appt.arrived_at = utc_now()
     appt.arrival_lat = lat
     appt.arrival_lng = lng
     appt.arrival_battery_pct = battery_pct
@@ -599,7 +600,7 @@ def report_appointment_arrival(
     homeowner_email = str(homeowner.email or "").strip().lower() if homeowner else ""
     if homeowner_email:
         entry_point = ((door.gate_label or door.name) if door else "your property").strip()
-        arrival_label = appt.arrived_at.strftime("%b %d, %Y %I:%M %p") if appt.arrived_at else datetime.utcnow().strftime("%b %d, %Y %I:%M %p")
+        arrival_label = appt.arrived_at.strftime("%b %d, %Y %I:%M %p") if appt.arrived_at else utc_now().strftime("%b %d, %Y %I:%M %p")
         try:
             send_transactional_email(
                 to_email=homeowner_email,

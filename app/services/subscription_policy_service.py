@@ -31,7 +31,7 @@ def _days_until(target: datetime | None, *, now: datetime) -> int | None:
 
 
 def resolve_status(subscription: Any, *, now: datetime | None = None) -> str:
-    current_time = ensure_utc(now) or utc_now()
+    current_time = ensure_utc(now) or ensure_utc(utc_now())
     trial_ends_at = _coerce_datetime(getattr(subscription, "trial_ends_at", None))
     ends_at = _coerce_datetime(getattr(subscription, "ends_at", None))
     grace_ends_at = _coerce_datetime(getattr(subscription, "grace_ends_at", None))
@@ -54,7 +54,7 @@ def resolve_status(subscription: Any, *, now: datetime | None = None) -> str:
 
 
 def compute_warning_phase(subscription: Any, *, now: datetime | None = None) -> str | None:
-    current_time = ensure_utc(now) or utc_now()
+    current_time = ensure_utc(now) or ensure_utc(utc_now())
     ends_at = _coerce_datetime(getattr(subscription, "ends_at", None))
     days_to_expiry = _days_until(ends_at, now=current_time)
     if days_to_expiry is None or days_to_expiry > 14:
@@ -107,7 +107,7 @@ def compute_allowed_actions(subscription: Any, *, actor_role: str, is_bill_payer
 
 
 def build_subscription_summary(subscription: Any, *, actor_role: str, is_bill_payer: bool, now: datetime | None = None) -> dict[str, Any]:
-    current_time = ensure_utc(now) or utc_now()
+    current_time = ensure_utc(now) or ensure_utc(utc_now())
     ends_at = _coerce_datetime(getattr(subscription, "ends_at", None))
     grace_ends_at = _coerce_datetime(getattr(subscription, "grace_ends_at", None))
 

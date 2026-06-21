@@ -523,7 +523,7 @@ def _is_user_in_signup_trial(user: User, *, now: datetime | None = None) -> bool
     """Check if user is within 30 days of signup to grant all features."""
     if not user or not user.created_at:
         return False
-    current_time = now or utc_now()
+    current_time = ensure_utc(now or utc_now())
     created_at = ensure_utc(user.created_at)
     days_since_signup = (current_time - created_at).days
     return 0 <= days_since_signup < SIGNUP_TRIAL_DAYS
@@ -541,7 +541,7 @@ def _build_feature_flags(features: list[str], user: User | None = None, *, now: 
 def _signup_trial_days_remaining(user: User | None, *, now: datetime | None = None) -> int:
     if not user or not user.created_at:
         return 0
-    current_time = now or utc_now()
+    current_time = ensure_utc(now or utc_now())
     created_at = ensure_utc(user.created_at)
     trial_ends_at = created_at + timedelta(days=SIGNUP_TRIAL_DAYS)
     if current_time >= trial_ends_at:
@@ -720,7 +720,7 @@ def _notify_trial_and_expiry_windows(db: Session, *, user_id: str, subscription:
         expiry_dt = datetime.fromisoformat(str(expires_at))
     except Exception:
         return
-    remaining_days = max((expiry_dt - utc_now()).days, 0)
+    remaining_days = max((ensure_utc(expiry_dt) - ensure_utc(utc_now())).days, 0)
     if 0 < remaining_days <= 3:
         _insert_notification_if_missing(
             db,
@@ -753,7 +753,7 @@ def _resolve_subscription_scope(user: User | None, audience: str) -> tuple[str, 
 
 
 def _apply_subscription_lifecycle(row: Subscription, *, now: datetime | None = None) -> Subscription:
-    current_time = now or utc_now()
+    current_time = ensure_utc(now or utc_now())
     lifecycle = sync_subscription_lifecycle(row, now=current_time, default_grace_days=DEFAULT_GRACE_DAYS)
     if lifecycle["status_changed"]:
         event_type = "subscription.entered_grace" if row.status == "grace_period" else "subscription.suspended" if row.status == "suspended" else "subscription.expiring_soon"
@@ -1445,10 +1445,10 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         return result
 
     try:
-        now = utc_now()
+        now = ensure_utc(utc_now())
         plan_meta = get_plan_or_raise(db, row.plan, include_inactive=True, user=trial_user, now=now)
     except AppException:
-        now = utc_now()
+        now = ensure_utc(utc_now())
         plan_meta = get_plan_or_raise(db, _default_plan_id_for_audience(audience), user=trial_user, now=now)
         row.plan = plan_meta["id"]
         db.commit()

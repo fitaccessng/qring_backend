@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_now
 from app.db.models import Appointment, Door, Estate, Home, Message, Notification, QRCode, VisitorSession
 from app.core.exceptions import AppException
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
@@ -70,8 +71,8 @@ def _resolve_session_snapshot_payload(
         "visitorPhone": (source.get("phoneNumber") or session.visitor_phone or "").strip() or None,
         "purpose": (source.get("purpose") or session.purpose or "").strip() or None,
         "doorId": session.door_id,
-        "timestamp": session.started_at.isoformat() if session.started_at else datetime.utcnow().isoformat(),
-        "at": session.started_at.isoformat() if session.started_at else datetime.utcnow().isoformat(),
+        "timestamp": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
+        "at": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
         "persisted": True,
         "snapshotAuditId": str(source.get("snapshotAuditId") or "").strip() or None,
     }
@@ -140,7 +141,7 @@ def _resolve_subscription_owner_id(db: Session, homeowner_id: str) -> str:
 def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> list[dict[str, Any]]:
     effective_sub = get_effective_subscription(db, homeowner_id, user_role="homeowner")
     retention_days = int(((effective_sub or {}).get("limits") or {}).get("logRetentionDays") or 0)
-    cutoff = datetime.utcnow() - timedelta(days=retention_days) if retention_days > 0 else None
+    cutoff = utc_now() - timedelta(days=retention_days) if retention_days > 0 else None
     rows = (
         db.query(VisitorSession, Door, Home, Estate)
         .join(Door, Door.id == VisitorSession.door_id)
@@ -306,7 +307,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "last": last_text,
                 "lastSenderType": latest.sender_type if latest else None,
                 "unread": unread_by_session.get(session_id, 0),
-                "time": thread_time.isoformat() if thread_time else datetime.utcnow().isoformat(),
+                "time": thread_time.isoformat() if thread_time else utc_now().isoformat(),
                 "sessionStatus": session.status,
                 "visitorPhone": session.visitor_phone,
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
@@ -345,7 +346,7 @@ def list_homeowner_session_messages(
         Message.sender_type != "homeowner",
         Message.read_by_homeowner_at.is_(None),
     ).update(
-        {Message.read_by_homeowner_at: datetime.utcnow()},
+        {Message.read_by_homeowner_at: utc_now()},
         synchronize_session=False,
     )
     db.commit()
@@ -403,7 +404,7 @@ def create_homeowner_session_message(
         sender_type="homeowner",
         sender_id=homeowner_id,
         body=body,
-        created_at=datetime.utcnow(),
+        created_at=utc_now(),
     )
     db.add(message)
     db.commit()
@@ -440,7 +441,7 @@ def create_visitor_session_message(
         sender_type="visitor",
         receiver_id=session.homeowner_id,
         body=body,
-        created_at=datetime.utcnow(),
+        created_at=utc_now(),
     )
     db.add(message)
     db.commit()

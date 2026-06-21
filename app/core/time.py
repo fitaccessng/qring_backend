@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def ensure_utc(value: datetime | None) -> datetime | None:

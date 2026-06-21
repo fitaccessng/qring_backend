@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 import asyncio
 import logging
-from datetime import datetime
 
-from anyio import from_thread
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_now
 from app.core.redis import get_redis_client, prefixed_key
 from app.db.models import Appointment, Notification, VisitorSession
 from app.services.provider_integrations import send_push_fcm
@@ -24,7 +23,7 @@ def _schedule_dashboard_emit(func, /, *args, **kwargs) -> None:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        from_thread.run(func, *args, **kwargs)
+        asyncio.run(func(*args, **kwargs))
         return
     asyncio.create_task(func(*args, **kwargs))
 
@@ -57,6 +56,7 @@ def _safe_json_payload(value) -> dict:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
 
 def create_notification(
     db: Session,
@@ -274,7 +274,7 @@ def mark_notification_read(db: Session, user_id: str, notification_id: str) -> d
     )
     if not row:
         return None
-    row.read_at = row.read_at or datetime.utcnow()
+    row.read_at = row.read_at or utc_now()
     db.commit()
     db.refresh(row)
     parsed_payload = _safe_json_payload(row.payload)
@@ -312,7 +312,7 @@ def mark_all_notifications_read(db: Session, user_id: str) -> int:
     )
     if not rows:
         return 0
-    now = datetime.utcnow()
+    now = utc_now()
     for row in rows:
         row.read_at = now
     db.commit()
@@ -373,7 +373,7 @@ def mark_session_notifications_read(
     if not rows:
         return 0
 
-    now = datetime.utcnow()
+    now = utc_now()
     updated = 0
     for row in rows:
         payload_raw = row.payload or "{}"
