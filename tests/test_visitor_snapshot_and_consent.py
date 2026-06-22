@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -12,6 +13,7 @@ from app.core.exceptions import AppException
 from app.db.base import Base
 from app.db.models import Door, Home, User, UserRole, VisitorSession
 from app.schemas.visitor import VisitorRequestCreate
+from app.services.advanced_service import create_snapshot_audit, load_snapshot_bytes
 from app.services.homeowner_service import list_homeowner_session_messages
 
 
@@ -86,6 +88,35 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.assertEqual(rows[0]["messageType"], "visitor_snapshot")
         self.assertEqual(rows[0]["snapshotUrl"], "https://example.com/snapshot.jpg")
         self.assertEqual(rows[0]["photoUrl"], "https://example.com/snapshot.jpg")
+
+    def test_create_snapshot_audit_falls_back_to_data_url_when_file_storage_fails(self):
+        media_bytes = b"test-image-bytes"
+        with (
+            patch("app.services.advanced_service.upload_snapshot_to_cloudinary", return_value=None),
+            patch("app.services.advanced_service._get_storage_bucket", return_value=None),
+            patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")),
+        ):
+            data = create_snapshot_audit(
+                self.db,
+                homeowner_id=self.homeowner.id,
+                media_bytes=media_bytes,
+                filename_hint="snapshot.jpg",
+                media_type="photo",
+                visitor_session_id=None,
+                appointment_id=None,
+                source="visitor_qr_scan",
+            )
+
+        self.assertTrue(str(data.get("fileUrl") or "").startswith("data:image/jpeg;base64,"))
+        blob, logical_type, content_type = load_snapshot_bytes(
+            self.db,
+            snapshot_id=data["id"],
+            requester_user_id=self.homeowner.id,
+            is_admin=False,
+        )
+        self.assertEqual(blob, media_bytes)
+        self.assertEqual(logical_type, "photo")
+        self.assertEqual(content_type, "image/jpeg")
 
 
 if __name__ == "__main__":

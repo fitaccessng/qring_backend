@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import uuid
@@ -164,6 +165,12 @@ def _public_snapshot_url_from_media_path(media_path: str) -> str:
     return f"/uploads/visitor-media/{path}"
 
 
+def _data_url_from_bytes(media_bytes: bytes, mime_type: str) -> str:
+    safe_mime = str(mime_type or "application/octet-stream").strip() or "application/octet-stream"
+    encoded = base64.b64encode(media_bytes or b"").decode("ascii")
+    return f"data:{safe_mime};base64,{encoded}"
+
+
 def resolve_snapshot_public_url(db: Session, snapshot_audit_id: str | None) -> str:
     audit_id = str(snapshot_audit_id or "").strip()
     if not audit_id:
@@ -288,13 +295,20 @@ def create_snapshot_audit(
             relative_path = Path(effective_resident_id) / f"{media_id}{ext}"
             absolute_path = _media_base_dir() / relative_path
             absolute_path.parent.mkdir(parents=True, exist_ok=True)
-            absolute_path.write_bytes(media_bytes)
-            media_path = str(relative_path).replace("\\", "/")
-            media_url = f"/uploads/visitor-media/{media_path}"
+            try:
+                absolute_path.write_bytes(media_bytes)
+                media_path = str(relative_path).replace("\\", "/")
+                media_url = f"/uploads/visitor-media/{media_path}"
+            except Exception:
+                media_path = f"inline:{media_id}{ext}"
+                media_url = _data_url_from_bytes(
+                    media_bytes,
+                    "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}",
+                )
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
-        resident_id=effective_resident_id,
+        homeowner_id=effective_resident_id,
         visitor_session_id=visitor_session_id,
         appointment_id=appointment_id,
         media_type=(media_type or "photo").strip().lower(),
@@ -309,7 +323,7 @@ def create_snapshot_audit(
     db.refresh(row)
     return {
         "id": row.id,
-        "residentId": row.resident_id,
+        "residentId": row.homeowner_id,
         "visitorSessionId": row.visitor_session_id,
         "appointmentId": row.appointment_id,
         "mediaType": row.media_type,
@@ -353,13 +367,22 @@ def load_snapshot_bytes(
     row = db.query(VisitorSnapshotAudit).filter(VisitorSnapshotAudit.id == snapshot_id).first()
     if not row:
         raise AppException("Snapshot not found.", status_code=404)
-    if not is_admin and row.resident_id != requester_user_id:
+    if not is_admin and row.homeowner_id != requester_user_id:
         raise AppException("Not authorized to access this snapshot.", status_code=403)
 
     media_path = str(row.media_path or "")
     logical_type = row.media_type if row.media_type in {"photo", "video"} else "binary"
     content_type = _snapshot_content_type_from_path(media_path, logical_type)
     if row.media_url:
+        if row.media_url.startswith("data:"):
+            header, _, encoded = row.media_url.partition(",")
+            if not encoded:
+                raise AppException("Snapshot file is unavailable.", status_code=404)
+            try:
+                returned_type = header.split(";", 1)[0].replace("data:", "") or content_type
+                return base64.b64decode(encoded), logical_type, returned_type
+            except Exception as exc:
+                raise AppException("Snapshot file is unavailable.", status_code=404) from exc
         try:
             with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
                 response = client.get(row.media_url)

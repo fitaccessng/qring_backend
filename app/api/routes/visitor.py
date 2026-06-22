@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import base64
+import binascii
 from time import perf_counter
 from datetime import datetime
 from typing import Optional
@@ -102,6 +103,21 @@ def _serialize_message_row(message_row, *, visitor_label: str) -> dict[str, obje
         "at": message_row.created_at.isoformat(),
         "persisted": True,
     }
+
+
+def _decode_snapshot_base64(snapshot_b64: str) -> bytes:
+    normalized = "".join((snapshot_b64 or "").split())
+    if normalized.startswith("data:") and "," in normalized:
+        normalized = normalized.split(",", 1)[1]
+    if not normalized:
+        return b""
+    remainder = len(normalized) % 4
+    if remainder:
+        normalized += "=" * (4 - remainder)
+    try:
+        return base64.b64decode(normalized, validate=False)
+    except (binascii.Error, ValueError):
+        return b""
 
 
 def _resolve_session_messages(db: Session, *, session) -> list[dict[str, object]]:
@@ -322,7 +338,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "snapshot_mime": str(payload.snapshotMime or "").strip() or None,
             },
         )
-        if not snapshot_b64 or not str(payload.snapshotMime or "").strip():
+        if not snapshot_b64:
             db.delete(session)
             db.commit()
             raise AppException(
@@ -332,7 +348,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             )
 
         try:
-            media_bytes = base64.b64decode(snapshot_b64, validate=True)
+            media_bytes = _decode_snapshot_base64(snapshot_b64)
         except Exception as exc:
             db.delete(session)
             db.commit()
