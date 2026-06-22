@@ -43,6 +43,16 @@ def _safe_json(value: str | None) -> dict[str, Any]:
         return {}
 
 
+def _canonical_snapshot_url(*values: Any) -> str:
+    for value in values:
+        if not value:
+            continue
+        candidate = str(value).strip()
+        if candidate:
+            return candidate
+    return ""
+
+
 def _resolve_session_snapshot_payload(
     db: Session,
     session: VisitorSession,
@@ -50,16 +60,17 @@ def _resolve_session_snapshot_payload(
 ) -> dict[str, Any]:
     source = payload or {}
     snapshot_audit_id = str(source.get("snapshotAuditId") or "").strip()
-    snapshot_url = (
-        str(
-            source.get("snapshotUrl")
-            or source.get("photoUrl")
-            or session.snapshot_url
-            or session.photo_url
-            or resolve_snapshot_public_url(db, snapshot_audit_id)
-            or resolve_session_snapshot_public_url(db, session.id)
-            or ""
-        ).strip()
+    snapshot_url = _canonical_snapshot_url(
+        source.get("snapshotUrl"),
+        source.get("photoUrl"),
+        source.get("snapshot_url"),
+        source.get("photo_url"),
+        source.get("imageUrl"),
+        source.get("image_url"),
+        session.snapshot_url,
+        session.photo_url,
+        resolve_snapshot_public_url(db, snapshot_audit_id),
+        resolve_session_snapshot_public_url(db, session.id),
     )
     return {
         "messageId": f"snapshot:{session.id}",
@@ -195,14 +206,18 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "purpose": (session.purpose or request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
             "phoneNumber": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
             "visitorPhone": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
-            "photoUrl": session.snapshot_url
-            or session.photo_url
-            or resolve_snapshot_public_url(db, request_payload_by_session.get(session.id, {}).get("snapshotAuditId"))
-            or resolve_session_snapshot_public_url(db, session.id),
-            "snapshotUrl": session.snapshot_url
-            or session.photo_url
-            or resolve_snapshot_public_url(db, request_payload_by_session.get(session.id, {}).get("snapshotAuditId"))
-            or resolve_session_snapshot_public_url(db, session.id),
+            "photoUrl": _canonical_snapshot_url(
+                session.snapshot_url,
+                session.photo_url,
+                resolve_snapshot_public_url(db, request_payload_by_session.get(session.id, {}).get("snapshotAuditId")),
+                resolve_session_snapshot_public_url(db, session.id),
+            ),
+            "snapshotUrl": _canonical_snapshot_url(
+                session.snapshot_url,
+                session.photo_url,
+                resolve_snapshot_public_url(db, request_payload_by_session.get(session.id, {}).get("snapshotAuditId")),
+                resolve_session_snapshot_public_url(db, session.id),
+            ),
             "snapshotAuditId": request_payload_by_session.get(session.id, {}).get("snapshotAuditId"),
             "time": session.started_at.isoformat(),
             "timestamp": session.started_at.isoformat(),
@@ -294,15 +309,18 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
         )
         snapshot_payload = request_payload_by_session.get(session_id, {})
         snapshot_audit_id = str(snapshot_payload.get("snapshotAuditId") or "").strip()
-        snapshot_url = str(
-            snapshot_payload.get("snapshotUrl")
-            or snapshot_payload.get("photoUrl")
-            or session.snapshot_url
-            or session.photo_url
-            or resolve_snapshot_public_url(db, snapshot_audit_id)
-            or resolve_session_snapshot_public_url(db, session_id)
-            or ""
-        ).strip()
+        snapshot_url = _canonical_snapshot_url(
+            snapshot_payload.get("snapshotUrl"),
+            snapshot_payload.get("photoUrl"),
+            snapshot_payload.get("snapshot_url"),
+            snapshot_payload.get("photo_url"),
+            snapshot_payload.get("imageUrl"),
+            snapshot_payload.get("image_url"),
+            session.snapshot_url,
+            session.photo_url,
+            resolve_snapshot_public_url(db, snapshot_audit_id),
+            resolve_session_snapshot_public_url(db, session_id),
+        )
         has_snapshot = bool(
             snapshot_url
         )
@@ -398,15 +416,18 @@ def list_homeowner_session_messages(
 
     serialized = [_serialize_session_message(row, visitor_name=session.visitor_label or "Visitor") for row in rows]
     snapshot_audit_id = str(snapshot_payload.get("snapshotAuditId") or "").strip()
-    snapshot_url = str(
-        snapshot_payload.get("snapshotUrl")
-        or snapshot_payload.get("photoUrl")
-        or session.snapshot_url
-        or session.photo_url
-        or resolve_snapshot_public_url(db, snapshot_audit_id)
-        or resolve_session_snapshot_public_url(db, session.id)
-        or ""
-    ).strip()
+    snapshot_url = _canonical_snapshot_url(
+        snapshot_payload.get("snapshotUrl"),
+        snapshot_payload.get("photoUrl"),
+        snapshot_payload.get("snapshot_url"),
+        snapshot_payload.get("photo_url"),
+        snapshot_payload.get("imageUrl"),
+        snapshot_payload.get("image_url"),
+        session.snapshot_url,
+        session.photo_url,
+        resolve_snapshot_public_url(db, snapshot_audit_id),
+        resolve_session_snapshot_public_url(db, session.id),
+    )
     if snapshot_url:
         snapshot_message = _resolve_session_snapshot_payload(db, session, snapshot_payload)
         if not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized):

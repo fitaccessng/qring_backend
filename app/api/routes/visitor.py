@@ -314,6 +314,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         phase = "capture_snapshot"
         snapshot_audit = None
         snapshot_b64 = (payload.snapshotBase64 or "").strip()
+        logger.info(
+            "qring.snapshot.received",
+            extra={
+                "request_id": request_id,
+                "has_snapshot_base64": bool(snapshot_b64),
+                "snapshot_mime": str(payload.snapshotMime or "").strip() or None,
+            },
+        )
         if not snapshot_b64 or not str(payload.snapshotMime or "").strip():
             db.delete(session)
             db.commit()
@@ -418,10 +426,12 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             if appointment:
                 mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
             logger.info(
-                "visitor.request.snapshot_saved session_id=%s snapshot_id=%s photo_url=%s",
-                session.id,
-                snapshot_audit.get("id"),
-                session.photo_url,
+                "qring.snapshot.saved",
+                extra={
+                    "request_id": request_id,
+                    "visitor_session_id": session.id,
+                    "snapshot_url": session.snapshot_url,
+                },
             )
             visitor_token = issue_visitor_session_token(db, session=session)
         else:

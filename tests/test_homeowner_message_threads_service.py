@@ -119,6 +119,31 @@ class HomeownerMessageThreadsServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["id"], session.id)
         self.assertEqual(rows[0]["snapshotAuditId"], expected_snapshot_id)
 
+    def test_message_threads_accept_snapshot_url_payload_aliases(self):
+        session = self._create_session()
+        self.db.add(
+            Notification(
+                id=str(uuid.uuid4()),
+                user_id=self.homeowner.id,
+                kind="visitor.request",
+                payload=json.dumps(
+                    {
+                        "sessionId": session.id,
+                        "snapshot_url": "/uploads/visitor-media/snapshot-alias.jpg",
+                        "message": "New visitor request",
+                    }
+                ),
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
+        self.db.commit()
+
+        rows = list_homeowner_message_threads(self.db, homeowner_id=self.homeowner.id)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["snapshotUrl"], "/uploads/visitor-media/snapshot-alias.jpg")
+        self.assertEqual(rows[0]["photoUrl"], "/uploads/visitor-media/snapshot-alias.jpg")
+
     def test_message_threads_keep_visitor_message_and_unread_metadata(self):
         session = self._create_session(photo_url="/uploads/snapshot.jpg")
         self.db.add(
