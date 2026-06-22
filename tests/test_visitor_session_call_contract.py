@@ -210,6 +210,62 @@ class VisitorSessionCallContractTests(unittest.TestCase):
         self.assertIsInstance(payload["iceServers"], list)
         self.assertGreater(len(payload["iceServers"]), 0)
 
+    def test_visitor_request_smoke_shows_snapshot_in_homeowner_thread(self):
+        with (
+            patch("app.api.routes.visitor.resolve_qr") as mock_resolve_qr,
+            patch("app.api.routes.visitor.create_snapshot_audit") as mock_create_snapshot_audit,
+            patch("app.api.routes.visitor.notify_security_request"),
+        ):
+            request_id = f"smoke-{uuid.uuid4()}"
+            mock_resolve_qr.return_value = {
+                "home_id": self.home.id,
+                "doors": [self.door.id],
+                "mode": "direct",
+            }
+            mock_create_snapshot_audit.return_value = {
+                "id": "snapshot-visitor-smoke",
+                "fileUrl": "https://cdn.example.com/smoke-snapshot.jpg",
+                "url": "https://cdn.example.com/smoke-snapshot.jpg",
+            }
+
+            request_response = self.client.post(
+                "/api/v1/visitor/request",
+                json={
+                    "requestId": request_id,
+                    "qrId": self.visitor_session.qr_id,
+                    "doorId": self.door.id,
+                    "name": "Smoke Visitor",
+                    "phoneNumber": "+2348000000001",
+                    "purpose": "delivery",
+                    "visitorType": "delivery",
+                    "snapshotBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
+                    "snapshotMime": "image/png",
+                    "deviceId": "device-smoke-1",
+                    "consentAccepted": True,
+                    "consentAcceptedAt": "2026-06-22T00:00:00Z",
+                    "consentStorage": "session",
+                },
+            )
+
+            self.assertEqual(request_response.status_code, 200, request_response.text)
+            request_payload = request_response.json().get("data") or {}
+            self.assertEqual(request_payload.get("snapshotUrl"), "https://cdn.example.com/smoke-snapshot.jpg")
+            self.assertTrue(request_payload.get("sessionId"))
+
+            thread_response = self.client.get(
+                f"/api/v1/visitor-requests/{request_id}/thread",
+                headers={"Authorization": f"Bearer {self.homeowner_token}"},
+            )
+
+            self.assertEqual(thread_response.status_code, 200, thread_response.text)
+            thread_payload = thread_response.json().get("data") or {}
+            self.assertEqual(thread_payload.get("snapshotUrl"), "https://cdn.example.com/smoke-snapshot.jpg")
+            self.assertGreaterEqual(len(thread_payload.get("messages") or []), 1)
+            first_message = thread_payload["messages"][0]
+            self.assertEqual(first_message.get("messageType"), "visitor_snapshot")
+            self.assertEqual(first_message.get("snapshotUrl"), "https://cdn.example.com/smoke-snapshot.jpg")
+            self.assertEqual(first_message.get("visitorName"), "Smoke Visitor")
+
 
 if __name__ == "__main__":
     unittest.main()
