@@ -181,6 +181,8 @@ def resolve_snapshot_public_url(db: Session, snapshot_audit_id: str | None) -> s
     row_url = str(row.media_url or "").strip()
     if row_url:
         return row_url
+    if str(row.media_path or "").strip().startswith("firebase:"):
+        return f"/api/v1/advanced/visitor/snapshots/{audit_id}/file"
     return _public_snapshot_url_from_media_path(row.media_path)
 
 
@@ -199,6 +201,8 @@ def resolve_session_snapshot_public_url(db: Session, visitor_session_id: str | N
     row_url = str(row.media_url or "").strip()
     if row_url:
         return row_url
+    if str(row.media_path or "").strip().startswith("firebase:"):
+        return f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
     return _public_snapshot_url_from_media_path(row.media_path)
 
 
@@ -333,8 +337,18 @@ def create_snapshot_audit(
         "mediaSha256": row.media_sha256,
         "source": row.source,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
-        "fileUrl": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
-        "url": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
+        "fileUrl": row.media_url
+        or (
+            f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
+            if str(row.media_path or "").strip().startswith("firebase:")
+            else _public_snapshot_url_from_media_path(row.media_path)
+        ),
+        "url": row.media_url
+        or (
+            f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
+            if str(row.media_path or "").strip().startswith("firebase:")
+            else _public_snapshot_url_from_media_path(row.media_path)
+        ),
     }
 
 

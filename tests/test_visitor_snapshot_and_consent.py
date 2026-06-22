@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.routes.visitor import _validate_visitor_consent
 from app.core.exceptions import AppException
 from app.db.base import Base
-from app.db.models import Door, Home, User, UserRole, VisitorSession
+from app.db.models import Door, Home, Notification, User, UserRole, VisitorSession
 from app.schemas.visitor import VisitorRequestCreate
 from app.services.advanced_service import create_snapshot_audit, load_snapshot_bytes
 from app.services.homeowner_service import list_homeowner_session_messages
@@ -117,6 +118,56 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.assertEqual(blob, media_bytes)
         self.assertEqual(logical_type, "photo")
         self.assertEqual(content_type, "image/jpeg")
+
+    def test_create_snapshot_audit_returns_download_route_for_firebase_storage(self):
+        class _Blob:
+            def __init__(self):
+                self.cache_control = ""
+                self.metadata = {}
+
+            def upload_from_string(self, *_args, **_kwargs):
+                return None
+
+        class _Bucket:
+            def blob(self, *_args, **_kwargs):
+                return _Blob()
+
+        with (
+            patch("app.services.advanced_service.upload_snapshot_to_cloudinary", return_value=None),
+            patch("app.services.advanced_service._get_storage_bucket", return_value=_Bucket()),
+        ):
+            data = create_snapshot_audit(
+                self.db,
+                homeowner_id=self.homeowner.id,
+                media_bytes=b"firebase-bytes",
+                filename_hint="snapshot.jpg",
+                media_type="photo",
+                visitor_session_id="session-firebase-1",
+                appointment_id=None,
+                source="visitor_qr_scan",
+            )
+
+        self.assertTrue(str(data.get("fileUrl") or "").startswith("/api/v1/advanced/visitor/snapshots/"))
+        self.assertEqual(data.get("fileUrl"), data.get("url"))
+
+        session = self._create_session(snapshot_url=None)
+        notification = Notification(
+            user_id=self.homeowner.id,
+            kind="visitor.request",
+            payload=json.dumps(
+                {
+                    "sessionId": session.id,
+                    "snapshotAuditId": data["id"],
+                }
+            ),
+        )
+        self.db.add(notification)
+        self.db.commit()
+
+        rows = list_homeowner_session_messages(self.db, homeowner_id=self.homeowner.id, session_id=session.id)
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertEqual(rows[0]["messageType"], "visitor_snapshot")
+        self.assertTrue(str(rows[0]["snapshotUrl"] or "").startswith("/api/v1/advanced/visitor/snapshots/"))
 
 
 if __name__ == "__main__":
