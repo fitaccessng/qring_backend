@@ -145,8 +145,10 @@ class Settings(BaseSettings):
         "ionic://localhost," 
         "https://qring.io," 
         "https://www.qring.io," 
+        "https://staging.qring.io," 
         "https://useqring.online," 
-        "https://www.useqring.online"
+        "https://www.useqring.online," 
+        "https://staging.useqring.online"
     )
     # Dev-friendly default: allow localhost + RFC1918 private LAN ranges so phones/tablets on the same Wi-Fi can reach the API.
     # In production, set CORS_ORIGINS / CORS_ALLOW_ORIGIN_REGEX explicitly to your real domain(s).
@@ -157,7 +159,9 @@ class Settings(BaseSettings):
         r"10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|"
         r"172\\.(1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|"
         r"qring\\.io|www\\.qring\\.io|"
+        r"staging\\.qring\\.io|"
         r"useqring\\.online|www\\.useqring\\.online"
+        r"|staging\\.useqring\\.online"
         r")(\\:\\d+)?$"
     )
 
@@ -211,8 +215,10 @@ class Settings(BaseSettings):
     _MANDATORY_CORS_ORIGINS = (
         "https://qring.io",
         "https://www.qring.io",
+        "https://staging.qring.io",
         "https://useqring.online",
         "https://www.useqring.online",
+        "https://staging.useqring.online",
     )
 
     @field_validator("DEBUG", mode="before")

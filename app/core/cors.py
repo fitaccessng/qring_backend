@@ -7,6 +7,10 @@ from app.core.config import Settings
 _DEFAULT_ALLOWED_ORIGINS = (
     "https://useqring.online",
     "https://www.useqring.online",
+    "https://staging.useqring.online",
+    "https://qring.io",
+    "https://www.qring.io",
+    "https://staging.qring.io",
     "http://localhost:5173",
     "http://localhost:3000",
 )
