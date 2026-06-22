@@ -271,13 +271,20 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 )
                 visitor_token = issue_visitor_session_token(db, session=existing)
                 snapshot_url = str(existing.snapshot_url or existing.photo_url or "").strip() or None
+                from app.db.models import Door
+
+                door = db.query(Door).filter(Door.id == existing.door_id).first()
                 return {
                     "data": {
                         "sessionId": existing.id,
                         "status": existing.status,
                         "visitorToken": visitor_token,
+                        "visitorName": existing.visitor_label or "",
+                        "phoneNumber": existing.visitor_phone or "",
+                        "purpose": existing.purpose or "",
                         "snapshotUrl": snapshot_url,
                         "photoUrl": snapshot_url,
+                        "doorName": door.name if door else "",
                     }
                 }
 
@@ -339,7 +346,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         phase = "capture_snapshot"
         snapshot_audit = None
         snapshot_b64 = (payload.snapshotBase64 or "").strip()
-        snapshot_mime = (payload.snapshotMime or "image/jpeg").strip().lower()
+        snapshot_mime = (payload.snapshotMime or "").strip().lower()
         logger.info(
             "QRING_SNAPSHOT_BACKEND_RECEIVED",
             extra={
@@ -349,7 +356,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "snapshot_mime": snapshot_mime,
             },
         )
-        if not snapshot_b64:
+        if not snapshot_b64 or not snapshot_mime:
             db.delete(session)
             db.commit()
             raise AppException(
@@ -490,6 +497,10 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
 
         phase = "create_notification"
         from app.services.notification_service import create_notification
+        from app.db.models import Door
+
+        door = db.query(Door).filter(Door.id == session.door_id).first()
+        door_name = door.name if door else ""
 
         create_notification(
             db=db,
@@ -499,6 +510,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "sessionId": session.id,
                 "visitorSessionId": session.id,
                 "doorId": session.door_id,
+                "doorName": door_name,
                 "visitorName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
@@ -517,6 +529,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     "imageUrl": session.snapshot_url or session.photo_url,
                     "fileUrl": session.snapshot_url or session.photo_url,
                     "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                    "doorName": door_name,
                 },
                 "requestPayload": {
                     "snapshotUrl": session.snapshot_url or session.photo_url,
@@ -524,6 +537,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     "imageUrl": session.snapshot_url or session.photo_url,
                     "fileUrl": session.snapshot_url or session.photo_url,
                     "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                    "doorName": door_name,
                 },
                 "payload": {
                     "snapshotUrl": session.snapshot_url or session.photo_url,
@@ -531,6 +545,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     "imageUrl": session.snapshot_url or session.photo_url,
                     "fileUrl": session.snapshot_url or session.photo_url,
                     "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                    "doorName": door_name,
                 },
                 "estateId": session.estate_id,
                 "requestSource": session.request_source or "visitor_qr",
@@ -624,10 +639,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "sessionId": session.id,
                 "status": session.status,
                 "visitorToken": visitor_token,
+                "visitorName": session.visitor_label or effective_visitor_name,
+                "phoneNumber": session.visitor_phone or payload.phoneNumber or "",
+                "purpose": session.purpose or payload.purpose or "",
                 "snapshotUrl": session.snapshot_url or session.photo_url,
                 "photoUrl": session.snapshot_url or session.photo_url,
                 "imageUrl": session.snapshot_url or session.photo_url,
                 "fileUrl": session.snapshot_url or session.photo_url,
+                "doorName": door_name,
             }
         }
     except Exception as exc:

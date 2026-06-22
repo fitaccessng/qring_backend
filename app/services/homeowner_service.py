@@ -121,6 +121,7 @@ def _resolve_session_snapshot_payload(
 ) -> dict[str, Any]:
     source = payload or {}
     snapshot_audit_id = str(source.get("snapshotAuditId") or "").strip()
+    door = db.query(Door).filter(Door.id == session.door_id).first()
     snapshot_url = _canonical_snapshot_url(
         source.get("snapshotUrl"),
         source.get("photoUrl"),
@@ -141,6 +142,7 @@ def _resolve_session_snapshot_payload(
         "messageType": "visitor_snapshot",
         "snapshotUrl": snapshot_url or None,
         "photoUrl": snapshot_url or None,
+        "doorName": source.get("doorName") or (door.name if door else session.door_id),
         "senderRole": "visitor",
         "senderType": "visitor",
         "displayName": session.visitor_label or "Visitor",
@@ -389,6 +391,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
             {
                 "id": session_id,
                 "name": session.visitor_label or "Visitor",
+                "visitorName": session.visitor_label or "Visitor",
                 "door": door.name,
                 "gateLabel": door.gate_label or door.name,
                 "last": last_text,
@@ -400,6 +403,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
                 "photoUrl": snapshot_url,
                 "snapshotUrl": snapshot_url,
+                "doorName": door.name if door else "",
                 "sessionId": session_id,
                 "visitorSessionId": session_id,
                 "snapshotAuditId": snapshot_audit_id or None,

@@ -9,6 +9,7 @@ class VisitorRequestCreate(BaseModel):
     requestId: Optional[str] = None
     qrId: str
     doorId: Optional[str] = None
+    doorName: Optional[str] = None
     name: Optional[str] = None
     phoneNumber: Optional[str] = None
     purpose: Optional[str] = None
