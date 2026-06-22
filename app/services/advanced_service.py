@@ -151,11 +151,48 @@ def _summary_window(week_start_iso: str | None = None) -> tuple[datetime, dateti
     return start, end
 
 
-def _build_snapshot_file_url(snapshot_id: str) -> str:
-    prefix = str(settings.API_V1_PREFIX or "/api/v1").rstrip("/")
-    frontend_base = str(settings.FRONTEND_BASE_URL or "").strip().rstrip("/")
-    relative_path = f"{prefix}/advanced/visitor/snapshots/{snapshot_id}/file"
-    return f"{frontend_base}{relative_path}" if frontend_base else relative_path
+def _public_snapshot_url_from_media_path(media_path: str) -> str:
+    path = str(media_path or "").strip().replace("\\", "/")
+    if not path:
+        return ""
+    if path.startswith("cloudinary:"):
+        return ""
+    if path.startswith("firebase:"):
+        return ""
+    if path.startswith("visitor-media/"):
+        return f"/uploads/{path}"
+    return f"/uploads/visitor-media/{path}"
+
+
+def resolve_snapshot_public_url(db: Session, snapshot_audit_id: str | None) -> str:
+    audit_id = str(snapshot_audit_id or "").strip()
+    if not audit_id:
+        return ""
+    row = db.query(VisitorSnapshotAudit).filter(VisitorSnapshotAudit.id == audit_id).first()
+    if not row:
+        return ""
+    row_url = str(row.media_url or "").strip()
+    if row_url:
+        return row_url
+    return _public_snapshot_url_from_media_path(row.media_path)
+
+
+def resolve_session_snapshot_public_url(db: Session, visitor_session_id: str | None) -> str:
+    session_id = str(visitor_session_id or "").strip()
+    if not session_id:
+        return ""
+    row = (
+        db.query(VisitorSnapshotAudit)
+        .filter(VisitorSnapshotAudit.visitor_session_id == session_id)
+        .order_by(VisitorSnapshotAudit.created_at.desc())
+        .first()
+    )
+    if not row:
+        return ""
+    row_url = str(row.media_url or "").strip()
+    if row_url:
+        return row_url
+    return _public_snapshot_url_from_media_path(row.media_path)
 
 
 def notify_multi_channel(
@@ -253,6 +290,7 @@ def create_snapshot_audit(
             absolute_path.parent.mkdir(parents=True, exist_ok=True)
             absolute_path.write_bytes(media_bytes)
             media_path = str(relative_path).replace("\\", "/")
+            media_url = f"/uploads/visitor-media/{media_path}"
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
@@ -281,8 +319,8 @@ def create_snapshot_audit(
         "mediaSha256": row.media_sha256,
         "source": row.source,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
-        "fileUrl": row.media_url or _build_snapshot_file_url(row.id),
-        "url": row.media_url or _build_snapshot_file_url(row.id),
+        "fileUrl": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
+        "url": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
     }
 
 

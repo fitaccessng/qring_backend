@@ -4,10 +4,12 @@ from __future__ import annotations
 import logging
 import uuid
 import asyncio
+from pathlib import Path
 
 import socketio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import DateTime, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -42,6 +44,8 @@ setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 cors_settings = get_cors_settings(settings)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
+uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
+fastapi_app.mount("/uploads", StaticFiles(directory=str(uploads_dir), check_dir=False), name="uploads")
 fastapi_app.add_middleware(
     CORSMiddleware,
     **cors_settings,

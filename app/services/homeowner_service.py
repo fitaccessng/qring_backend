@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utc_now
 from app.db.models import Appointment, Door, Estate, Home, Message, Notification, QRCode, VisitorSession
 from app.core.exceptions import AppException
+from app.services.advanced_service import resolve_session_snapshot_public_url, resolve_snapshot_public_url
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
 FREE_HOMEOWNER_LIMIT = 1
@@ -43,16 +44,20 @@ def _safe_json(value: str | None) -> dict[str, Any]:
 
 
 def _resolve_session_snapshot_payload(
+    db: Session,
     session: VisitorSession,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = payload or {}
+    snapshot_audit_id = str(source.get("snapshotAuditId") or "").strip()
     snapshot_url = (
         str(
             source.get("snapshotUrl")
             or source.get("photoUrl")
             or session.snapshot_url
             or session.photo_url
+            or resolve_snapshot_public_url(db, snapshot_audit_id)
+            or resolve_session_snapshot_public_url(db, session.id)
             or ""
         ).strip()
     )
@@ -74,7 +79,7 @@ def _resolve_session_snapshot_payload(
         "timestamp": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
         "at": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
         "persisted": True,
-        "snapshotAuditId": str(source.get("snapshotAuditId") or "").strip() or None,
+        "snapshotAuditId": snapshot_audit_id or None,
     }
 
 
@@ -190,8 +195,14 @@ def list_homeowner_visits(db: Session, homeowner_id: str, limit: int = 50) -> li
             "purpose": (session.purpose or request_payload_by_session.get(session.id, {}).get("purpose") or "").strip(),
             "phoneNumber": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
             "visitorPhone": (session.visitor_phone or request_payload_by_session.get(session.id, {}).get("phoneNumber") or "").strip(),
-            "photoUrl": session.snapshot_url or session.photo_url,
-            "snapshotUrl": session.snapshot_url or session.photo_url,
+            "photoUrl": session.snapshot_url
+            or session.photo_url
+            or resolve_snapshot_public_url(db, request_payload_by_session.get(session.id, {}).get("snapshotAuditId"))
+            or resolve_session_snapshot_public_url(db, session.id),
+            "snapshotUrl": session.snapshot_url
+            or session.photo_url
+            or resolve_snapshot_public_url(db, request_payload_by_session.get(session.id, {}).get("snapshotAuditId"))
+            or resolve_session_snapshot_public_url(db, session.id),
             "snapshotAuditId": request_payload_by_session.get(session.id, {}).get("snapshotAuditId"),
             "time": session.started_at.isoformat(),
             "timestamp": session.started_at.isoformat(),
@@ -282,8 +293,18 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
             )
         )
         snapshot_payload = request_payload_by_session.get(session_id, {})
+        snapshot_audit_id = str(snapshot_payload.get("snapshotAuditId") or "").strip()
+        snapshot_url = str(
+            snapshot_payload.get("snapshotUrl")
+            or snapshot_payload.get("photoUrl")
+            or session.snapshot_url
+            or session.photo_url
+            or resolve_snapshot_public_url(db, snapshot_audit_id)
+            or resolve_session_snapshot_public_url(db, session_id)
+            or ""
+        ).strip()
         has_snapshot = bool(
-            str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url or "").strip()
+            snapshot_url
         )
         last_text = (
             latest.body
@@ -311,9 +332,9 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "sessionStatus": session.status,
                 "visitorPhone": session.visitor_phone,
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
-                "photoUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url,
-                "snapshotUrl": snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url,
-                "snapshotAuditId": request_payload_by_session.get(session_id, {}).get("snapshotAuditId"),
+                "photoUrl": snapshot_url,
+                "snapshotUrl": snapshot_url,
+                "snapshotAuditId": snapshot_audit_id or None,
                 "lastMessageType": "text" if latest else ("visitor_snapshot" if has_snapshot else "system"),
                 "appointmentId": session.appointment_id,
                 "homeName": home.name if home else None,
@@ -376,9 +397,18 @@ def list_homeowner_session_messages(
             break
 
     serialized = [_serialize_session_message(row, visitor_name=session.visitor_label or "Visitor") for row in rows]
-    snapshot_url = str(snapshot_payload.get("snapshotUrl") or snapshot_payload.get("photoUrl") or session.snapshot_url or session.photo_url or "").strip()
+    snapshot_audit_id = str(snapshot_payload.get("snapshotAuditId") or "").strip()
+    snapshot_url = str(
+        snapshot_payload.get("snapshotUrl")
+        or snapshot_payload.get("photoUrl")
+        or session.snapshot_url
+        or session.photo_url
+        or resolve_snapshot_public_url(db, snapshot_audit_id)
+        or resolve_session_snapshot_public_url(db, session.id)
+        or ""
+    ).strip()
     if snapshot_url:
-        snapshot_message = _resolve_session_snapshot_payload(session, snapshot_payload)
+        snapshot_message = _resolve_session_snapshot_payload(db, session, snapshot_payload)
         if not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized):
             serialized.insert(0, snapshot_message)
     return serialized
