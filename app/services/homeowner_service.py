@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -13,6 +14,8 @@ from app.db.models import Appointment, Door, Estate, Home, Message, Notification
 from app.core.exceptions import AppException
 from app.services.advanced_service import resolve_session_snapshot_public_url, resolve_snapshot_public_url
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
+
+logger = logging.getLogger(__name__)
 
 FREE_HOMEOWNER_LIMIT = 1
 # Backwards-compatible alias (older code paths used "resident").
@@ -365,7 +368,22 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
         )
 
     threads.sort(key=lambda item: item["time"], reverse=True)
-    return threads[:limit]
+    items = threads[:limit]
+    logger.info(
+        "QRING_HOMEOWNER_MESSAGES_SNAPSHOT_RESPONSE",
+        extra={
+            "count": len(items),
+            "items": [
+                {
+                    "session_id": item.get("id") or item.get("sessionId"),
+                    "visitor_name": item.get("name") or item.get("visitorName"),
+                    "snapshot_url": item.get("snapshotUrl"),
+                }
+                for item in items[:10]
+            ],
+        },
+    )
+    return items
 
 
 def list_homeowner_session_messages(
@@ -432,6 +450,14 @@ def list_homeowner_session_messages(
         snapshot_message = _resolve_session_snapshot_payload(db, session, snapshot_payload)
         if not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized):
             serialized.insert(0, snapshot_message)
+    logger.info(
+        "QRING_HOMEOWNER_SESSION_MESSAGES_SNAPSHOT_RESPONSE",
+        extra={
+            "session_id": session_id,
+            "snapshot_url": snapshot_url,
+            "has_snapshot_message": bool(snapshot_url),
+        },
+    )
     return serialized
 
 

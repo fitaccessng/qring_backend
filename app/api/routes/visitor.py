@@ -330,12 +330,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         phase = "capture_snapshot"
         snapshot_audit = None
         snapshot_b64 = (payload.snapshotBase64 or "").strip()
+        snapshot_mime = (payload.snapshotMime or "image/jpeg").strip().lower()
         logger.info(
-            "qring.snapshot.received",
+            "QRING_SNAPSHOT_BACKEND_RECEIVED",
             extra={
                 "request_id": request_id,
                 "has_snapshot_base64": bool(snapshot_b64),
-                "snapshot_mime": str(payload.snapshotMime or "").strip() or None,
+                "snapshot_base64_length": len(snapshot_b64 or ""),
+                "snapshot_mime": snapshot_mime,
             },
         )
         if not snapshot_b64:
@@ -373,11 +375,10 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     code="SNAPSHOT_SAVE_FAILED",
                 )
 
-            mime = (payload.snapshotMime or "image/jpeg").strip().lower()
             ext = ".jpg"
-            if "png" in mime:
+            if "png" in snapshot_mime:
                 ext = ".png"
-            elif "webp" in mime:
+            elif "webp" in snapshot_mime:
                 ext = ".webp"
 
             snapshot_audit = create_snapshot_audit(
@@ -435,18 +436,37 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 logger.exception("Failed to emit visitor.snapshot realtime event")
 
         if snapshot_audit and isinstance(snapshot_audit, dict):
-            session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
-            session.snapshot_url = session.photo_url
+            snapshot_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip()
+            if not snapshot_url:
+                db.delete(session)
+                db.commit()
+                raise AppException(
+                    "Snapshot could not be saved. Please retake the photo and try again.",
+                    status_code=500,
+                    code="SNAPSHOT_SAVE_FAILED",
+                )
+            session.photo_url = snapshot_url or None
+            session.snapshot_url = snapshot_url or None
             db.commit()
             db.refresh(session)
             if appointment:
                 mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
             logger.info(
-                "qring.snapshot.saved",
+                "QRING_SNAPSHOT_BACKEND_SAVED",
                 extra={
                     "request_id": request_id,
                     "visitor_session_id": session.id,
                     "snapshot_url": session.snapshot_url,
+                },
+            )
+            logger.info(
+                "QRING_SNAPSHOT_DB_COMMITTED",
+                extra={
+                    "visitor_session_id": session.id,
+                    "visitor_request_id": request_id,
+                    "snapshot_url": session.snapshot_url,
+                    "photo_url": session.photo_url,
+                    "metadata": None,
                 },
             )
             visitor_token = issue_visitor_session_token(db, session=session)
