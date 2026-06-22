@@ -294,7 +294,6 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             request_source="visitor_qr",
             creator_role="visitor",
         )
-        visitor_token = issue_visitor_session_token(db, session=session)
         missing_fields = [
             field_name
             for field_name, field_value in {
@@ -312,84 +311,126 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 payload.qrId,
                 ",".join(missing_fields),
             )
-        if appointment:
-            mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
-
         phase = "capture_snapshot"
         snapshot_audit = None
         snapshot_b64 = (payload.snapshotBase64 or "").strip()
-        if snapshot_b64:
+        if not snapshot_b64 or not str(payload.snapshotMime or "").strip():
+            db.delete(session)
+            db.commit()
+            raise AppException(
+                "Snapshot could not be saved. Please retake the photo and try again.",
+                status_code=400,
+                code="SNAPSHOT_SAVE_FAILED",
+            )
+
+        try:
+            media_bytes = base64.b64decode(snapshot_b64, validate=True)
+        except Exception as exc:
+            db.delete(session)
+            db.commit()
+            raise AppException(
+                "Snapshot could not be saved. Please retake the photo and try again.",
+                status_code=400,
+                code="SNAPSHOT_SAVE_FAILED",
+            ) from exc
+
+        try:
+            if not media_bytes:
+                raise AppException(
+                    "Snapshot could not be saved. Please retake the photo and try again.",
+                    status_code=400,
+                    code="SNAPSHOT_SAVE_FAILED",
+                )
+
+            if len(media_bytes) > MAX_VISITOR_SNAPSHOT_BYTES:
+                raise AppException(
+                    "Snapshot could not be saved. Please retake the photo and try again.",
+                    status_code=400,
+                    code="SNAPSHOT_SAVE_FAILED",
+                )
+
+            mime = (payload.snapshotMime or "image/jpeg").strip().lower()
+            ext = ".jpg"
+            if "png" in mime:
+                ext = ".png"
+            elif "webp" in mime:
+                ext = ".webp"
+
+            snapshot_audit = create_snapshot_audit(
+                db,
+                homeowner_id=session.homeowner_id,
+                media_bytes=media_bytes,
+                filename_hint=f"visitor-snapshot{ext}",
+                media_type="photo",
+                visitor_session_id=session.id,
+                appointment_id=appointment.id if appointment else None,
+                source="visitor_qr_scan",
+            )
+        except AppException:
+            db.delete(session)
+            db.commit()
+            raise
+        except Exception as exc:
+            db.delete(session)
+            db.commit()
+            logger.exception("Snapshot capture failed and request was rolled back.")
+            raise AppException(
+                "Snapshot could not be saved. Please retake the photo and try again.",
+                status_code=500,
+                code="SNAPSHOT_SAVE_FAILED",
+            ) from exc
+
+        if snapshot_audit and isinstance(snapshot_audit, dict):
             try:
-                media_bytes = base64.b64decode(snapshot_b64, validate=True)
+                await emit_dashboard_notification(
+                    event_name="visitor.snapshot",
+                    rooms=[f"user:{session.homeowner_id}"],
+                    payload={"data": build_notification_envelope(
+                        notification_id=snapshot_audit.get("id"),
+                        event_type="visitor.snapshot",
+                        idempotency_key=build_notification_idempotency_key(
+                            event_type="visitor.snapshot",
+                            user_id=session.homeowner_id,
+                            session_id=session.id,
+                            entity_id=str(snapshot_audit.get("id") or ""),
+                        ),
+                        session_id=session.id,
+                        user_id=session.homeowner_id,
+                        source="visitor.request.snapshot",
+                        payload=snapshot_audit,
+                    )},
+                    idempotency_key=build_notification_idempotency_key(
+                        event_type="visitor.snapshot",
+                        user_id=session.homeowner_id,
+                        session_id=session.id,
+                        entity_id=str(snapshot_audit.get("id") or ""),
+                    ),
+                    source="visitor.request.snapshot",
+                )
             except Exception:
-                media_bytes = b""
-            if media_bytes:
-                try:
-                    if len(media_bytes) > MAX_VISITOR_SNAPSHOT_BYTES:
-                        raise AppException("Snapshot is too large. Please retake the photo.", status_code=400)
-
-                    mime = (payload.snapshotMime or "image/jpeg").strip().lower()
-                    ext = ".jpg"
-                    if "png" in mime:
-                        ext = ".png"
-                    elif "webp" in mime:
-                        ext = ".webp"
-
-                    snapshot_audit = create_snapshot_audit(
-                        db,
-                        homeowner_id=session.homeowner_id,
-                        media_bytes=media_bytes,
-                        filename_hint=f"visitor-snapshot{ext}",
-                        media_type="photo",
-                        visitor_session_id=session.id,
-                        appointment_id=appointment.id if appointment else None,
-                        source="visitor_qr_scan",
-                    )
-                    try:
-                        await emit_dashboard_notification(
-                            event_name="visitor.snapshot",
-                            rooms=[f"user:{session.homeowner_id}"],
-                            payload={"data": build_notification_envelope(
-                                notification_id=snapshot_audit.get("id"),
-                                event_type="visitor.snapshot",
-                                idempotency_key=build_notification_idempotency_key(
-                                    event_type="visitor.snapshot",
-                                    user_id=session.homeowner_id,
-                                    session_id=session.id,
-                                    entity_id=str(snapshot_audit.get("id") or ""),
-                                ),
-                                session_id=session.id,
-                                user_id=session.homeowner_id,
-                                source="visitor.request.snapshot",
-                                payload=snapshot_audit,
-                            )},
-                            idempotency_key=build_notification_idempotency_key(
-                                event_type="visitor.snapshot",
-                                user_id=session.homeowner_id,
-                                session_id=session.id,
-                                entity_id=str(snapshot_audit.get("id") or ""),
-                            ),
-                            source="visitor.request.snapshot",
-                        )
-                    except Exception:
-                        logger.exception("Failed to emit visitor.snapshot realtime event")
-                except AppException:
-                    raise
-                except Exception:
-                    # Never block a visitor request just because snapshot storage failed.
-                    logger.exception("Snapshot capture failed. Continuing without snapshot.")
-                    snapshot_audit = None
+                logger.exception("Failed to emit visitor.snapshot realtime event")
 
         if snapshot_audit and isinstance(snapshot_audit, dict):
             session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
             session.snapshot_url = session.photo_url
             db.commit()
             db.refresh(session)
+            if appointment:
+                mark_appointment_qr_used(db, appointment=appointment, device_id=payload.deviceId)
             logger.info(
                 "visitor.request.snapshot_saved session_id=%s snapshot_id=%s photo_url=%s",
                 session.id,
                 snapshot_audit.get("id"),
                 session.photo_url,
+            )
+            visitor_token = issue_visitor_session_token(db, session=session)
+        else:
+            db.delete(session)
+            db.commit()
+            raise AppException(
+                "Snapshot could not be saved. Please retake the photo and try again.",
+                status_code=500,
+                code="SNAPSHOT_SAVE_FAILED",
             )
 
         phase = "create_notification"
