@@ -28,7 +28,7 @@ from app.services.qr_service import resolve_qr
 from app.services.security_service import notify_security_request, serialize_security_session
 from app.services.session_service import create_visitor_session, rotate_visitor_session_token
 from app.services.visitor_session_auth import issue_visitor_session_token, require_visitor_session_access
-from app.services.advanced_service import create_snapshot_audit
+from app.services.advanced_service import create_snapshot_audit, resolve_session_snapshot_public_url
 from app.services.homeowner_service import create_visitor_session_message
 from app.services.realtime_notification_service import (
     build_notification_envelope,
@@ -155,6 +155,15 @@ def _resolve_session_messages(db: Session, *, session) -> list[dict[str, object]
         )
     payload.extend(_serialize_message_row(row, visitor_label=session.visitor_label or "Visitor") for row in rows)
     return payload
+
+
+def _resolve_session_snapshot_url(db: Session, session) -> str:
+    return str(
+        session.snapshot_url
+        or session.photo_url
+        or resolve_session_snapshot_public_url(db, session.id)
+        or ""
+    ).strip()
 
 
 def _resolve_active_call(db: Session, *, session_id: str):
@@ -488,13 +497,41 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             kind="visitor.request",
             payload={
                 "sessionId": session.id,
+                "visitorSessionId": session.id,
                 "doorId": session.door_id,
                 "visitorName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
                 "photoUrl": session.snapshot_url or session.photo_url,
                 "snapshotUrl": session.snapshot_url or session.photo_url,
+                "imageUrl": session.snapshot_url or session.photo_url,
+                "fileUrl": session.snapshot_url or session.photo_url,
+                "snapshot_url": session.snapshot_url or session.photo_url,
+                "photo_url": session.snapshot_url or session.photo_url,
+                "image_url": session.snapshot_url or session.photo_url,
+                "file_url": session.snapshot_url or session.photo_url,
                 "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                "metadata": {
+                    "snapshotUrl": session.snapshot_url or session.photo_url,
+                    "photoUrl": session.snapshot_url or session.photo_url,
+                    "imageUrl": session.snapshot_url or session.photo_url,
+                    "fileUrl": session.snapshot_url or session.photo_url,
+                    "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                },
+                "requestPayload": {
+                    "snapshotUrl": session.snapshot_url or session.photo_url,
+                    "photoUrl": session.snapshot_url or session.photo_url,
+                    "imageUrl": session.snapshot_url or session.photo_url,
+                    "fileUrl": session.snapshot_url or session.photo_url,
+                    "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                },
+                "payload": {
+                    "snapshotUrl": session.snapshot_url or session.photo_url,
+                    "photoUrl": session.snapshot_url or session.photo_url,
+                    "imageUrl": session.snapshot_url or session.photo_url,
+                    "fileUrl": session.snapshot_url or session.photo_url,
+                    "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
+                },
                 "estateId": session.estate_id,
                 "requestSource": session.request_source or "visitor_qr",
                 "creatorRole": session.creator_role or "visitor",
@@ -589,6 +626,8 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "visitorToken": visitor_token,
                 "snapshotUrl": session.snapshot_url or session.photo_url,
                 "photoUrl": session.snapshot_url or session.photo_url,
+                "imageUrl": session.snapshot_url or session.photo_url,
+                "fileUrl": session.snapshot_url or session.photo_url,
             }
         }
     except Exception as exc:
@@ -983,13 +1022,13 @@ def get_visitor_session_contract(
             "visitorSessionId": session.id,
             "visitorRequestId": session.request_id,
             "status": session.status,
-            "snapshotUrl": session.snapshot_url or session.photo_url,
+            "snapshotUrl": _resolve_session_snapshot_url(db, session),
             "visitor": {
                 "fullName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
-                "photoUrl": session.snapshot_url or session.photo_url,
-                "snapshotUrl": session.snapshot_url or session.photo_url,
+                "photoUrl": _resolve_session_snapshot_url(db, session),
+                "snapshotUrl": _resolve_session_snapshot_url(db, session),
             },
             "messages": messages,
             "activeCall": _serialize_call_session(active_call) if active_call else None,
@@ -1041,13 +1080,13 @@ def get_visitor_request_thread_contract(
             "visitorRequestId": visitor_request_id,
             "visitorSessionId": session.id,
             "status": session.status,
-            "snapshotUrl": session.snapshot_url or session.photo_url,
+            "snapshotUrl": _resolve_session_snapshot_url(db, session),
             "visitor": {
                 "fullName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
-                "photoUrl": session.snapshot_url or session.photo_url,
-                "snapshotUrl": session.snapshot_url or session.photo_url,
+                "photoUrl": _resolve_session_snapshot_url(db, session),
+                "snapshotUrl": _resolve_session_snapshot_url(db, session),
             },
             "messages": messages,
             "latestCall": _serialize_call_session(latest_call) if latest_call else None,

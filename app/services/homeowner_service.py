@@ -56,6 +56,64 @@ def _canonical_snapshot_url(*values: Any) -> str:
     return ""
 
 
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_snapshot_url_with_source(
+    db: Session,
+    *,
+    session: VisitorSession,
+    payload: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    source = _coerce_mapping(payload)
+    snapshot_audit_id = str(source.get("snapshotAuditId") or "").strip()
+    snapshot_payload = _coerce_mapping(source.get("payload"))
+    request_payload = _coerce_mapping(source.get("requestPayload"))
+    metadata = _coerce_mapping(source.get("metadata"))
+
+    candidates: list[tuple[str, Any]] = [
+        ("session.snapshot_url", session.snapshot_url),
+        ("session.photo_url", session.photo_url),
+        ("payload.snapshotUrl", source.get("snapshotUrl")),
+        ("payload.photoUrl", source.get("photoUrl")),
+        ("payload.imageUrl", source.get("imageUrl")),
+        ("payload.fileUrl", source.get("fileUrl")),
+        ("payload.url", source.get("url")),
+        ("payload.snapshot_url", source.get("snapshot_url")),
+        ("payload.photo_url", source.get("photo_url")),
+        ("payload.image_url", source.get("image_url")),
+        ("payload.file_url", source.get("file_url")),
+        ("payload.metadata.snapshotUrl", metadata.get("snapshotUrl")),
+        ("payload.metadata.photoUrl", metadata.get("photoUrl")),
+        ("payload.metadata.imageUrl", metadata.get("imageUrl")),
+        ("payload.metadata.fileUrl", metadata.get("fileUrl")),
+        ("payload.requestPayload.snapshotUrl", request_payload.get("snapshotUrl")),
+        ("payload.requestPayload.photoUrl", request_payload.get("photoUrl")),
+        ("payload.requestPayload.imageUrl", request_payload.get("imageUrl")),
+        ("payload.requestPayload.fileUrl", request_payload.get("fileUrl")),
+        ("payload.requestPayload.url", request_payload.get("url")),
+        ("payload.payload.snapshotUrl", snapshot_payload.get("snapshotUrl")),
+        ("payload.payload.photoUrl", snapshot_payload.get("photoUrl")),
+        ("payload.payload.imageUrl", snapshot_payload.get("imageUrl")),
+        ("payload.payload.fileUrl", snapshot_payload.get("fileUrl")),
+        ("payload.payload.url", snapshot_payload.get("url")),
+        ("payload.snapshotAudit.fileUrl", resolve_snapshot_public_url(db, snapshot_audit_id)),
+        ("payload.sessionSnapshot.fileUrl", resolve_session_snapshot_public_url(db, session.id)),
+        ("session.resolve.snapshotUrl", resolve_session_snapshot_public_url(db, session.id)),
+    ]
+
+    snapshot_url = ""
+    source_field = ""
+    for field_name, candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            snapshot_url = value
+            source_field = field_name
+            break
+    return snapshot_url, source_field
+
+
 def _resolve_session_snapshot_payload(
     db: Session,
     session: VisitorSession,
@@ -312,21 +370,8 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
         )
         snapshot_payload = request_payload_by_session.get(session_id, {})
         snapshot_audit_id = str(snapshot_payload.get("snapshotAuditId") or "").strip()
-        snapshot_url = _canonical_snapshot_url(
-            snapshot_payload.get("snapshotUrl"),
-            snapshot_payload.get("photoUrl"),
-            snapshot_payload.get("snapshot_url"),
-            snapshot_payload.get("photo_url"),
-            snapshot_payload.get("imageUrl"),
-            snapshot_payload.get("image_url"),
-            session.snapshot_url,
-            session.photo_url,
-            resolve_snapshot_public_url(db, snapshot_audit_id),
-            resolve_session_snapshot_public_url(db, session_id),
-        )
-        has_snapshot = bool(
-            snapshot_url
-        )
+        snapshot_url, source_field = _resolve_snapshot_url_with_source(db, session=session, payload=snapshot_payload)
+        has_snapshot = bool(snapshot_url)
         last_text = (
             latest.body
             if latest
@@ -355,7 +400,10 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
                 "photoUrl": snapshot_url,
                 "snapshotUrl": snapshot_url,
+                "sessionId": session_id,
+                "visitorSessionId": session_id,
                 "snapshotAuditId": snapshot_audit_id or None,
+                "snapshotSourceField": source_field or None,
                 "lastMessageType": "text" if latest else ("visitor_snapshot" if has_snapshot else "system"),
                 "appointmentId": session.appointment_id,
                 "homeName": home.name if home else None,
@@ -370,7 +418,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
     threads.sort(key=lambda item: item["time"], reverse=True)
     items = threads[:limit]
     logger.info(
-        "QRING_HOMEOWNER_MESSAGES_SNAPSHOT_RESPONSE",
+        "QRING_HOMEOWNER_MESSAGES_RESPONSE_SNAPSHOT_PROOF",
         extra={
             "count": len(items),
             "items": [
@@ -378,6 +426,7 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                     "session_id": item.get("id") or item.get("sessionId"),
                     "visitor_name": item.get("name") or item.get("visitorName"),
                     "snapshot_url": item.get("snapshotUrl"),
+                    "source_field_used": item.get("snapshotSourceField"),
                 }
                 for item in items[:10]
             ],
@@ -434,28 +483,18 @@ def list_homeowner_session_messages(
 
     serialized = [_serialize_session_message(row, visitor_name=session.visitor_label or "Visitor") for row in rows]
     snapshot_audit_id = str(snapshot_payload.get("snapshotAuditId") or "").strip()
-    snapshot_url = _canonical_snapshot_url(
-        snapshot_payload.get("snapshotUrl"),
-        snapshot_payload.get("photoUrl"),
-        snapshot_payload.get("snapshot_url"),
-        snapshot_payload.get("photo_url"),
-        snapshot_payload.get("imageUrl"),
-        snapshot_payload.get("image_url"),
-        session.snapshot_url,
-        session.photo_url,
-        resolve_snapshot_public_url(db, snapshot_audit_id),
-        resolve_session_snapshot_public_url(db, session.id),
-    )
+    snapshot_url, source_field = _resolve_snapshot_url_with_source(db, session=session, payload=snapshot_payload)
     if snapshot_url:
         snapshot_message = _resolve_session_snapshot_payload(db, session, snapshot_payload)
         if not any(item.get("messageId") == snapshot_message["messageId"] for item in serialized):
             serialized.insert(0, snapshot_message)
     logger.info(
-        "QRING_HOMEOWNER_SESSION_MESSAGES_SNAPSHOT_RESPONSE",
+        "QRING_HOMEOWNER_SESSION_MESSAGES_RESPONSE_SNAPSHOT_PROOF",
         extra={
             "session_id": session_id,
             "snapshot_url": snapshot_url,
             "has_snapshot_message": bool(snapshot_url),
+            "source_field_used": source_field or None,
         },
     )
     return serialized
