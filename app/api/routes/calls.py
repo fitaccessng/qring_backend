@@ -73,6 +73,25 @@ class StartCallPayload(BaseModel):
         return text
 
 
+class RequestCallPayload(BaseModel):
+    visitorRequestId: str
+    visitorSessionId: Optional[str] = None
+    type: Optional[str] = None
+    hasVideo: Optional[bool] = None
+    visitorName: Optional[str] = None
+    communicationTarget: Optional[str] = None
+
+    @field_validator("visitorRequestId", mode="before")
+    @classmethod
+    def validate_visitor_request_id(cls, value):
+        if value in (None, ""):
+            raise ValueError("visitorRequestId is required")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("visitorRequestId is required")
+        return text
+
+
 class JoinCallPayload(BaseModel):
     callSessionId: str
     participantType: str
@@ -302,6 +321,53 @@ async def start_call(
     }
 
 
+@router.post("/request")
+async def request_call(
+    payload: RequestCallPayload,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_current_user),
+):
+    if not user or user.role.value != "homeowner":
+        raise AppException("Homeowner authentication is required.", status_code=403)
+
+    session = (
+        db.query(VisitorSession)
+        .filter(VisitorSession.request_id == payload.visitorRequestId)
+        .order_by(VisitorSession.started_at.desc())
+        .first()
+    )
+    if not session and payload.visitorSessionId:
+        session = db.query(VisitorSession).filter(VisitorSession.id == payload.visitorSessionId).first()
+    if not session:
+        raise AppException("Visitor session not found.", status_code=404)
+    if session.homeowner_id != user.id:
+        raise AppException("You are not allowed to start this call.", status_code=403)
+
+    call_type = (payload.type or "").strip().lower() or ("video" if payload.hasVideo else "audio")
+    row = await start_call_session(
+        db,
+        visitor_session_id=session.id,
+        visitor_id=session.id,
+        homeowner_id=user.id,
+        caller_id=user.id,
+        receiver_id=session.homeowner_id,
+        call_type=call_type,
+        visitor_name=payload.visitorName or session.visitor_label,
+    )
+
+    return {
+        "data": {
+            "callSessionId": row.id,
+            "visitorSessionId": session.id,
+            "visitorRequestId": session.request_id,
+            "callType": row.call_type,
+            "status": row.status,
+            "roomName": row.room_name,
+            "rtcConfig": build_webrtc_rtc_config(),
+        }
+    }
+
+
 @router.post("/join")
 async def join_call(
     payload: JoinCallPayload,
@@ -466,3 +532,8 @@ async def end_call(
     )
 
     return {"data": {"callSessionId": row.id, "status": row.status, "endedAt": row.ended_at.isoformat() if row.ended_at else None}}
+
+
+@router.get("/ice-config")
+def get_ice_config():
+    return {"data": build_webrtc_rtc_config()}

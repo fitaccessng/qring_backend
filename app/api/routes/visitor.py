@@ -39,6 +39,7 @@ from app.socket.server import sio
 from app.core.time import utc_now
 
 router = APIRouter()
+canonical_router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
 VISITOR_CONSENT_MAX_AGE_HOURS = max(1, int(getattr(settings, "VISITOR_CONSENT_MAX_AGE_HOURS", 24) or 24))
@@ -62,6 +63,126 @@ class VisitorAppointmentArrivalPayload(BaseModel):
 class VisitorSessionMessagePayload(BaseModel):
     text: str
     clientId: Optional[str] = None
+
+
+def _serialize_call_session(call_session) -> dict[str, object]:
+    if not call_session:
+        return {}
+    return {
+        "callSessionId": call_session.id,
+        "visitorSessionId": call_session.visitor_session_id,
+        "visitorRequestId": call_session.visitor_request_id,
+        "status": call_session.status,
+        "callType": call_session.call_type,
+        "roomName": call_session.room_name,
+        "homeownerId": call_session.homeowner_id,
+        "visitorId": call_session.visitor_id,
+        "createdAt": call_session.created_at.isoformat() if call_session.created_at else None,
+        "endedAt": call_session.ended_at.isoformat() if call_session.ended_at else None,
+        "answeredAt": call_session.answered_at.isoformat() if call_session.answered_at else None,
+    }
+
+
+def _serialize_message_row(message_row, *, visitor_label: str) -> dict[str, object]:
+    sender_role = "homeowner" if message_row.sender_type == "homeowner" else "visitor"
+    return {
+        "messageId": message_row.id,
+        "id": message_row.id,
+        "sessionId": message_row.session_id,
+        "text": message_row.body,
+        "messageType": "text",
+        "snapshotUrl": None,
+        "photoUrl": None,
+        "senderRole": sender_role,
+        "senderType": sender_role,
+        "senderId": message_row.sender_id,
+        "displayName": "Homeowner" if sender_role == "homeowner" else (visitor_label or "Visitor"),
+        "visitorName": visitor_label or "Visitor",
+        "timestamp": message_row.created_at.isoformat(),
+        "at": message_row.created_at.isoformat(),
+        "persisted": True,
+    }
+
+
+def _resolve_session_messages(db: Session, *, session) -> list[dict[str, object]]:
+    from app.db.models import Message
+
+    rows = (
+        db.query(Message)
+        .filter(Message.session_id == session.id)
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+    snapshot_url = str(session.snapshot_url or session.photo_url or "").strip()
+    payload: list[dict[str, object]] = []
+    if snapshot_url:
+        payload.append(
+            {
+                "messageId": f"snapshot:{session.id}",
+                "id": f"snapshot:{session.id}",
+                "sessionId": session.id,
+                "text": "Visitor snapshot submitted.",
+                "messageType": "visitor_snapshot",
+                "snapshotUrl": snapshot_url,
+                "photoUrl": snapshot_url,
+                "senderRole": "visitor",
+                "senderType": "visitor",
+                "displayName": session.visitor_label or "Visitor",
+                "visitorName": session.visitor_label or "Visitor",
+                "visitorPhone": session.visitor_phone or "",
+                "purpose": session.purpose or "",
+                "doorId": session.door_id,
+                "timestamp": session.started_at.isoformat() if session.started_at else None,
+                "at": session.started_at.isoformat() if session.started_at else None,
+                "persisted": True,
+            }
+        )
+    payload.extend(_serialize_message_row(row, visitor_label=session.visitor_label or "Visitor") for row in rows)
+    return payload
+
+
+def _resolve_active_call(db: Session, *, session_id: str):
+    from app.db.models import CallSession
+
+    return (
+        db.query(CallSession)
+        .filter(CallSession.visitor_session_id == session_id)
+        .filter(CallSession.status.in_(["ringing", "accepted", "connecting", "connected", "reconnecting"]))
+        .order_by(CallSession.created_at.desc())
+        .first()
+    )
+
+
+def _resolve_latest_call(db: Session, *, session_id: str):
+    from app.db.models import CallSession
+
+    return (
+        db.query(CallSession)
+        .filter(CallSession.visitor_session_id == session_id)
+        .order_by(CallSession.created_at.desc())
+        .first()
+    )
+
+
+def _build_home_contact_payload(row) -> dict[str, object]:
+    return {
+        "id": row.homeowner_id,
+        "fullName": None,
+    }
+
+
+def _build_home_payload(session) -> dict[str, object]:
+    return {
+        "id": session.home_id,
+        "name": None,
+    }
+
+
+def _build_door_payload(session) -> dict[str, object]:
+    return {
+        "id": session.door_id,
+        "name": None,
+    }
 
 
 def _validate_visitor_consent(payload: VisitorRequestCreate) -> None:
@@ -720,3 +841,160 @@ async def visitor_send_session_message(
         namespace=settings.SIGNALING_NAMESPACE,
     )
     return {"data": data}
+
+
+def _authorize_session_access(db: Session, *, session, user, visitor_token: Optional[str]) -> None:
+    from app.db.models import Estate, UserRole
+
+    if user is None:
+        require_visitor_session_access(db, session=session, visitor_token=visitor_token)
+        return
+
+    if user.role == UserRole.admin:
+        return
+    if user.role == UserRole.homeowner:
+        if session.homeowner_id != user.id:
+            raise AppException("Not authorized to access this session.", status_code=403)
+        return
+    if user.role == UserRole.security:
+        if not user.estate_id or not session.estate_id or session.estate_id != user.estate_id:
+            raise AppException("Not authorized to access this session.", status_code=403)
+        return
+    if user.role == UserRole.estate:
+        if not session.estate_id:
+            raise AppException("Not authorized to access this session.", status_code=403)
+        estate = db.query(Estate).filter(Estate.id == session.estate_id, Estate.owner_id == user.id).first()
+        if not estate:
+            raise AppException("Not authorized to access this session.", status_code=403)
+        return
+    raise AppException("Not authorized to access this session.", status_code=403)
+
+
+@canonical_router.get("/visitor-sessions/{visitor_session_id}")
+def get_visitor_session_contract(
+    visitor_session_id: str,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
+    db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
+):
+    from app.db.models import Door, Home, User, VisitorSession
+
+    session = db.query(VisitorSession).filter(VisitorSession.id == visitor_session_id).first()
+    if not session:
+        raise AppException("Session not found", status_code=404, code="VISITOR_SESSION_NOT_FOUND")
+
+    _authorize_session_access(db, session=session, user=user, visitor_token=visitorToken or x_visitor_token)
+    active_call = _resolve_active_call(db, session_id=session.id)
+    messages = _resolve_session_messages(db, session=session)
+    homeowner = db.query(User).filter(User.id == session.homeowner_id).first()
+    home = db.query(Home).filter(Home.id == session.home_id).first()
+    door = db.query(Door).filter(Door.id == session.door_id).first()
+
+    return {
+        "data": {
+            "visitorSessionId": session.id,
+            "visitorRequestId": session.request_id,
+            "status": session.status,
+            "snapshotUrl": session.snapshot_url or session.photo_url,
+            "visitor": {
+                "fullName": session.visitor_label or "Visitor",
+                "phoneNumber": session.visitor_phone or "",
+                "purpose": session.purpose or "",
+                "photoUrl": session.snapshot_url or session.photo_url,
+                "snapshotUrl": session.snapshot_url or session.photo_url,
+            },
+            "messages": messages,
+            "activeCall": _serialize_call_session(active_call) if active_call else None,
+            "homeowner": {
+                "id": homeowner.id if homeowner else session.homeowner_id,
+                "fullName": homeowner.full_name if homeowner else None,
+                "email": homeowner.email if homeowner else None,
+            },
+            "home": {
+                "id": home.id if home else session.home_id,
+                "name": home.name if home else None,
+            },
+            "door": {
+                "id": door.id if door else session.door_id,
+                "name": door.name if door else None,
+                "gateLabel": door.gate_label if door else None,
+            },
+        }
+    }
+
+
+@canonical_router.get("/visitor-requests/{visitor_request_id}/thread")
+def get_visitor_request_thread_contract(
+    visitor_request_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
+):
+    from app.db.models import CallSession, Door, Home, User, VisitorSession
+
+    session = (
+        db.query(VisitorSession)
+        .filter(VisitorSession.request_id == visitor_request_id)
+        .order_by(VisitorSession.started_at.desc())
+        .first()
+    )
+    if not session:
+        raise AppException("Visitor request not found", status_code=404, code="VISITOR_REQUEST_NOT_FOUND")
+
+    _authorize_session_access(db, session=session, user=user, visitor_token=None)
+    messages = _resolve_session_messages(db, session=session)
+    active_call = _resolve_active_call(db, session_id=session.id)
+    latest_call = _resolve_latest_call(db, session_id=session.id)
+    homeowner = db.query(User).filter(User.id == session.homeowner_id).first()
+    home = db.query(Home).filter(Home.id == session.home_id).first()
+    door = db.query(Door).filter(Door.id == session.door_id).first()
+
+    return {
+        "data": {
+            "visitorRequestId": visitor_request_id,
+            "visitorSessionId": session.id,
+            "status": session.status,
+            "snapshotUrl": session.snapshot_url or session.photo_url,
+            "visitor": {
+                "fullName": session.visitor_label or "Visitor",
+                "phoneNumber": session.visitor_phone or "",
+                "purpose": session.purpose or "",
+                "photoUrl": session.snapshot_url or session.photo_url,
+                "snapshotUrl": session.snapshot_url or session.photo_url,
+            },
+            "messages": messages,
+            "latestCall": _serialize_call_session(latest_call) if latest_call else None,
+            "activeCall": _serialize_call_session(active_call) if active_call else None,
+            "homeowner": {
+                "id": homeowner.id if homeowner else session.homeowner_id,
+                "fullName": homeowner.full_name if homeowner else None,
+            },
+            "home": {
+                "id": home.id if home else session.home_id,
+                "name": home.name if home else None,
+            },
+            "door": {
+                "id": door.id if door else session.door_id,
+                "name": door.name if door else None,
+                "gateLabel": door.gate_label if door else None,
+            },
+        }
+    }
+
+
+@canonical_router.get("/visitor-sessions/{visitor_session_id}/active-call")
+def get_visitor_session_active_call(
+    visitor_session_id: str,
+    visitorToken: Optional[str] = None,
+    x_visitor_token: Optional[str] = Header(default=None, alias="X-Visitor-Token"),
+    db: Session = Depends(get_db),
+    user=Depends(get_optional_current_user),
+):
+    from app.db.models import VisitorSession
+
+    session = db.query(VisitorSession).filter(VisitorSession.id == visitor_session_id).first()
+    if not session:
+        raise AppException("Session not found", status_code=404, code="VISITOR_SESSION_NOT_FOUND")
+    _authorize_session_access(db, session=session, user=user, visitor_token=visitorToken or x_visitor_token)
+    active_call = _resolve_active_call(db, session_id=session.id)
+    return {"data": _serialize_call_session(active_call) if active_call else None}
