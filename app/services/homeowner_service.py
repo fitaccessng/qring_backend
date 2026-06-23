@@ -399,6 +399,8 @@ def list_homeowner_message_threads(db: Session, homeowner_id: str, limit: int = 
                 "unread": unread_by_session.get(session_id, 0),
                 "time": thread_time.isoformat() if thread_time else utc_now().isoformat(),
                 "sessionStatus": session.status,
+                "requestId": session.request_id,
+                "visitorRequestId": session.request_id,
                 "visitorPhone": session.visitor_phone,
                 "purpose": session.purpose or (linked_appointment.purpose if linked_appointment else ""),
                 "photoUrl": snapshot_url,

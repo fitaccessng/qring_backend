@@ -12,7 +12,7 @@ from app.main import app, fastapi_app
 TEST_ORIGIN = "https://useqring.online"
 
 
-@fastapi_app.get("/__tests__/boom", include_in_schema=False)
+@fastapi_app.get("/api/v1/__tests__/boom", include_in_schema=False)
 def _boom_route():
     raise RuntimeError("boom")
 

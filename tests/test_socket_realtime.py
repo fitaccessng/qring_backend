@@ -325,6 +325,39 @@ class SocketRealtimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         terminal_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
         self.assertEqual(terminal_row.status, "rejected")
 
+    async def test_failed_call_marks_terminal_status_and_emits_to_session_room(self):
+        call_session_id = str(uuid.uuid4())
+        self.db.add(
+            CallSession(
+                id=call_session_id,
+                visitor_session_id=self.session.id,
+                room_name=f"qring-call-{call_session_id}",
+                visitor_id=self.session.id,
+                homeowner_id=self.homeowner.id,
+                caller_id=self.homeowner.id,
+                call_type="video",
+                status="connecting",
+            )
+        )
+        self.db.commit()
+
+        failed_ack = await self.handlers[RealtimeEvent.CALL_FAILED](
+            "sid-homeowner",
+            {
+                "sessionId": self.session.id,
+                "callSessionId": call_session_id,
+                "reason": "peer_failed",
+                "visitorId": self.session.id,
+            },
+        )
+        self.assertTrue(failed_ack["ok"])
+        self.assertEqual(failed_ack["status"], "failed")
+        failed_row = self.db.query(CallSession).filter(CallSession.id == call_session_id).first()
+        self.assertEqual(failed_row.status, "failed")
+        self.assertEqual(failed_row.ended_reason, "peer_failed")
+        self.assertTrue(self._find_emit(RealtimeEvent.CALL_FAILED))
+        self.assertTrue(any(call.get("room") == f"session:{self.session.id}" for call in self.emit_calls))
+
     async def test_security_accepts_call_flow_updates_db_and_emits(self):
         call_session_id = str(uuid.uuid4())
         self.db.add(

@@ -423,6 +423,8 @@ def update_security_session_status(
     action = (action or "").strip().lower()
     now = utc_now()
     normalized_channel = (preferred_communication_channel or "").strip().lower() or None
+    if normalized_channel == "chat":
+        normalized_channel = "message"
     if normalized_channel not in {None, "message", "audio", "video"}:
         raise AppException("Preferred communication channel is invalid.", status_code=400)
     normalized_target = (preferred_communication_target or "").strip().lower() or None

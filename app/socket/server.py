@@ -15,16 +15,22 @@ for origin in ("https://localhost", "capacitor://localhost", "ionic://localhost"
     if origin not in socket_cors_origins:
         socket_cors_origins.append(origin)
 
-sio_manager = None
-redis_config = describe_redis_configuration()
-if settings.redis_enabled:
-    sio_manager = socketio.AsyncRedisManager(
-        settings.REDIS_URL,
-        channel=settings.SOCKET_REDIS_CHANNEL,
+def create_socketio_manager(redis_url: str, channel: str):
+    if not str(redis_url or "").strip():
+        return None
+    return socketio.AsyncRedisManager(
+        redis_url,
+        channel=channel,
         write_only=False,
     )
+
+
+sio_manager = None
+redis_config = describe_redis_configuration()
+sio_manager = create_socketio_manager(settings.REDIS_URL, settings.SOCKET_REDIS_CHANNEL)
+if sio_manager:
     append_startup_diagnostic(
-        f"Socket.IO Redis adapter configured for host={redis_config['host'] or 'unknown'} channel={settings.SOCKET_REDIS_CHANNEL}.",
+        f"Socket.IO Redis adapter enabled for host={redis_config['host'] or 'unknown'} channel={settings.SOCKET_REDIS_CHANNEL}.",
         code="socket.redis.configured",
     )
 else:

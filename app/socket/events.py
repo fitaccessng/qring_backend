@@ -15,6 +15,7 @@ from app.socket.contracts import RealtimeEvent
 from app.socket.manager import socket_state
 from app.services.call_service import (
     end_call_session,
+    mark_call_session_failed,
     mark_call_session_answered,
     mark_call_session_connected,
     mark_call_session_connecting,
@@ -1062,6 +1063,50 @@ def register_socket_events(sio):
         await _emit_session_presence(session_id)
         await _emit_session_snapshot(session_id)
         return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id, "status": row.status if call_session_id else "ended"}
+
+    @sio.on(RealtimeEvent.CALL_FAILED, namespace=settings.SIGNALING_NAMESPACE)
+    async def call_failed(sid, payload):
+        session_id = await _get_allowed_session_id(sid, payload)
+        call_session_id = str((payload or {}).get("callSessionId") or "").strip()
+        if not session_id and call_session_id:
+            db = SessionLocal()
+            try:
+                existing_call = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+                if existing_call and existing_call.visitor_session_id:
+                    session_id = str(existing_call.visitor_session_id).strip()
+            finally:
+                db.close()
+        if not session_id:
+            return {"ok": False, "reason": "session_not_joined"}
+        dedupe_key = str((payload or {}).get("idempotencyKey") or call_session_id or "").strip()
+        if dedupe_key and not await socket_state.claim_event_once(f"call.failed:{session_id}", dedupe_key):
+            _socket_log("call_failed_duplicate_suppressed", sid=sid, session_id=session_id, call_session_id=call_session_id)
+            return {"ok": True, "sessionId": session_id, "status": "duplicate"}
+        _socket_log("call_failed", sid=sid, session_id=session_id, call_session_id=call_session_id)
+        db = SessionLocal()
+        try:
+            row = mark_call_session_failed(db, call_session_id=call_session_id, reason=(payload or {}).get("reason"))
+            user_id, role = await _event_context(db, sid=sid, session_id=session_id, payload=payload or {})
+        finally:
+            db.close()
+        await socket_state.update_session_participant(sid, session_id, callState="idle", presence="online", lastSeenAt=utc_now().isoformat())
+        await sio.emit(
+            RealtimeEvent.CALL_FAILED,
+            _event_envelope(
+                event_id=call_session_id,
+                session_id=session_id,
+                user_id=user_id,
+                role=role,
+                payload={**(payload or {}), "senderSid": sid, "at": utc_now().isoformat()},
+                idempotency_key=dedupe_key or call_session_id,
+            ),
+            room=f"session:{session_id}",
+            skip_sid=sid,
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
+        await _emit_session_presence(session_id)
+        await _emit_session_snapshot(session_id)
+        return {"ok": True, "sessionId": session_id, "callSessionId": call_session_id, "status": row.status if call_session_id else "failed"}
 
     @sio.on("visitor-arrived", namespace=settings.SIGNALING_NAMESPACE)
     async def visitor_arrived(sid, payload):

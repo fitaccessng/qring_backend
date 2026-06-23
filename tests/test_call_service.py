@@ -16,6 +16,7 @@ from app.services.call_service import (
     mark_call_session_answered,
     mark_call_session_connected,
     mark_call_session_connecting,
+    mark_call_session_failed,
     mark_call_session_rejected,
     end_call_session,
     join_call_as_homeowner,
@@ -353,6 +354,21 @@ class CallServiceTests(unittest.TestCase):
 
         rejected = mark_call_session_rejected(self.db, call_session_id=call.id)
         self.assertEqual(rejected.status, "rejected")
+
+    def test_failed_call_transition_persists_terminal_status(self):
+        call = asyncio.run(
+            start_call_session(
+                self.db,
+                appointment_id=self.appointment.id,
+                visitor_id="visitor-device-123",
+                visitor_name="Visitor A",
+            )
+        )
+
+        failed = mark_call_session_failed(self.db, call_session_id=call.id, reason="peer_failed")
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.ended_reason, "peer_failed")
+        self.assertIsNotNone(failed.ended_at)
 
     def test_ringing_call_ends_as_missed(self):
         call = asyncio.run(

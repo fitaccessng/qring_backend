@@ -43,13 +43,51 @@ settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 cors_settings = get_cors_settings(settings)
 
+
+class NormalizeCorsHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_origin = ""
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"origin":
+                request_origin = value.decode("latin-1").strip()
+                break
+
+        async def send_wrapper(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                normalized_headers = []
+                seen_cors_headers: set[bytes] = set()
+                for key, value in headers:
+                    lower_key = key.lower()
+                    if lower_key.startswith(b"access-control-"):
+                        if lower_key in seen_cors_headers:
+                            continue
+                        seen_cors_headers.add(lower_key)
+                    if lower_key == b"access-control-allow-origin":
+                        raw_value = value.decode("latin-1").strip()
+                        parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+                        if len(parts) > 1:
+                            if request_origin and request_origin in parts:
+                                raw_value = request_origin
+                            else:
+                                raw_value = parts[0]
+                        value = raw_value.encode("latin-1")
+                    normalized_headers.append((key, value))
+                message = {**message, "headers": normalized_headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
 fastapi_app.mount("/uploads", StaticFiles(directory=str(uploads_dir), check_dir=False), name="uploads")
-fastapi_app.add_middleware(
-    CORSMiddleware,
-    **cors_settings,
-)
 fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 fastapi_app.add_middleware(RequestContextMiddleware)
 fastapi_app.add_middleware(
@@ -966,5 +1004,5 @@ socket_app = socketio.ASGIApp(
     other_asgi_app=fastapi_app,
     socketio_path=settings.SOCKET_PATH.lstrip("/"),
 )
-app = CORSMiddleware(socket_app, **cors_settings)
+app = NormalizeCorsHeadersMiddleware(CORSMiddleware(socket_app, **cors_settings))
 mark_realtime_state(socketServerMounted=True)
