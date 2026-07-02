@@ -214,6 +214,15 @@ docker run -p 8000:8000 \
 
 If you store visitor media locally, make sure the container or platform keeps `MEDIA_STORAGE_PATH` on persistent storage. On Railway, use a volume mounted at `/app/uploads` and set `MEDIA_STORAGE_PATH=/app/uploads`.
 
+### Maintenance Scripts
+
+To move older visitor media into the new `uploads/visitor-media/...` layout and rewrite stored URLs:
+
+```bash
+python scripts/migrate_visitor_uploads.py --dry-run
+python scripts/migrate_visitor_uploads.py
+```
+
 ### Horizontal Scaling Stack
 
 This repo now includes:

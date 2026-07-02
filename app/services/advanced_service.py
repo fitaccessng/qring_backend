@@ -143,6 +143,18 @@ def _media_base_dir() -> Path:
     return base
 
 
+def _resolve_local_snapshot_path(media_path: str) -> Path:
+    path = Path(str(media_path or "").strip().lstrip("/"))
+    uploads_root = _media_base_dir()
+    candidates = [uploads_root / path]
+    if path.parts and path.parts[0] == "visitor-media" and len(path.parts) > 1:
+        candidates.append(uploads_root / Path(*path.parts[1:]))
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
 def _summary_window(week_start_iso: str | None = None) -> tuple[datetime, datetime]:
     if week_start_iso:
         start = datetime.fromisoformat(week_start_iso.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -261,7 +273,7 @@ def create_snapshot_audit(
     media_id = str(uuid.uuid4())
     cloudinary_public_id = None
     relative_path = Path("visitor-media") / effective_resident_id / f"{media_id}{ext}"
-    absolute_path = _media_base_dir() / Path(effective_resident_id) / f"{media_id}{ext}"
+    absolute_path = _media_base_dir() / relative_path
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         absolute_path.write_bytes(media_bytes)
@@ -400,7 +412,7 @@ def load_snapshot_bytes(
         content_type = _snapshot_content_type_from_path(storage_path, logical_type)
         return data, logical_type, content_type
 
-    path = _media_base_dir() / media_path
+    path = _resolve_local_snapshot_path(media_path)
     if not path.exists():
         raise AppException("Snapshot file is unavailable.", status_code=404)
     return path.read_bytes(), logical_type, content_type

@@ -94,12 +94,24 @@ async def serve_upload(file_path: str):
     uploads_root = uploads_dir.resolve()
     safe_relative = Path(str(file_path or "").lstrip("/"))
     candidate = (uploads_dir / safe_relative).resolve()
+    legacy_candidate = None
+    if safe_relative.parts and safe_relative.parts[0] == "visitor-media" and len(safe_relative.parts) > 1:
+        legacy_candidate = (uploads_dir / Path(*safe_relative.parts[1:])).resolve()
     if candidate != uploads_root and uploads_root not in candidate.parents:
         logging.warning("uploads.serve_blocked path=%s resolved=%s", file_path, candidate)
         raise HTTPException(status_code=404, detail="Upload file not found")
     if not candidate.exists() or not candidate.is_file():
-        logging.info("uploads.serve_missing path=%s resolved=%s", file_path, candidate)
-        raise HTTPException(status_code=404, detail="Upload file not found")
+        if legacy_candidate and legacy_candidate.exists() and legacy_candidate.is_file():
+            logging.info(
+                "uploads.serve_legacy_match path=%s resolved=%s legacy_resolved=%s",
+                file_path,
+                candidate,
+                legacy_candidate,
+            )
+            candidate = legacy_candidate
+        else:
+            logging.info("uploads.serve_missing path=%s resolved=%s", file_path, candidate)
+            raise HTTPException(status_code=404, detail="Upload file not found")
     try:
         return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
     except Exception:
