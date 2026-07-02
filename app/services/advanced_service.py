@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import json
 import uuid
 from datetime import datetime, timedelta
@@ -41,7 +42,8 @@ from app.services.provider_integrations import (
     send_push_fcm,
     send_sms_provider,
 )
-from app.services.cloudinary_service import upload_snapshot_to_cloudinary
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -257,76 +259,36 @@ def create_snapshot_audit(
     if ext not in {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}:
         ext = ".bin"
     media_id = str(uuid.uuid4())
-    media_path = ""
-    media_url = ""
-    cloudinary_public_id = ""
-
+    cloudinary_public_id = None
+    relative_path = Path("visitor-media") / effective_resident_id / f"{media_id}{ext}"
+    absolute_path = _media_base_dir() / Path(effective_resident_id) / f"{media_id}{ext}"
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        cloudinary_result = upload_snapshot_to_cloudinary(
-            media_bytes=media_bytes,
-            mime_type="image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}",
-            filename_hint=filename_hint or f"capture{ext}",
-            folder=f"{settings.CLOUDINARY_UPLOAD_FOLDER}/{effective_resident_id}",
-            public_id_prefix=f"{effective_resident_id}/{media_id}",
-        )
-    except Exception:
+        absolute_path.write_bytes(media_bytes)
+    except Exception as exc:
         logger.exception(
-            "snapshot.audit.cloudinary_upload_failed resident_id=%s media_id=%s filename=%s",
+            "snapshot.audit.local_storage_failed backend=filesystem resident_id=%s media_id=%s path=%s bytes=%s",
             effective_resident_id,
             media_id,
-            filename_hint,
+            absolute_path,
+            len(media_bytes),
         )
-        cloudinary_result = None
+        raise AppException(
+            "Snapshot image could not be saved to local uploads storage.",
+            status_code=500,
+            code="SNAPSHOT_STORAGE_FAILED",
+        ) from exc
 
-    if cloudinary_result:
-        media_path = f"cloudinary:{cloudinary_result.public_id}"
-        media_url = cloudinary_result.secure_url
-        cloudinary_public_id = cloudinary_result.public_id
-    else:
-        storage_bucket = _get_storage_bucket()
-        if storage_bucket is not None:
-            storage_path = f"visitor-media/{effective_resident_id}/{media_id}{ext}"
-            try:
-                blob = storage_bucket.blob(storage_path)
-                blob.cache_control = "private, max-age=0, no-transform"
-                blob.metadata = {
-                    "residentId": effective_resident_id,
-                    "mediaId": media_id,
-                    "visitorSessionId": visitor_session_id or "",
-                    "appointmentId": appointment_id or "",
-                    "mediaType": (media_type or "photo").strip().lower(),
-                }
-                blob.upload_from_string(media_bytes, content_type="application/octet-stream")
-                media_path = f"firebase:{storage_path}"
-            except Exception:
-                logger.exception(
-                    "snapshot.audit.firebase_upload_failed resident_id=%s media_id=%s storage_path=%s",
-                    effective_resident_id,
-                    media_id,
-                    storage_path,
-                )
-                media_path = ""
-
-        if not media_path:
-            relative_path = Path(effective_resident_id) / f"{media_id}{ext}"
-            absolute_path = _media_base_dir() / relative_path
-            absolute_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                absolute_path.write_bytes(media_bytes)
-                media_path = str(relative_path).replace("\\", "/")
-                media_url = f"/uploads/visitor-media/{media_path}"
-            except Exception:
-                logger.exception(
-                    "snapshot.audit.local_write_failed resident_id=%s media_id=%s path=%s",
-                    effective_resident_id,
-                    media_id,
-                    absolute_path,
-                )
-                media_path = f"inline:{media_id}{ext}"
-                media_url = _data_url_from_bytes(
-                    media_bytes,
-                    "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}",
-                )
+    media_path = str(relative_path).replace("\\", "/")
+    media_url = f"/uploads/{media_path}"
+    logger.info(
+        "snapshot.audit.local_storage_saved resident_id=%s media_id=%s path=%s url=%s bytes=%s",
+        effective_resident_id,
+        media_id,
+        media_path,
+        media_url,
+        len(media_bytes),
+    )
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
@@ -355,18 +317,8 @@ def create_snapshot_audit(
         "mediaSha256": row.media_sha256,
         "source": row.source,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
-        "fileUrl": row.media_url
-        or (
-            f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
-            if str(row.media_path or "").strip().startswith("firebase:")
-            else _public_snapshot_url_from_media_path(row.media_path)
-        ),
-        "url": row.media_url
-        or (
-            f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
-            if str(row.media_path or "").strip().startswith("firebase:")
-            else _public_snapshot_url_from_media_path(row.media_path)
-        ),
+        "fileUrl": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
+        "url": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
     }
 
 
@@ -415,6 +367,11 @@ def load_snapshot_bytes(
                 return base64.b64decode(encoded), logical_type, returned_type
             except Exception as exc:
                 raise AppException("Snapshot file is unavailable.", status_code=404) from exc
+        if row.media_url.startswith("/"):
+            local_path = Path(__file__).resolve().parents[2] / row.media_url.lstrip("/")
+            if not local_path.exists():
+                raise AppException("Snapshot file is unavailable.", status_code=404)
+            return local_path.read_bytes(), logical_type, content_type
         try:
             with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
                 response = client.get(row.media_url)
