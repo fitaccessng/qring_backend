@@ -4,7 +4,7 @@ This document covers the modular advanced feature baseline added under `/api/v1/
 
 ## Security & Compliance Notes
 - All endpoints require authenticated access token unless noted.
-- Visitor media is stored under `MEDIA_STORAGE_PATH` (or backend local fallback) and referenced by audit records.
+- Visitor media is stored on the backend filesystem under `MEDIA_STORAGE_PATH` when set, with the repository-local `uploads/` folder used as the fallback during development.
 - Recognition stores only hashed visitor keys by default (`sha256(identifier)`), with optional encrypted template payload.
 - Multi-channel notifications are synchronized through `notifications` table and socket events.
 
@@ -84,7 +84,8 @@ This document covers the modular advanced feature baseline added under `/api/v1/
 
 Add these to backend `.env`:
 
-- `MEDIA_STORAGE_PATH=/absolute/path/for/secure/media`
+- `MEDIA_STORAGE_PATH=./uploads` for local development
+- `MEDIA_STORAGE_PATH=/app/uploads` for Railway production with a persistent volume mounted at `/app/uploads`
 - `BREVO_API_KEY=...`
 - `BREVO_SENDER_NAME=QRing`
 - `SMTP_HOST=...` for legacy SMTP fallback only

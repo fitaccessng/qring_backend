@@ -77,6 +77,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `APP_WORKERS` | `4` | Number of Uvicorn worker processes |
 | `PROCESS_ROLE` | `web` | Use `worker` for the scheduled-jobs process |
 | `RUN_SCHEDULED_JOBS` | `false` | Keep `false` on web nodes; `true` only on one worker |
+| `MEDIA_STORAGE_PATH` | `./uploads` | Store visitor media on disk. In Railway production, set this to `/app/uploads` and mount a persistent volume there. |
 | `JWT_SECRET_KEY` | Generate with `openssl rand -hex 32` | **Keep secret** |
 | `CORS_ORIGINS` | `https://yourdomain.com` | Separate multiple with commas |
 | `PAYSTACK_SECRET_KEY` | `sk_live_...` | From Paystack dashboard |
@@ -210,6 +211,8 @@ docker run -p 8000:8000 \
   --env-file .env \
   qring-backend:latest
 ```
+
+If you store visitor media locally, make sure the container or platform keeps `MEDIA_STORAGE_PATH` on persistent storage. On Railway, use a volume mounted at `/app/uploads` and set `MEDIA_STORAGE_PATH=/app/uploads`.
 
 ### Horizontal Scaling Stack
 

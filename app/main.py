@@ -86,7 +86,7 @@ class NormalizeCorsHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
-uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
+uploads_dir = Path((settings.MEDIA_STORAGE_PATH or "").strip() or (Path(__file__).resolve().parents[2] / "uploads"))
 
 
 @fastapi_app.get("/uploads/{file_path:path}")
