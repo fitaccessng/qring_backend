@@ -370,6 +370,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         except Exception as exc:
             db.delete(session)
             db.commit()
+            logger.exception(
+                "visitor.request snapshot decode failed request_id=%s session_id=%s qr_id=%s base64_len=%s mime=%s",
+                request_id,
+                session.id,
+                payload.qrId,
+                len(snapshot_b64 or ""),
+                snapshot_mime or "",
+            )
             raise AppException(
                 "Snapshot could not be saved. Please retake the photo and try again.",
                 status_code=400,
@@ -378,6 +386,13 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
 
         try:
             if not media_bytes:
+                logger.error(
+                    "visitor.request snapshot storage aborted request_id=%s session_id=%s qr_id=%s reason=empty_media_bytes mime=%s",
+                    request_id,
+                    session.id,
+                    payload.qrId,
+                    snapshot_mime or "",
+                )
                 raise AppException(
                     "Snapshot could not be saved. Please retake the photo and try again.",
                     status_code=400,
@@ -385,6 +400,15 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 )
 
             if len(media_bytes) > MAX_VISITOR_SNAPSHOT_BYTES:
+                logger.error(
+                    "visitor.request snapshot storage aborted request_id=%s session_id=%s qr_id=%s reason=payload_too_large bytes=%s limit=%s mime=%s",
+                    request_id,
+                    session.id,
+                    payload.qrId,
+                    len(media_bytes),
+                    MAX_VISITOR_SNAPSHOT_BYTES,
+                    snapshot_mime or "",
+                )
                 raise AppException(
                     "Snapshot could not be saved. Please retake the photo and try again.",
                     status_code=400,
@@ -410,11 +434,28 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         except AppException:
             db.delete(session)
             db.commit()
+            logger.exception(
+                "visitor.request snapshot storage failed request_id=%s session_id=%s qr_id=%s phase=%s mime=%s bytes=%s",
+                request_id,
+                session.id,
+                payload.qrId,
+                phase,
+                snapshot_mime or "",
+                len(media_bytes or b""),
+            )
             raise
         except Exception as exc:
             db.delete(session)
             db.commit()
-            logger.exception("Snapshot capture failed and request was rolled back.")
+            logger.exception(
+                "visitor.request snapshot storage error request_id=%s session_id=%s qr_id=%s phase=%s mime=%s bytes=%s",
+                request_id,
+                session.id,
+                payload.qrId,
+                phase,
+                snapshot_mime or "",
+                len(media_bytes or b""),
+            )
             raise AppException(
                 "Snapshot could not be saved. Please retake the photo and try again.",
                 status_code=500,
@@ -456,6 +497,15 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             if not snapshot_url:
                 db.delete(session)
                 db.commit()
+                logger.error(
+                    "visitor.request snapshot url missing request_id=%s session_id=%s qr_id=%s snapshot_audit_id=%s media_path=%s media_url=%s",
+                    request_id,
+                    session.id,
+                    payload.qrId,
+                    snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else "",
+                    snapshot_audit.get("mediaPath") if isinstance(snapshot_audit, dict) else "",
+                    snapshot_audit.get("mediaUrl") if isinstance(snapshot_audit, dict) else "",
+                )
                 raise AppException(
                     "Snapshot could not be saved. Please retake the photo and try again.",
                     status_code=500,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -28,11 +29,11 @@ class ResidentSetting(Base):
     nearby_panic_availability_mode: Mapped[str] = mapped_column(String(24), default="always")
     nearby_panic_schedule_json: Mapped[str] = mapped_column(Text, default="[]")
     nearby_panic_receive_from: Mapped[str] = mapped_column(String(24), default="everyone")
-    nearby_panic_muted_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    nearby_panic_same_area_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    nearby_panic_muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    nearby_panic_same_area_label: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     panic_identity_visibility: Mapped[str] = mapped_column(String(24), default="masked")
-    safety_home_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
-    safety_home_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    safety_home_lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    safety_home_lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 

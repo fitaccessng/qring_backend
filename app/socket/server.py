@@ -15,6 +15,10 @@ for origin in ("https://localhost", "capacitor://localhost", "ionic://localhost"
     if origin not in socket_cors_origins:
         socket_cors_origins.append(origin)
 
+socket_cors_setting = "*"
+if not settings.DEBUG:
+    socket_cors_setting = socket_cors_origins
+
 def create_socketio_manager(redis_url: str, channel: str):
     if not str(redis_url or "").strip():
         return None
@@ -43,7 +47,7 @@ else:
 sio = socketio.AsyncServer(
     async_mode="asgi",
     client_manager=sio_manager,
-    cors_allowed_origins=socket_cors_origins,
+    cors_allowed_origins=socket_cors_setting,
     logger=False,
     engineio_logger=False,
     ping_interval=20,
@@ -62,6 +66,7 @@ mark_realtime_state(
     socketPath=settings.SOCKET_PATH,
     socketServerMounted=False,
     socketRedisAdapterAttached=bool(sio_manager),
+    socketCorsAllowedOrigins="*" if settings.DEBUG else ",".join(socket_cors_origins),
 )
 append_startup_diagnostic(
     f"Socket.IO initialized with path {settings.SOCKET_PATH} and namespaces "

@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -14,13 +14,13 @@ from app.core.exceptions import AppException
 settings = get_settings()
 
 
-@dataclass(slots=True)
+@dataclass
 class CloudinaryUploadResult:
     secure_url: str
     public_id: str
-    asset_id: str | None = None
+    asset_id: Optional[str] = None
     resource_type: str = "image"
-    bytes: int | None = None
+    bytes: Optional[int] = None
 
 
 def _cloudinary_configured() -> bool:
@@ -54,9 +54,9 @@ def upload_snapshot_to_cloudinary(
     media_bytes: bytes,
     mime_type: str,
     filename_hint: str,
-    folder: str | None = None,
-    public_id_prefix: str | None = None,
-) -> CloudinaryUploadResult | None:
+    folder: Optional[str] = None,
+    public_id_prefix: Optional[str] = None,
+) -> Optional[CloudinaryUploadResult]:
     if not _cloudinary_configured():
         return None
 

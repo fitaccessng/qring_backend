@@ -270,6 +270,12 @@ def create_snapshot_audit(
             public_id_prefix=f"{effective_resident_id}/{media_id}",
         )
     except Exception:
+        logger.exception(
+            "snapshot.audit.cloudinary_upload_failed resident_id=%s media_id=%s filename=%s",
+            effective_resident_id,
+            media_id,
+            filename_hint,
+        )
         cloudinary_result = None
 
     if cloudinary_result:
@@ -293,6 +299,12 @@ def create_snapshot_audit(
                 blob.upload_from_string(media_bytes, content_type="application/octet-stream")
                 media_path = f"firebase:{storage_path}"
             except Exception:
+                logger.exception(
+                    "snapshot.audit.firebase_upload_failed resident_id=%s media_id=%s storage_path=%s",
+                    effective_resident_id,
+                    media_id,
+                    storage_path,
+                )
                 media_path = ""
 
         if not media_path:
@@ -304,6 +316,12 @@ def create_snapshot_audit(
                 media_path = str(relative_path).replace("\\", "/")
                 media_url = f"/uploads/visitor-media/{media_path}"
             except Exception:
+                logger.exception(
+                    "snapshot.audit.local_write_failed resident_id=%s media_id=%s path=%s",
+                    effective_resident_id,
+                    media_id,
+                    absolute_path,
+                )
                 media_path = f"inline:{media_id}{ext}"
                 media_url = _data_url_from_bytes(
                     media_bytes,
