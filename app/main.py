@@ -7,9 +7,9 @@ import asyncio
 from pathlib import Path
 
 import socketio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy import DateTime, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -87,7 +87,26 @@ class NormalizeCorsHeadersMiddleware:
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
-fastapi_app.mount("/uploads", StaticFiles(directory=str(uploads_dir), check_dir=False), name="uploads")
+
+
+@fastapi_app.get("/uploads/{file_path:path}")
+async def serve_upload(file_path: str):
+    uploads_root = uploads_dir.resolve()
+    safe_relative = Path(str(file_path or "").lstrip("/"))
+    candidate = (uploads_dir / safe_relative).resolve()
+    if candidate != uploads_root and uploads_root not in candidate.parents:
+        logging.warning("uploads.serve_blocked path=%s resolved=%s", file_path, candidate)
+        raise HTTPException(status_code=404, detail="Upload file not found")
+    if not candidate.exists() or not candidate.is_file():
+        logging.info("uploads.serve_missing path=%s resolved=%s", file_path, candidate)
+        raise HTTPException(status_code=404, detail="Upload file not found")
+    try:
+        return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
+    except Exception:
+        logging.exception("uploads.serve_error path=%s resolved=%s", file_path, candidate)
+        raise HTTPException(status_code=500, detail="Failed to serve upload file")
+
+
 fastapi_app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 fastapi_app.add_middleware(RequestContextMiddleware)
 fastapi_app.add_middleware(
