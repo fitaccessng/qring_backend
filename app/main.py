@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import uuid
 import asyncio
+import os
 from pathlib import Path
 
 import socketio
@@ -87,6 +88,35 @@ class NormalizeCorsHeadersMiddleware:
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 uploads_dir = Path((settings.MEDIA_STORAGE_PATH or "").strip() or (Path(__file__).resolve().parents[2] / "uploads"))
+
+
+def _log_upload_storage_status() -> None:
+    resolved = uploads_dir.resolve()
+    exists = resolved.exists()
+    is_dir = resolved.is_dir()
+    writable = os.access(resolved, os.W_OK) if exists else False
+    logging.info(
+        "uploads.storage_root resolved=%s exists=%s is_dir=%s writable=%s",
+        resolved,
+        exists,
+        is_dir,
+        writable,
+    )
+    if not exists:
+        logging.warning(
+            "uploads.storage_missing resolved=%s note=mount_a_persistent_volume_here_or_uploads_will_404",
+            resolved,
+        )
+    elif not is_dir:
+        logging.warning(
+            "uploads.storage_not_directory resolved=%s note=media_storage_path_must_point_to_a_directory",
+            resolved,
+        )
+    elif not writable:
+        logging.warning(
+            "uploads.storage_not_writable resolved=%s note=check_railway_volume_mount_and_permissions",
+            resolved,
+        )
 
 
 @fastapi_app.get("/uploads/{file_path:path}")
@@ -917,6 +947,7 @@ async def _validate_redis_runtime() -> dict[str, object]:
 
 @fastapi_app.on_event("startup")
 async def on_startup():
+    _log_upload_storage_status()
     env = settings.ENVIRONMENT.lower().strip()
     redis_config = describe_redis_configuration()
     mark_realtime_state(
