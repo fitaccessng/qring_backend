@@ -93,6 +93,8 @@ def _describe_call_origin(caller_role: str | None) -> str:
         return "security dashboard"
     if normalized_role == "homeowner":
         return "homeowner dashboard"
+    if normalized_role == "office":
+        return "office dashboard"
     return "approved-session screen"
 
 
@@ -111,13 +113,15 @@ async def start_call_session(
 ) -> CallSession:
     effective_appointment_id = str(appointment_id or "").strip()
     effective_homeowner_id = str(homeowner_id or "").strip()
+    caller_user = db.query(User).filter(User.id == str(caller_id or "").strip()).first() if str(caller_id or "").strip() else None
+    caller_role = caller_user.role.value if caller_user and caller_user.role else None
     visitor_session = None
     session_id = str(visitor_session_id or "").strip()
     if session_id:
         visitor_session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
         if not visitor_session:
             raise AppException("Visitor session not found.", status_code=404)
-        if homeowner_id and visitor_session.homeowner_id != homeowner_id:
+        if caller_role != "office" and homeowner_id and visitor_session.homeowner_id != homeowner_id:
             raise AppException("You are not allowed to start this call.", status_code=403)
         if not effective_homeowner_id:
             effective_homeowner_id = visitor_session.homeowner_id
@@ -132,17 +136,16 @@ async def start_call_session(
         appointment = db.query(Appointment).filter(Appointment.id == effective_appointment_id).first()
         if not appointment:
             raise AppException("Appointment not found.", status_code=404)
-        if homeowner_id and appointment.homeowner_id != homeowner_id:
+        if caller_role != "office" and homeowner_id and appointment.homeowner_id != homeowner_id:
             raise AppException("You are not allowed to start this call.", status_code=403)
         _validate_appointment_for_call(appointment)
         effective_homeowner_id = appointment.homeowner_id
 
     if not effective_homeowner_id:
         raise AppException("Homeowner context is required to start call.", status_code=400)
-    require_subscription_feature(db, effective_homeowner_id, "chat_call_verification", user_role="homeowner")
+    if caller_role != "office":
+        require_subscription_feature(db, effective_homeowner_id, "chat_call_verification", user_role="homeowner")
 
-    caller_user = db.query(User).filter(User.id == str(caller_id or "").strip()).first() if str(caller_id or "").strip() else None
-    caller_role = caller_user.role.value if caller_user and caller_user.role else None
     initiated_by_role = caller_role or ("homeowner" if homeowner_id else ("security" if security_user_id else None))
     caller_origin = _describe_call_origin(caller_role or initiated_by_role)
 
@@ -421,7 +424,8 @@ def join_call_as_security(db: Session, *, call_session_id: str, security_user_id
     row = db.query(CallSession).filter(CallSession.id == call_session_id).first()
     if not row:
         raise AppException("Call session not found.", status_code=404)
-    if row.security_user_id != security_user_id:
+    is_direct_office_call = not row.visitor_session_id and not row.appointment_id
+    if row.security_user_id != security_user_id and not (is_direct_office_call and row.receiver_id == security_user_id):
         raise AppException("You are not allowed to join this call.", status_code=403)
     if row.status in CALL_TERMINAL_STATUSES:
         raise AppException("Call has ended.", status_code=409)

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.core.time import utc_now
-from app.db.models import AuditLog, Appointment, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, User, UserRole, VisitorSession
+from app.db.models import AuditLog, Appointment, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, Office, OfficeMember, User, UserRole, VisitorSession
 from app.services.notification_service import create_notification
 
 OPEN_SECURITY_STATUSES = {"submitted", "received_by_security", "forwarded_to_homeowner", "approved"}
@@ -322,13 +322,31 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
 
 
 def _get_security_user(db: Session, security_user_id: str) -> User:
-    user = db.query(User).filter(User.id == security_user_id, User.role == UserRole.security).first()
+    user = db.query(User).filter(User.id == security_user_id, User.role.in_([UserRole.security, UserRole.office])).first()
     if not user:
         raise AppException("Security account not found", status_code=404)
     return user
 
 
 def _security_session_query(db: Session, security_user: User):
+    if security_user.role == UserRole.office:
+        office = (
+            db.query(Office)
+            .join(OfficeMember, OfficeMember.office_id == Office.id)
+            .filter(
+                (Office.administrator_user_id == security_user.id)
+                | (OfficeMember.user_id == security_user.id)
+            )
+            .order_by(Office.created_at.desc())
+            .first()
+        )
+        if not office:
+            office = db.query(Office).filter(Office.administrator_user_id == security_user.id).first()
+        office_id = office.id if office else None
+        query = db.query(VisitorSession).join(Home, Home.id == VisitorSession.home_id)
+        if office_id:
+            query = query.filter(Home.office_id == office_id)
+        return query
     query = db.query(VisitorSession).filter(VisitorSession.estate_id == security_user.estate_id)
     if security_user.gate_id:
         query = query.filter((VisitorSession.gate_id == security_user.gate_id) | (VisitorSession.gate_id.is_(None)))
@@ -637,7 +655,7 @@ def list_security_session_messages(
             "senderType": row.sender_type,
             "displayName": (
                 security_user_obj.full_name
-                if row.sender_type == "security"
+                if row.sender_type in {"security", "office"}
                 else "Homeowner" if row.sender_type == "homeowner" else (session.visitor_label or "Visitor")
             ),
             "at": row.created_at.isoformat(),
@@ -679,9 +697,10 @@ def create_security_session_message(
         return None
 
     session.communication_status = "chatting"
+    sender_type = "office" if security_user.role == UserRole.office else "security"
     message = Message(
         session_id=session_id,
-        sender_type="security",
+        sender_type=sender_type,
         sender_id=security_user.id,
         receiver_id=session.homeowner_id,
         body=body,
@@ -695,7 +714,7 @@ def create_security_session_message(
         "sessionId": message.session_id,
         "text": message.body,
         "senderType": message.sender_type,
-        "displayName": security_user.full_name or "Security",
+        "displayName": security_user.full_name or ("Office" if security_user.role == UserRole.office else "Security"),
         "at": message.created_at.isoformat(),
     }
 
@@ -713,7 +732,7 @@ def delete_security_session_message(
         return False
     row = (
         db.query(Message)
-        .filter(Message.id == message_id, Message.session_id == session_id, Message.sender_type == "security")
+        .filter(Message.id == message_id, Message.session_id == session_id, Message.sender_type.in_(["security", "office"]))
         .first()
     )
     if not row:

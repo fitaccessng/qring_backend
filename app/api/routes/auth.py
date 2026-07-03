@@ -38,6 +38,18 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         password=payload.password,
         role=payload.role,
         referral_code=payload.referralCode,
+        company_name=payload.companyName,
+        business_email=str(payload.businessEmail or "").strip() or None,
+        phone_number=payload.phoneNumber,
+        office_address=payload.officeAddress,
+        country=payload.country,
+        state=payload.state,
+        city=payload.city,
+        office_size=payload.officeSize,
+        industry=payload.industry,
+        number_of_employees=payload.numberOfEmployees,
+        timezone=payload.timezone,
+        administrator_name=payload.administratorName,
     )
     return {"data": data}
 

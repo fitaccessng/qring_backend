@@ -16,6 +16,7 @@ class Appointment(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    office_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("offices.id"), nullable=True, index=True)
     home_id: Mapped[str] = mapped_column(String(36), ForeignKey("homes.id"), nullable=False, index=True)
     door_id: Mapped[str] = mapped_column(String(36), ForeignKey("doors.id"), nullable=False, index=True)
     visitor_name: Mapped[str] = mapped_column(String(120), default="Visitor")

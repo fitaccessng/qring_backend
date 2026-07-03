@@ -25,7 +25,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.db.models import DeviceSession, Notification, User, UserRole
+from app.db.models import DeviceSession, Door, Home, Notification, Office, OfficeMember, QRCode, User, UserRole
 from app.db.session import SessionLocal
 from app.schemas.auth import AuthResponse
 from app.services.provider_integrations import send_transactional_email
@@ -240,6 +240,109 @@ def _queue_email_verification(email: str) -> None:
     Thread(target=_runner, daemon=True).start()
 
 
+def _create_office_onboarding(
+    db: Session,
+    *,
+    user: User,
+    company_name: str,
+    business_email: str,
+    phone_number: str | None,
+    office_address: str | None,
+    country: str | None,
+    state: str | None,
+    city: str | None,
+    office_size: str | None,
+    industry: str | None,
+    number_of_employees: int | None,
+    timezone: str | None,
+    administrator_name: str | None,
+) -> dict[str, object]:
+    office_name = (company_name or "").strip() or user.full_name
+    qr_id = f"office-{uuid.uuid4().hex[:12]}"
+    office = Office(
+        company_name=office_name,
+        business_email=(business_email or user.email).strip().lower(),
+        phone_number=(phone_number or "").strip() or None,
+        office_address=(office_address or "").strip() or None,
+        country=(country or "").strip() or None,
+        state=(state or "").strip() or None,
+        city=(city or "").strip() or None,
+        office_size=(office_size or "").strip() or None,
+        industry=(industry or "").strip() or None,
+        employee_count=max(1, int(number_of_employees or 1)),
+        timezone=(timezone or "").strip() or None,
+        administrator_user_id=user.id,
+        qr_id=qr_id,
+    )
+    db.add(office)
+    db.flush()
+
+    reception_home = Home(
+        name=f"{office_name} Reception",
+        office_id=office.id,
+        homeowner_id=user.id,
+    )
+    db.add(reception_home)
+    db.flush()
+
+    reception_door = Door(
+        name=f"{office_name} Entrance",
+        home_id=reception_home.id,
+        gate_label="Reception",
+    )
+    db.add(reception_door)
+    db.flush()
+
+    office.reception_home_id = reception_home.id
+    office.reception_door_id = reception_door.id
+    db.add(office)
+
+    qr = QRCode(
+        qr_id=qr_id,
+        plan="office",
+        home_id=reception_home.id,
+        doors_csv=reception_door.id,
+        mode="direct",
+        estate_id=None,
+        active=True,
+    )
+    db.add(qr)
+
+    member = OfficeMember(
+        office_id=office.id,
+        user_id=user.id,
+        full_name=(administrator_name or user.full_name).strip() or user.full_name,
+        role_label="administrator",
+        department="Administration",
+        floor="Reception",
+        extension=None,
+        availability_status="available",
+        status="active",
+    )
+    db.add(member)
+
+    db.commit()
+    db.refresh(office)
+    db.refresh(reception_home)
+    db.refresh(reception_door)
+    db.refresh(qr)
+    db.refresh(member)
+
+    auth = _issue_auth_tokens(db=db, user=user, user_agent="", ip_address="")
+    return {
+        **auth.model_dump(),
+        "office": {
+            "id": office.id,
+            "companyName": office.company_name,
+            "businessEmail": office.business_email,
+            "qrId": office.qr_id,
+            "scanUrl": f"/scan/{office.qr_id}",
+            "receptionHomeId": office.reception_home_id,
+            "receptionDoorId": office.reception_door_id,
+        },
+    }
+
+
 def signup(
     db: Session,
     full_name: str,
@@ -247,6 +350,18 @@ def signup(
     password: str,
     role: str,
     referral_code: str | None = None,
+    company_name: str | None = None,
+    business_email: str | None = None,
+    phone_number: str | None = None,
+    office_address: str | None = None,
+    country: str | None = None,
+    state: str | None = None,
+    city: str | None = None,
+    office_size: str | None = None,
+    industry: str | None = None,
+    number_of_employees: int | None = None,
+    timezone: str | None = None,
+    administrator_name: str | None = None,
 ):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
@@ -267,6 +382,11 @@ def signup(
         raise AppException("Invalid role", status_code=400) from exc
     if user_role == UserRole.admin:
         raise AppException("Admin signup is not allowed on this endpoint", status_code=403)
+    if user_role == UserRole.office:
+        if not (company_name or "").strip():
+            raise AppException("Company name is required for office signup.", status_code=400)
+        if not (business_email or "").strip():
+            raise AppException("Business email is required for office signup.", status_code=400)
 
     referrer = _resolve_referrer(db, referral_code)
 
@@ -276,11 +396,28 @@ def signup(
         password_hash=hash_password(password),
         role=user_role,
         referred_by_user_id=referrer.id if referrer else None,
-        email_verified=settings.ENVIRONMENT == "development",  # Auto-verify in development
+        email_verified=True if user_role == UserRole.office else settings.ENVIRONMENT == "development",
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    if user_role == UserRole.office:
+        return _create_office_onboarding(
+            db,
+            user=user,
+            company_name=company_name or user.full_name,
+            business_email=business_email or user.email,
+            phone_number=phone_number,
+            office_address=office_address,
+            country=country,
+            state=state,
+            city=city,
+            office_size=office_size,
+            industry=industry,
+            number_of_employees=number_of_employees,
+            timezone=timezone,
+            administrator_name=administrator_name,
+        )
     # Send email verification best-effort without blocking the signup response.
     if not user.email_verified:
         _queue_email_verification(user.email)

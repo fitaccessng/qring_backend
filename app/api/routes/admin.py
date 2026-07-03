@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -17,6 +19,7 @@ from app.services.audit_service import list_audit_logs, write_audit_log
 
 router = APIRouter()
 settings = get_settings()
+uploads_root = Path((settings.MEDIA_STORAGE_PATH or "").strip() or (Path(__file__).resolve().parents[2] / "uploads"))
 
 
 class DoorCreate(BaseModel):
@@ -97,6 +100,39 @@ def admin_overview(
             lambda: get_admin_overview(db),
             settings.CACHE_ADMIN_TTL_SECONDS,
         )
+    }
+
+
+@router.get("/uploads/debug")
+def admin_uploads_debug(
+    path: Optional[str] = Query(default=None),
+    _: User = Depends(require_roles("admin")),
+):
+    resolved_root = uploads_root.resolve()
+    exists = resolved_root.exists()
+    is_dir = resolved_root.is_dir()
+    writable = os.access(resolved_root, os.W_OK) if exists and is_dir else False
+    sample_path = None
+    sample_exists = None
+    sample_is_file = None
+    resolved_sample = None
+    if path:
+        sample_path = str(path).strip().lstrip("/")
+        resolved_sample = (uploads_root / Path(sample_path)).resolve()
+        sample_exists = resolved_sample.exists()
+        sample_is_file = resolved_sample.is_file()
+    return {
+        "data": {
+            "mediaStoragePath": str((settings.MEDIA_STORAGE_PATH or "").strip() or ""),
+            "resolvedUploadsRoot": str(resolved_root),
+            "rootExists": exists,
+            "rootIsDir": is_dir,
+            "rootWritable": bool(writable),
+            "samplePath": sample_path,
+            "resolvedSamplePath": str(resolved_sample) if resolved_sample else None,
+            "sampleExists": sample_exists,
+            "sampleIsFile": sample_is_file,
+        }
     }
 
 

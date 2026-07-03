@@ -15,6 +15,18 @@ class SignupRequest(BaseModel):
     password: str
     role: str = "homeowner"
     referralCode: Optional[str] = None
+    companyName: Optional[str] = None
+    businessEmail: Optional[EmailStr] = None
+    phoneNumber: Optional[str] = None
+    officeAddress: Optional[str] = None
+    country: Optional[str] = None
+    state: Optional[str] = None
+    city: Optional[str] = None
+    officeSize: Optional[str] = None
+    industry: Optional[str] = None
+    numberOfEmployees: Optional[int] = None
+    timezone: Optional[str] = None
+    administratorName: Optional[str] = None
 
 
 class AdminSignupRequest(BaseModel):

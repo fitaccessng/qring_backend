@@ -9,7 +9,7 @@ from datetime import datetime
 from app.core.config import get_settings
 from app.core.time import utc_now
 from app.core.security import decode_token
-from app.db.models import CallSession, Estate, ResidentSetting, Message, Notification, User, UserRole, VisitorSession
+from app.db.models import CallSession, Estate, Home, Office, OfficeMember, ResidentSetting, Message, Notification, User, UserRole, VisitorSession
 from app.db.session import SessionLocal
 from app.socket.contracts import RealtimeEvent
 from app.socket.manager import socket_state
@@ -51,6 +51,18 @@ def _is_user_allowed_for_session(db, *, user: User, session: VisitorSession) -> 
         return session.homeowner_id == user.id
     if user.role == UserRole.security:
         return bool(user.estate_id) and bool(session.estate_id) and user.estate_id == session.estate_id
+    if user.role == UserRole.office:
+        home = db.query(Home).filter(Home.id == session.home_id).first()
+        if not home or not home.office_id:
+            return False
+        office_member = (
+            db.query(OfficeMember.id)
+            .join(Office, Office.id == OfficeMember.office_id)
+            .filter(Office.id == home.office_id, OfficeMember.user_id == user.id)
+            .first()
+        )
+        office_admin = db.query(Office.id).filter(Office.id == home.office_id, Office.administrator_user_id == user.id).first()
+        return bool(office_member or office_admin)
     if user.role == UserRole.estate:
         if not session.estate_id:
             return False
@@ -111,6 +123,8 @@ def register_socket_events(sio):
                 user = db.query(User).filter(User.id == user_id).first()
                 if user and user.role == UserRole.security:
                     role = "security"
+                elif user and user.role == UserRole.office:
+                    role = "office"
         elif payload and str((payload or {}).get("senderType") or "").strip():
             role = str((payload or {}).get("senderType") or "visitor").strip()
         return user_id, role
@@ -148,6 +162,8 @@ def register_socket_events(sio):
             user = db.query(User).filter(User.id == sender_user_id).first()
             if user and user.role == UserRole.security:
                 return "security"
+            if user and user.role == UserRole.office:
+                return "office"
         return "visitor"
 
     async def _active_call_snapshot(db, session_id: str) -> dict | None:
@@ -286,6 +302,8 @@ def register_socket_events(sio):
                         sender_user = db.query(User).filter(User.id == sender_user_id).first()
                         if sender_user and sender_user.role.value == "security":
                             resolved_sender_type = "security"
+                        elif sender_user and sender_user.role.value == "office":
+                            resolved_sender_type = "office"
                 message = Message(
                     id=message_id,
                     session_id=session_id,
@@ -386,6 +404,13 @@ def register_socket_events(sio):
             await socket_state.bind(user_id, sid)
             await sio.enter_room(sid, f"resident:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
             await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user and user.role == UserRole.office:
+                    await sio.enter_room(sid, f"office:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+            finally:
+                db.close()
         _socket_log("signaling_connect", sid=sid, user_id=user_id, has_auth=bool(auth))
 
     @sio.event(namespace=settings.SIGNALING_NAMESPACE)
@@ -707,7 +732,7 @@ def register_socket_events(sio):
         )
         visitor_token = (payload or {}).get("visitorToken")
         raw_sender_type = (payload or {}).get("senderType")
-        optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor", "security"} else "visitor"
+        optimistic_sender_type = raw_sender_type if raw_sender_type in {"homeowner", "visitor", "security", "office"} else "visitor"
         display_name = (payload or {}).get("displayName") or "Participant"
         created_at = utc_now().isoformat()
         message_id = str(uuid.uuid4())

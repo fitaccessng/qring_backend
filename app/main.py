@@ -96,11 +96,18 @@ def _log_upload_storage_status() -> None:
     is_dir = resolved.is_dir()
     writable = os.access(resolved, os.W_OK) if exists else False
     logging.info(
-        "uploads.storage_root resolved=%s exists=%s is_dir=%s writable=%s",
+        "uploads.storage_root raw=%s resolved=%s exists=%s is_dir=%s writable=%s",
+        str((settings.MEDIA_STORAGE_PATH or "").strip() or "(default ./uploads)"),
         resolved,
         exists,
         is_dir,
         writable,
+    )
+    logging.info(
+        "uploads.storage_sanity root_exists=%s root_writable=%s note=%s",
+        exists,
+        writable,
+        "mount /app/uploads on Railway and keep MEDIA_STORAGE_PATH=/app/uploads" if str((settings.MEDIA_STORAGE_PATH or "").strip()) == "/app/uploads" else "verify the configured MEDIA_STORAGE_PATH value and volume mount",
     )
     if not exists:
         logging.warning(
@@ -596,14 +603,27 @@ def _ensure_runtime_compatibility_schema() -> None:
                             "EXCEPTION WHEN undefined_object THEN NULL; END $$;"
                         )
                     )
+                    conn.execute(
+                        text(
+                            "DO $$ BEGIN "
+                            "ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'office'; "
+                            "EXCEPTION WHEN undefined_object THEN NULL; END $$;"
+                        )
+                    )
                 except Exception:
                     pass
+
+        if "homes" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("homes")}
+            _add_column_if_missing(conn, columns, "homes", "office_id", "VARCHAR(36)")
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_homes_office_id ON homes (office_id)"))
 
         if "appointments" in table_names:
             columns = {col["name"] for col in inspector.get_columns("appointments")}
             _add_column_if_missing(conn, columns, "appointments", "homeowner_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "appointments", "home_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "appointments", "door_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "appointments", "office_id", "VARCHAR(36)")
             _add_column_if_missing(conn, columns, "appointments", "visitor_name", "VARCHAR(120) DEFAULT 'Visitor'")
             _add_column_if_missing(conn, columns, "appointments", "visitor_contact", "VARCHAR(120) DEFAULT ''")
             _add_column_if_missing(conn, columns, "appointments", "visitor_email", "VARCHAR(255)")
@@ -630,6 +650,7 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "appointments", "arrival_battery_pct", "INTEGER")
             _add_column_if_missing(conn, columns, "appointments", "created_at", datetime_sql)
             _add_column_if_missing(conn, columns, "appointments", "updated_at", datetime_sql)
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_appointments_office_id ON appointments (office_id)"))
 
         if "estate_alerts" in table_names:
             columns = {col["name"] for col in inspector.get_columns("estate_alerts")}

@@ -38,10 +38,12 @@ class Home(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True)
+    office_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("offices.id"), nullable=True, index=True)
     homeowner_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     estate = relationship("Estate", back_populates="homes")
+    office = relationship("Office", back_populates="homes")
     doors = relationship("Door", back_populates="home", cascade="all, delete-orphan")
 
 

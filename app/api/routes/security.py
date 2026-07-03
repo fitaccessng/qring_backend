@@ -70,7 +70,7 @@ def security_dashboard(
 @router.get("/messages")
 def security_messages(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("security")),
+    user: User = Depends(require_roles("security", "office")),
 ):
     return {"data": list_security_message_threads(db, security_user_id=user.id)}
 
@@ -79,7 +79,7 @@ def security_messages(
 def security_session_messages(
     session_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("security")),
+    user: User = Depends(require_roles("security", "office")),
 ):
     return {"data": list_security_session_messages(db, security_user_id=user.id, session_id=session_id)}
 
@@ -286,7 +286,7 @@ async def security_send_message(
     session_id: str,
     payload: SecurityMessagePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("security")),
+    user: User = Depends(require_roles("security", "office")),
 ):
     data = create_security_session_message(
         db,
@@ -314,7 +314,7 @@ def security_delete_message(
     session_id: str,
     message_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("security")),
+    user: User = Depends(require_roles("security", "office")),
 ):
     deleted = delete_security_session_message(
         db,

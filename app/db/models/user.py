@@ -15,6 +15,7 @@ from app.core.time import utc_now
 class UserRole(str, Enum):
     homeowner = "homeowner"
     estate = "estate"
+    office = "office"
     admin = "admin"
     security = "security"
 

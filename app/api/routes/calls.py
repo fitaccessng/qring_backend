@@ -128,6 +128,8 @@ def _caller_origin_label(role: str | None) -> str:
         return "security dashboard"
     if normalized_role == "homeowner":
         return "homeowner dashboard"
+    if normalized_role == "office":
+        return "office dashboard"
     return "approved-session screen"
 
 
@@ -174,9 +176,11 @@ async def start_call(
         else:
             normalized_target = None
     try:
-        homeowner_id = user.id if user and user.role.value == "homeowner" else None
+        homeowner_id = user.id if user and user.role.value in {"homeowner", "office"} else None
         receiver_id = None
         if user and user.role.value == "security":
+            receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
+        elif user and user.role.value == "office":
             receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
         elif security_user:
             receiver_id = security_user.id
@@ -190,7 +194,7 @@ async def start_call(
             visitor_session_id=payload.sessionId,
             visitor_id=payload.visitorId,
             homeowner_id=homeowner_id,
-            security_user_id=security_user.id if security_user else (user.id if user and user.role.value == "security" else None),
+            security_user_id=security_user.id if security_user else (user.id if user and user.role.value in {"security", "office"} else None),
             caller_id=user.id if user else None,
             receiver_id=receiver_id,
             call_type=payload.type or ("video" if payload.hasVideo else "audio"),
@@ -381,15 +385,15 @@ async def join_call(
         bool(user and user.role.value == "homeowner"),
     )
     participant_type = (payload.participantType or "").strip().lower()
-    if participant_type not in {"homeowner", "visitor", "security"}:
-        raise AppException("participantType must be homeowner, visitor or security.", status_code=400)
+    if participant_type not in {"homeowner", "visitor", "security", "office"}:
+        raise AppException("participantType must be homeowner, visitor, security or office.", status_code=400)
 
     if participant_type == "homeowner":
         if not user or user.role.value != "homeowner":
             raise AppException("Homeowner authentication is required.", status_code=401)
         data = join_call_as_homeowner(db, call_session_id=payload.callSessionId, homeowner_id=user.id)
-    elif participant_type == "security":
-        if not user or user.role.value != "security":
+    elif participant_type in {"security", "office"}:
+        if not user or user.role.value not in {"security", "office"}:
             raise AppException("Security authentication is required.", status_code=401)
         data = join_call_as_security(db, call_session_id=payload.callSessionId, security_user_id=user.id)
     else:
@@ -438,12 +442,12 @@ async def end_call(
         bool(user and user.role.value == "homeowner"),
     )
     participant_type = (payload.participantType or "").strip().lower()
-    if participant_type and participant_type not in {"homeowner", "visitor", "security"}:
-        raise AppException("participantType must be homeowner, visitor or security.", status_code=400)
+    if participant_type and participant_type not in {"homeowner", "visitor", "security", "office"}:
+        raise AppException("participantType must be homeowner, visitor, security or office.", status_code=400)
 
     if participant_type == "homeowner" and (not user or user.role.value != "homeowner"):
         raise AppException("Homeowner authentication is required.", status_code=401)
-    if participant_type == "security" and (not user or user.role.value != "security"):
+    if participant_type in {"security", "office"} and (not user or user.role.value not in {"security", "office"}):
         raise AppException("Security authentication is required.", status_code=401)
     if participant_type == "visitor" and not (payload.visitorId or "").strip():
         raise AppException("visitorId is required for visitor end requests.", status_code=400)
