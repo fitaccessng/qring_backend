@@ -34,7 +34,7 @@ class Office(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
-    homes = relationship("Home", back_populates="office")
+    homes = relationship("Home", back_populates="office", foreign_keys="Home.office_id")
     members = relationship("OfficeMember", back_populates="office", cascade="all, delete-orphan")
 
 

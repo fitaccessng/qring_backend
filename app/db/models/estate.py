@@ -43,7 +43,7 @@ class Home(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     estate = relationship("Estate", back_populates="homes")
-    office = relationship("Office", back_populates="homes")
+    office = relationship("Office", back_populates="homes", foreign_keys=[office_id])
     doors = relationship("Door", back_populates="home", cascade="all, delete-orphan")
 
 
