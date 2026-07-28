@@ -16,6 +16,7 @@ class UserRole(str, Enum):
     homeowner = "homeowner"
     estate = "estate"
     office = "office"
+    office_staff = "office_staff"
     admin = "admin"
     security = "security"
 

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -27,6 +27,7 @@ class Estate(Base):
     suspicious_visit_window_minutes: Mapped[int] = mapped_column(Integer, default=20)
     suspicious_house_threshold: Mapped[int] = mapped_column(Integer, default=3)
     suspicious_rejection_threshold: Mapped[int] = mapped_column(Integer, default=2)
+    artisan_contacts_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     homes = relationship("Home", back_populates="estate", cascade="all, delete-orphan")

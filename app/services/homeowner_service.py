@@ -10,9 +10,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.time import utc_now
-from app.db.models import Appointment, Door, Estate, Home, Message, Notification, QRCode, VisitorSession
+from app.db.models import Appointment, Door, Estate, Home, Message, Notification, QRCode, User, UserRole, VisitorSession
 from app.core.exceptions import AppException
 from app.services.advanced_service import resolve_session_snapshot_public_url, resolve_snapshot_public_url
+from app.services.notification_service import create_notification
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,11 @@ def _resolve_session_snapshot_payload(
     source = payload or {}
     snapshot_audit_id = str(source.get("snapshotAuditId") or "").strip()
     door = db.query(Door).filter(Door.id == session.door_id).first()
+    security_user = (
+        db.query(User).filter(User.id == session.handled_by_security_id).first()
+        if session.handled_by_security_id
+        else None
+    )
     snapshot_url = _canonical_snapshot_url(
         source.get("snapshotUrl"),
         source.get("photoUrl"),
@@ -148,7 +154,12 @@ def _resolve_session_snapshot_payload(
         "displayName": session.visitor_label or "Visitor",
         "visitorName": session.visitor_label or "Visitor",
         "visitorPhone": (source.get("phoneNumber") or session.visitor_phone or "").strip() or None,
+        "phoneNumber": (source.get("phoneNumber") or session.visitor_phone or "").strip() or None,
         "purpose": (source.get("purpose") or session.purpose or "").strip() or None,
+        "securityOfficerId": source.get("securityOfficerId") or session.handled_by_security_id,
+        "securityOfficerName": source.get("securityOfficerName") or (security_user.full_name if security_user else None),
+        "handledBySecurityId": session.handled_by_security_id,
+        "handledBySecurityName": security_user.full_name if security_user else None,
         "doorId": session.door_id,
         "timestamp": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
         "at": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
@@ -157,8 +168,48 @@ def _resolve_session_snapshot_payload(
     }
 
 
+def _security_recipients_for_session(db: Session, session: VisitorSession) -> list[User]:
+    if session.handled_by_security_id:
+        assigned = (
+            db.query(User)
+            .filter(
+                User.id == session.handled_by_security_id,
+                User.role == UserRole.security,
+                User.is_active.is_(True),
+            )
+            .first()
+        )
+        if assigned:
+            return [assigned]
+
+    if not session.estate_id:
+        return []
+
+    query = db.query(User).filter(
+        User.role == UserRole.security,
+        User.estate_id == session.estate_id,
+        User.is_active.is_(True),
+    )
+    gate_id = str(session.gate_id or "").strip()
+    if gate_id:
+        gate_matches = query.filter((User.gate_id == gate_id) | (User.gate_id.is_(None))).order_by(User.full_name.asc()).all()
+        if gate_matches:
+            return gate_matches
+
+    return query.order_by(User.full_name.asc()).all()
+
+
 def _serialize_session_message(row: Message, *, visitor_name: str) -> dict[str, Any]:
-    sender_role = "homeowner" if row.sender_type == "homeowner" else "visitor"
+    sender_role = (row.sender_type or "visitor").strip().lower()
+    if sender_role not in {"homeowner", "security", "office", "office_staff", "visitor"}:
+        sender_role = "visitor"
+    display_name = {
+        "homeowner": "Homeowner",
+        "security": "Security",
+        "office": "Office",
+        "office_staff": "Office",
+        "visitor": visitor_name or "Visitor",
+    }.get(sender_role, visitor_name or "Visitor")
     return {
         "messageId": row.id,
         "id": row.id,
@@ -170,7 +221,7 @@ def _serialize_session_message(row: Message, *, visitor_name: str) -> dict[str, 
         "senderRole": sender_role,
         "senderType": sender_role,
         "senderId": row.sender_id,
-        "displayName": "Homeowner" if sender_role == "homeowner" else (visitor_name or "Visitor"),
+        "displayName": display_name,
         "visitorName": visitor_name or "Visitor",
         "visitorPhone": None,
         "purpose": None,
@@ -194,6 +245,8 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
             "estateId": None,
             "estateName": None,
             "estateOwnerId": None,
+            "home": None,
+            "unitLabel": None,
         }
 
     from app.db.models import Estate
@@ -204,6 +257,12 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
         "estateId": estate.id if estate else row.estate_id,
         "estateName": estate.name if estate else None,
         "estateOwnerId": estate.owner_id if estate else None,
+        "home": {
+            "id": row.id,
+            "name": row.name,
+            "estateId": row.estate_id,
+        },
+        "unitLabel": row.name,
     }
 
 
@@ -521,16 +580,41 @@ def create_homeowner_session_message(
     if not body:
         return None
 
+    homeowner = db.query(User).filter(User.id == homeowner_id).first()
+    recipients = _security_recipients_for_session(db, session)
+    primary_recipient = recipients[0] if recipients else None
     message = Message(
         session_id=session_id,
         sender_type="homeowner",
         sender_id=homeowner_id,
+        receiver_id=primary_recipient.id if primary_recipient else None,
         body=body,
         created_at=utc_now(),
     )
     db.add(message)
     db.commit()
     db.refresh(message)
+    recipient_ids = [row.id for row in recipients]
+    for recipient in recipients:
+        create_notification(
+            db,
+            user_id=recipient.id,
+            kind="homeowner.message",
+            payload={
+                "type": "homeowner.message",
+                "sessionId": session.id,
+                "messageId": message.id,
+                "visitorName": session.visitor_label or "Visitor",
+                "visitorPhone": session.visitor_phone,
+                "purpose": session.purpose,
+                "homeownerId": homeowner_id,
+                "homeownerName": homeowner.full_name if homeowner else "Homeowner",
+                "message": body,
+                "route": f"/dashboard/security/messages?sessionId={session.id}",
+            },
+            idempotency_key=f"homeowner-message:{message.id}:{recipient.id}",
+            source="homeowner_service.create_homeowner_session_message",
+        )
     return {
         "messageId": message.id,
         "id": message.id,
@@ -544,6 +628,8 @@ def create_homeowner_session_message(
         "displayName": "Homeowner",
         "timestamp": message.created_at.isoformat(),
         "at": message.created_at.isoformat(),
+        "receiverId": message.receiver_id,
+        "recipientIds": recipient_ids,
     }
 
 

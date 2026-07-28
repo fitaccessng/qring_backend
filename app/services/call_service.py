@@ -93,7 +93,7 @@ def _describe_call_origin(caller_role: str | None) -> str:
         return "security dashboard"
     if normalized_role == "homeowner":
         return "homeowner dashboard"
-    if normalized_role == "office":
+    if normalized_role in {"office", "office_staff"}:
         return "office dashboard"
     return "approved-session screen"
 
@@ -121,7 +121,7 @@ async def start_call_session(
         visitor_session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
         if not visitor_session:
             raise AppException("Visitor session not found.", status_code=404)
-        if caller_role != "office" and homeowner_id and visitor_session.homeowner_id != homeowner_id:
+        if caller_role not in {"office", "office_staff"} and homeowner_id and visitor_session.homeowner_id != homeowner_id:
             raise AppException("You are not allowed to start this call.", status_code=403)
         if not effective_homeowner_id:
             effective_homeowner_id = visitor_session.homeowner_id
@@ -136,14 +136,14 @@ async def start_call_session(
         appointment = db.query(Appointment).filter(Appointment.id == effective_appointment_id).first()
         if not appointment:
             raise AppException("Appointment not found.", status_code=404)
-        if caller_role != "office" and homeowner_id and appointment.homeowner_id != homeowner_id:
+        if caller_role not in {"office", "office_staff"} and homeowner_id and appointment.homeowner_id != homeowner_id:
             raise AppException("You are not allowed to start this call.", status_code=403)
         _validate_appointment_for_call(appointment)
         effective_homeowner_id = appointment.homeowner_id
 
     if not effective_homeowner_id:
         raise AppException("Homeowner context is required to start call.", status_code=400)
-    if caller_role != "office":
+    if caller_role not in {"office", "office_staff"}:
         require_subscription_feature(db, effective_homeowner_id, "chat_call_verification", user_role="homeowner")
 
     initiated_by_role = caller_role or ("homeowner" if homeowner_id else ("security" if security_user_id else None))

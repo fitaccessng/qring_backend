@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -10,9 +11,15 @@ from app.db.session import get_db
 from app.services.office_service import (
     assign_office_visitor_request,
     accept_office_call,
+    create_office_staff_member,
+    create_office_department,
     create_office_message,
     end_office_call,
     get_office_overview,
+    generate_office_qr,
+    list_office_attendance,
+    list_office_departments,
+    list_office_department_staff_counts,
     list_office_conversation_messages,
     list_office_conversations,
     list_office_employees,
@@ -20,7 +27,9 @@ from app.services.office_service import (
     list_office_visitors,
     reject_office_call,
     request_office_call,
+    send_office_staff_details,
     update_office_visitor_status,
+    export_office_attendance_csv,
 )
 
 router = APIRouter()
@@ -35,6 +44,32 @@ class OfficeCallRequestPayload(BaseModel):
     receptionId: str | None = None
     securityId: str | None = None
     visitorName: str | None = None
+
+
+class OfficeStaffCreatePayload(BaseModel):
+    fullName: str
+    email: str
+    roleLabel: str | None = None
+    department: str | None = None
+    floor: str | None = None
+    extension: str | None = None
+    availabilityStatus: str | None = None
+    temporaryPassword: str | None = None
+
+
+class OfficeDepartmentCreatePayload(BaseModel):
+    name: str
+
+
+@router.post("/qr/generate")
+def office_generate_qr(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return {"data": generate_office_qr(db, user_id=user.id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/overview")
@@ -100,6 +135,130 @@ def office_employees(
             limit=limit,
         )
     }
+
+
+@router.post("/employees")
+def office_create_employee(
+    payload: OfficeStaffCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return {
+            "data": create_office_staff_member(
+                db,
+                admin_user_id=user.id,
+                full_name=payload.fullName,
+                email=payload.email,
+                role_label=payload.roleLabel or "employee",
+                department=payload.department,
+                floor=payload.floor,
+                extension=payload.extension,
+                availability_status=payload.availabilityStatus,
+                temporary_password=payload.temporaryPassword,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/employees/{employee_id}/send-details")
+def office_send_employee_details(
+    employee_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return {
+            "data": send_office_staff_details(
+                db,
+                admin_user_id=user.id,
+                employee_id=employee_id,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/departments")
+def office_departments(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": list_office_departments(db, user_id=user.id, limit=limit)}
+
+
+@router.get("/departments/staff-counts")
+def office_department_staff_counts(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": list_office_department_staff_counts(db, user_id=user.id)}
+
+
+@router.post("/departments")
+def office_create_department(
+    payload: OfficeDepartmentCreatePayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return {"data": create_office_department(db, user_id=user.id, name=payload.name)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/attendance")
+def office_attendance(
+    search: str | None = None,
+    action: str | None = None,
+    startDate: str | None = None,
+    endDate: str | None = None,
+    page: int = 1,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {
+        "data": list_office_attendance(
+            db,
+            user_id=user.id,
+            search=search,
+            action=action,
+            start_date=startDate,
+            end_date=endDate,
+            page=page,
+            limit=limit,
+        )
+    }
+
+
+@router.get("/attendance/export")
+def office_attendance_export(
+    search: str | None = None,
+    action: str | None = None,
+    startDate: str | None = None,
+    endDate: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        csv_text, filename = export_office_attendance_csv(
+            db,
+            user_id=user.id,
+            search=search,
+            action=action,
+            start_date=startDate,
+            end_date=endDate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/conversations")
@@ -168,6 +327,7 @@ def office_reject_visitor(
 @router.post("/visitor-requests/{session_id}/assign")
 def office_assign_visitor(
     session_id: str,
+    assignee_user_id: str | None = Body(default=None, embed=True),
     assignee_name: str | None = Body(default=None, embed=True),
     assignee_department: str | None = Body(default=None, embed=True),
     db: Session = Depends(get_db),
@@ -179,6 +339,7 @@ def office_assign_visitor(
                 db,
                 user_id=user.id,
                 session_id=session_id,
+                assignee_user_id=assignee_user_id,
                 assignee_name=assignee_name,
                 assignee_department=assignee_department,
             )
@@ -194,14 +355,14 @@ def office_request_call(
     user: User = Depends(get_current_user),
 ):
     try:
-            return {
-                "data": request_office_call(
-                    db,
-                    user_id=user.id,
-                    visitor_session_id=payload.visitorSessionId,
-                    call_type=payload.type or "audio",
-                    has_video=payload.hasVideo,
-                    target_role=payload.targetRole,
+        return {
+            "data": request_office_call(
+                db,
+                user_id=user.id,
+                visitor_session_id=payload.visitorSessionId,
+                call_type=payload.type or "audio",
+                has_video=payload.hasVideo,
+                target_role=payload.targetRole,
                 employee_id=payload.employeeId,
                 reception_id=payload.receptionId,
                 security_id=payload.securityId,

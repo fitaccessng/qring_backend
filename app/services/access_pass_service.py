@@ -12,6 +12,8 @@ from app.db.models import DigitalAccessPass, Door, GateLog, Home
 
 
 def _serialize_access_pass(row: DigitalAccessPass) -> dict[str, Any]:
+    door_name = ""
+    home_name = ""
     return {
         "id": row.id,
         "passType": row.pass_type,
@@ -27,7 +29,18 @@ def _serialize_access_pass(row: DigitalAccessPass) -> dict[str, Any]:
         "createdAt": row.created_at.isoformat() if row.created_at else None,
         "doorId": row.door_id,
         "homeId": row.home_id,
+        "doorName": door_name,
+        "homeName": home_name,
     }
+
+
+def _serialize_access_pass_with_location(db: Session, row: DigitalAccessPass) -> dict[str, Any]:
+    data = _serialize_access_pass(row)
+    door = db.query(Door).filter(Door.id == row.door_id).first() if row.door_id else None
+    home = db.query(Home).filter(Home.id == row.home_id).first() if row.home_id else None
+    data["doorName"] = door.name if door else ""
+    data["homeName"] = home.name if home else ""
+    return data
 
 
 def list_homeowner_access_passes(db: Session, homeowner_id: str) -> list[dict[str, Any]]:
@@ -38,7 +51,7 @@ def list_homeowner_access_passes(db: Session, homeowner_id: str) -> list[dict[st
         .limit(60)
         .all()
     )
-    return [_serialize_access_pass(row) for row in rows]
+    return [_serialize_access_pass_with_location(db, row) for row in rows]
 
 
 def create_homeowner_access_pass(
@@ -101,7 +114,7 @@ def create_homeowner_access_pass(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return _serialize_access_pass(row)
+    return _serialize_access_pass_with_location(db, row)
 
 
 def deactivate_access_pass(db: Session, *, homeowner_id: str, access_pass_id: str) -> dict[str, Any]:
@@ -115,7 +128,7 @@ def deactivate_access_pass(db: Session, *, homeowner_id: str, access_pass_id: st
     row.is_active = False
     db.commit()
     db.refresh(row)
-    return _serialize_access_pass(row)
+    return _serialize_access_pass_with_location(db, row)
 
 
 def validate_access_pass(
@@ -126,7 +139,7 @@ def validate_access_pass(
     gate_id: str | None,
     code_value: str,
 ) -> dict[str, Any]:
-    clean_code = (code_value or "").strip()
+    clean_code = (code_value or "").strip().replace(" ", "").replace("-", "")
     if not clean_code:
         raise AppException("Code is required", status_code=400)
     row = db.query(DigitalAccessPass).filter(DigitalAccessPass.code_value == clean_code).first()
@@ -163,4 +176,4 @@ def validate_access_pass(
     )
     db.commit()
     db.refresh(row)
-    return _serialize_access_pass(row)
+    return _serialize_access_pass_with_location(db, row)

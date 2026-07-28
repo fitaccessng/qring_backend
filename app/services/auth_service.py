@@ -251,11 +251,7 @@ def _create_office_onboarding(
     country: str | None,
     state: str | None,
     city: str | None,
-    office_size: str | None,
-    industry: str | None,
     number_of_employees: int | None,
-    timezone: str | None,
-    administrator_name: str | None,
 ) -> dict[str, object]:
     office_name = (company_name or "").strip() or user.full_name
     qr_id = f"office-{uuid.uuid4().hex[:12]}"
@@ -267,10 +263,7 @@ def _create_office_onboarding(
         country=(country or "").strip() or None,
         state=(state or "").strip() or None,
         city=(city or "").strip() or None,
-        office_size=(office_size or "").strip() or None,
-        industry=(industry or "").strip() or None,
         employee_count=max(1, int(number_of_employees or 1)),
-        timezone=(timezone or "").strip() or None,
         administrator_user_id=user.id,
         qr_id=qr_id,
     )
@@ -311,7 +304,7 @@ def _create_office_onboarding(
     member = OfficeMember(
         office_id=office.id,
         user_id=user.id,
-        full_name=(administrator_name or user.full_name).strip() or user.full_name,
+        full_name=(user.full_name or "").strip() or user.full_name,
         role_label="administrator",
         department="Administration",
         floor="Reception",
@@ -357,11 +350,7 @@ def signup(
     country: str | None = None,
     state: str | None = None,
     city: str | None = None,
-    office_size: str | None = None,
-    industry: str | None = None,
     number_of_employees: int | None = None,
-    timezone: str | None = None,
-    administrator_name: str | None = None,
 ):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
@@ -382,6 +371,8 @@ def signup(
         raise AppException("Invalid role", status_code=400) from exc
     if user_role == UserRole.admin:
         raise AppException("Admin signup is not allowed on this endpoint", status_code=403)
+    if user_role == UserRole.office_staff:
+        raise AppException("Office staff accounts must be created by an office admin.", status_code=403)
     if user_role == UserRole.office:
         if not (company_name or "").strip():
             raise AppException("Company name is required for office signup.", status_code=400)
@@ -396,7 +387,7 @@ def signup(
         password_hash=hash_password(password),
         role=user_role,
         referred_by_user_id=referrer.id if referrer else None,
-        email_verified=True if user_role == UserRole.office else settings.ENVIRONMENT == "development",
+        email_verified=True if user_role in {UserRole.office, UserRole.office_staff} else settings.ENVIRONMENT == "development",
     )
     db.add(user)
     db.commit()
@@ -412,11 +403,7 @@ def signup(
             country=country,
             state=state,
             city=city,
-            office_size=office_size,
-            industry=industry,
             number_of_employees=number_of_employees,
-            timezone=timezone,
-            administrator_name=administrator_name,
         )
     # Send email verification best-effort without blocking the signup response.
     if not user.email_verified:
@@ -529,6 +516,8 @@ def google_signup(
         user_role = UserRole(normalized_role)
     except ValueError as exc:
         raise AppException("Invalid role", status_code=400) from exc
+    if user_role == UserRole.office_staff:
+        raise AppException("Office staff accounts must be created by an office admin.", status_code=403)
 
     referrer = _resolve_referrer(db, referral_code)
 

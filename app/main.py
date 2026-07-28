@@ -43,6 +43,7 @@ from app.services.subscription_lifecycle_service import run_subscription_lifecyc
 settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 cors_settings = get_cors_settings(settings)
+default_uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
 
 
 class NormalizeCorsHeadersMiddleware:
@@ -87,7 +88,7 @@ class NormalizeCorsHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
-uploads_dir = Path((settings.MEDIA_STORAGE_PATH or "").strip() or (Path(__file__).resolve().parents[2] / "uploads"))
+uploads_dir = Path((settings.MEDIA_STORAGE_PATH or "").strip() or default_uploads_dir)
 
 
 def _log_upload_storage_status() -> None:
@@ -128,27 +129,42 @@ def _log_upload_storage_status() -> None:
 
 @fastapi_app.get("/uploads/{file_path:path}")
 async def serve_upload(file_path: str):
-    uploads_root = uploads_dir.resolve()
     safe_relative = Path(str(file_path or "").lstrip("/"))
-    candidate = (uploads_dir / safe_relative).resolve()
-    legacy_candidate = None
-    if safe_relative.parts and safe_relative.parts[0] == "visitor-media" and len(safe_relative.parts) > 1:
-        legacy_candidate = (uploads_dir / Path(*safe_relative.parts[1:])).resolve()
-    if candidate != uploads_root and uploads_root not in candidate.parents:
-        logging.warning("uploads.serve_blocked path=%s resolved=%s", file_path, candidate)
+    if any(part in {"", ".", ".."} for part in safe_relative.parts):
+        logging.warning("uploads.serve_blocked path=%s reason=unsafe_relative", file_path)
         raise HTTPException(status_code=404, detail="Upload file not found")
-    if not candidate.exists() or not candidate.is_file():
-        if legacy_candidate and legacy_candidate.exists() and legacy_candidate.is_file():
-            logging.info(
-                "uploads.serve_legacy_match path=%s resolved=%s legacy_resolved=%s",
-                file_path,
-                candidate,
-                legacy_candidate,
-            )
-            candidate = legacy_candidate
-        else:
-            logging.info("uploads.serve_missing path=%s resolved=%s", file_path, candidate)
-            raise HTTPException(status_code=404, detail="Upload file not found")
+    roots: list[Path] = []
+    for root in (uploads_dir, default_uploads_dir):
+        resolved = root.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+        if resolved.name == "visitor-media" and resolved.parent not in roots:
+            roots.append(resolved.parent)
+    candidate = None
+    checked: list[str] = []
+    for root in roots:
+        root_candidates = [(root / safe_relative).resolve()]
+        if safe_relative.parts and safe_relative.parts[0] == "visitor-media" and len(safe_relative.parts) > 1:
+            root_candidates.append((root / Path(*safe_relative.parts[1:])).resolve())
+            root_candidates.append((root / "visitor-media" / safe_relative).resolve())
+        for item in root_candidates:
+            checked.append(str(item))
+            if item != root and root not in item.parents:
+                continue
+            if item.exists() and item.is_file():
+                candidate = item
+                logging.info(
+                    "uploads.serve_match path=%s root=%s resolved=%s",
+                    file_path,
+                    root,
+                    candidate,
+                )
+                break
+        if candidate:
+            break
+    if not candidate:
+        logging.info("uploads.serve_missing path=%s checked=%s", file_path, checked)
+        raise HTTPException(status_code=404, detail="Upload file not found")
     try:
         return FileResponse(str(candidate), headers={"Cache-Control": "no-store"})
     except Exception:
@@ -470,6 +486,10 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "visitor_sessions", "creator_role", "VARCHAR(20) DEFAULT 'visitor'")
             _add_column_if_missing(conn, columns, "visitor_sessions", "visitor_phone", "VARCHAR(40)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "purpose", "TEXT")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "requested_staff_name", "VARCHAR(160)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "assigned_staff_user_id", "VARCHAR(36)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "assigned_staff_name", "VARCHAR(160)")
+            _add_column_if_missing(conn, columns, "visitor_sessions", "assigned_staff_department", "VARCHAR(120)")
             _add_column_if_missing(conn, columns, "visitor_sessions", "photo_url", "TEXT")
             _add_column_if_missing(conn, columns, "visitor_sessions", "snapshot_url", "TEXT")
             _add_column_if_missing(conn, columns, "visitor_sessions", "estate_id", "VARCHAR(36)")
@@ -509,6 +529,10 @@ def _ensure_runtime_compatibility_schema() -> None:
                     "CREATE UNIQUE INDEX IF NOT EXISTS ix_visitor_sessions_request_id ON visitor_sessions (request_id)"
                 )
             )
+
+        if "office_members" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("office_members")}
+            _add_column_if_missing(conn, columns, "office_members", "details_sent_at", datetime_sql)
 
         if "messages" in table_names:
             columns = {col["name"] for col in inspector.get_columns("messages")}
@@ -568,6 +592,7 @@ def _ensure_runtime_compatibility_schema() -> None:
             _add_column_if_missing(conn, columns, "estates", "suspicious_visit_window_minutes", "INTEGER DEFAULT 20")
             _add_column_if_missing(conn, columns, "estates", "suspicious_house_threshold", "INTEGER DEFAULT 3")
             _add_column_if_missing(conn, columns, "estates", "suspicious_rejection_threshold", "INTEGER DEFAULT 2")
+            _add_column_if_missing(conn, columns, "estates", "artisan_contacts_json", "TEXT DEFAULT '[]'")
             _add_column_if_missing(conn, columns, "estates", "created_at", datetime_sql)
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_estates_join_code ON estates (join_code)"))
 
@@ -607,6 +632,13 @@ def _ensure_runtime_compatibility_schema() -> None:
                         text(
                             "DO $$ BEGIN "
                             "ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'office'; "
+                            "EXCEPTION WHEN undefined_object THEN NULL; END $$;"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "DO $$ BEGIN "
+                            "ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'office_staff'; "
                             "EXCEPTION WHEN undefined_object THEN NULL; END $$;"
                         )
                     )

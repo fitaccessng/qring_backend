@@ -253,6 +253,9 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         creator_role = "security" if request_source == "gateman_assisted" else "visitor"
     return {
         "id": session.id,
+        "sessionId": session.id,
+        "visitorSessionId": session.id,
+        "visitorRequestId": session.request_id,
         "visitorName": session.visitor_label or "Visitor",
         "visitorPhone": session.visitor_phone,
         "purpose": session.purpose or "",
@@ -322,14 +325,17 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
 
 
 def _get_security_user(db: Session, security_user_id: str) -> User:
-    user = db.query(User).filter(User.id == security_user_id, User.role.in_([UserRole.security, UserRole.office])).first()
+    user = db.query(User).filter(
+        User.id == security_user_id,
+        User.role.in_([UserRole.security, UserRole.office, UserRole.office_staff]),
+    ).first()
     if not user:
         raise AppException("Security account not found", status_code=404)
     return user
 
 
 def _security_session_query(db: Session, security_user: User):
-    if security_user.role == UserRole.office:
+    if security_user.role in {UserRole.office, UserRole.office_staff}:
         office = (
             db.query(Office)
             .join(OfficeMember, OfficeMember.office_id == Office.id)
@@ -349,7 +355,11 @@ def _security_session_query(db: Session, security_user: User):
         return query
     query = db.query(VisitorSession).filter(VisitorSession.estate_id == security_user.estate_id)
     if security_user.gate_id:
-        query = query.filter((VisitorSession.gate_id == security_user.gate_id) | (VisitorSession.gate_id.is_(None)))
+        normalized_gate = str(security_user.gate_id or "").strip().lower().replace("_", "-").replace(" ", "-")
+        query = query.filter(
+            (func.lower(func.replace(func.replace(VisitorSession.gate_id, "_", "-"), " ", "-")) == normalized_gate)
+            | (VisitorSession.gate_id.is_(None))
+        )
     return query
 
 
@@ -458,6 +468,8 @@ def update_security_session_status(
     evaluate_session_intelligence(db, session, estate=estate, homeowner_settings=homeowner_settings)
 
     if actor.role == UserRole.security:
+        if action == "admit":
+            action = "confirm_entry"
         if actor.estate_id and session.estate_id != actor.estate_id:
             raise AppException("You cannot manage requests outside your estate", status_code=403)
         if session.status == "submitted":
@@ -505,6 +517,8 @@ def update_security_session_status(
         if action in {"approve", "reject"}:
             if action == "approve" and not rules["canApproveWithoutHomeowner"]:
                 raise AppException("Estate rules require homeowner approval first", status_code=403)
+            if action == "approve" and rules["requirePhotoVerification"] and not (session.snapshot_url or session.photo_url):
+                raise AppException("Estate rules require visitor photo verification before approval", status_code=403)
             if action == "approve" and rules["requireCallBeforeApproval"]:
                 existing_call = (
                     db.query(CallSession)
@@ -697,7 +711,7 @@ def create_security_session_message(
         return None
 
     session.communication_status = "chatting"
-    sender_type = "office" if security_user.role == UserRole.office else "security"
+    sender_type = "office" if security_user.role in {UserRole.office, UserRole.office_staff} else "security"
     message = Message(
         session_id=session_id,
         sender_type=sender_type,
@@ -714,7 +728,7 @@ def create_security_session_message(
         "sessionId": message.session_id,
         "text": message.body,
         "senderType": message.sender_type,
-        "displayName": security_user.full_name or ("Office" if security_user.role == UserRole.office else "Security"),
+        "displayName": security_user.full_name or ("Office" if security_user.role in {UserRole.office, UserRole.office_staff} else "Security"),
         "at": message.created_at.isoformat(),
     }
 

@@ -45,11 +45,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         country=payload.country,
         state=payload.state,
         city=payload.city,
-        office_size=payload.officeSize,
-        industry=payload.industry,
         number_of_employees=payload.numberOfEmployees,
-        timezone=payload.timezone,
-        administrator_name=payload.administratorName,
     )
     return {"data": data}
 

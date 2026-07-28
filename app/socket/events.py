@@ -51,7 +51,7 @@ def _is_user_allowed_for_session(db, *, user: User, session: VisitorSession) -> 
         return session.homeowner_id == user.id
     if user.role == UserRole.security:
         return bool(user.estate_id) and bool(session.estate_id) and user.estate_id == session.estate_id
-    if user.role == UserRole.office:
+    if user.role in {UserRole.office, UserRole.office_staff}:
         home = db.query(Home).filter(Home.id == session.home_id).first()
         if not home or not home.office_id:
             return False
@@ -110,6 +110,27 @@ def _socket_log(event: str, **fields) -> None:
     logger.info("socket.%s %s", event, details)
 
 
+def _office_rooms_for_user(db, *, user_id: str) -> set[str]:
+    office_ids: set[str] = set()
+
+    for (office_id,) in db.query(Office.id).filter(Office.administrator_user_id == user_id).all():
+        office_ids.add(office_id)
+
+    for (office_id,) in (
+        db.query(Office.id)
+        .join(OfficeMember, OfficeMember.office_id == Office.id)
+        .filter(OfficeMember.user_id == user_id)
+        .all()
+    ):
+        office_ids.add(office_id)
+
+    rooms: set[str] = set()
+    for office_id in office_ids:
+        rooms.add(f"office:{office_id}")
+        rooms.add(f"office:{office_id}:employee:{user_id}")
+    return rooms
+
+
 def register_socket_events(sio):
     async def _event_context(db, *, sid: str, session_id: str | None, payload: dict | None) -> tuple[str | None, str]:
         user_id = await socket_state.get_user_id(sid)
@@ -123,7 +144,7 @@ def register_socket_events(sio):
                 user = db.query(User).filter(User.id == user_id).first()
                 if user and user.role == UserRole.security:
                     role = "security"
-                elif user and user.role == UserRole.office:
+                elif user and user.role in {UserRole.office, UserRole.office_staff}:
                     role = "office"
         elif payload and str((payload or {}).get("senderType") or "").strip():
             role = str((payload or {}).get("senderType") or "visitor").strip()
@@ -162,7 +183,7 @@ def register_socket_events(sio):
             user = db.query(User).filter(User.id == sender_user_id).first()
             if user and user.role == UserRole.security:
                 return "security"
-            if user and user.role == UserRole.office:
+            if user and user.role in {UserRole.office, UserRole.office_staff}:
                 return "office"
         return "visitor"
 
@@ -302,7 +323,7 @@ def register_socket_events(sio):
                         sender_user = db.query(User).filter(User.id == sender_user_id).first()
                         if sender_user and sender_user.role.value == "security":
                             resolved_sender_type = "security"
-                        elif sender_user and sender_user.role.value == "office":
+                        elif sender_user and sender_user.role.value in {"office", "office_staff"}:
                             resolved_sender_type = "office"
                 message = Message(
                     id=message_id,
@@ -374,6 +395,8 @@ def register_socket_events(sio):
                     if estate_id:
                         await sio.enter_room(sid, f"estate_{estate_id}", namespace=settings.DASHBOARD_NAMESPACE)
                         await sio.enter_room(sid, f"estate:{estate_id}:panic", namespace=settings.DASHBOARD_NAMESPACE)
+                    for room in _office_rooms_for_user(db, user_id=user_id):
+                        await sio.enter_room(sid, room, namespace=settings.DASHBOARD_NAMESPACE)
                     for resident_id in _contact_resident_ids_for_user(db, user=user):
                         await sio.enter_room(sid, f"contacts_{resident_id}", namespace=settings.DASHBOARD_NAMESPACE)
                         await sio.enter_room(sid, f"contacts:{resident_id}", namespace=settings.DASHBOARD_NAMESPACE)
@@ -407,8 +430,11 @@ def register_socket_events(sio):
             db = SessionLocal()
             try:
                 user = db.query(User).filter(User.id == user_id).first()
-                if user and user.role == UserRole.office:
+                if user and user.role in {UserRole.office, UserRole.office_staff}:
                     await sio.enter_room(sid, f"office:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+                if user:
+                    for room in _office_rooms_for_user(db, user_id=user_id):
+                        await sio.enter_room(sid, room, namespace=settings.SIGNALING_NAMESPACE)
             finally:
                 db.close()
         _socket_log("signaling_connect", sid=sid, user_id=user_id, has_auth=bool(auth))

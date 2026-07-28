@@ -22,10 +22,7 @@ class Office(Base):
     country: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     state: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     city: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
-    office_size: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
-    industry: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     employee_count: Mapped[int] = mapped_column(Integer, default=0)
-    timezone: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     administrator_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     reception_home_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("homes.id"), nullable=True, index=True)
     reception_door_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("doors.id"), nullable=True, index=True)
@@ -51,7 +48,25 @@ class OfficeMember(Base):
     extension: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     availability_status: Mapped[str] = mapped_column(String(40), default="available")
     status: Mapped[str] = mapped_column(String(40), default="active")
+    details_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
     office = relationship("Office", back_populates="members")
+
+
+class OfficeAttendanceLog(Base):
+    __tablename__ = "office_attendance_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    office_id: Mapped[str] = mapped_column(String(36), ForeignKey("offices.id"), nullable=False, index=True)
+    office_member_id: Mapped[str] = mapped_column(String(36), ForeignKey("office_members.id"), nullable=False, index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    employee_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="qr_scan")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
+
+    office = relationship("Office")
+    office_member = relationship("OfficeMember")

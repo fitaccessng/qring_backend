@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 import logging
+import json
+import uuid
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
@@ -12,7 +14,7 @@ from app.api.deps import require_roles
 from app.core.cache import cache_key, get_or_set_json
 from app.core.config import get_settings
 from app.core.exceptions import AppException
-from app.db.models import User
+from app.db.models import Estate, User
 from app.db.session import get_db
 from app.services.estate_alert_service import (
     create_estate_alert,
@@ -70,6 +72,59 @@ def _route_context(request: Request, user: User, **extra) -> dict[str, object]:
 
 class EstateCreate(BaseModel):
     name: str
+
+
+class ArtisanContactPayload(BaseModel):
+    id: Optional[str] = None
+    name: str
+    trade: str
+    phone: str
+    note: str = ""
+
+
+class ArtisanContactsUpdate(BaseModel):
+    contacts: list[ArtisanContactPayload]
+
+
+@router.get("/{estate_id}/artisans")
+def estate_artisan_contacts(
+    estate_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    estate = db.query(Estate).filter(Estate.id == estate_id).first()
+    if not estate:
+        raise AppException("Estate not found", status_code=404)
+    if getattr(user.role, "value", user.role) != "admin" and estate.owner_id != user.id:
+        raise AppException("Insufficient permissions", status_code=403)
+    try:
+        contacts = json.loads(estate.artisan_contacts_json or "[]")
+    except Exception:
+        contacts = []
+    return {"data": contacts}
+
+
+@router.put("/{estate_id}/artisans")
+def estate_artisan_contacts_update(
+    estate_id: str,
+    payload: ArtisanContactsUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    estate = db.query(Estate).filter(Estate.id == estate_id).first()
+    if not estate:
+        raise AppException("Estate not found", status_code=404)
+    if getattr(user.role, "value", user.role) != "admin" and estate.owner_id != user.id:
+        raise AppException("Insufficient permissions", status_code=403)
+    contacts = []
+    for row in payload.contacts:
+        name, trade, phone = row.name.strip(), row.trade.strip(), row.phone.strip()
+        if not name or not trade or not phone:
+            raise AppException("Name, trade and phone are required", status_code=400)
+        contacts.append({"id": row.id or str(uuid.uuid4()), "name": name, "trade": trade, "phone": phone, "note": row.note.strip()})
+    estate.artisan_contacts_json = json.dumps(contacts)
+    db.commit()
+    return {"data": contacts}
 
 
 class HomeCreate(BaseModel):
@@ -213,13 +268,16 @@ def estate_add_home(
 @router.get("/overview")
 def estate_overview(
     request: Request,
+    refresh: bool = Query(default=False),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
     context = _route_context(request, user)
     try:
         return {
-            "data": get_or_set_json(
+            "data": list_estate_overview(db, owner_id=user.id)
+            if refresh
+            else get_or_set_json(
                 cache_key("estate-overview", user.id),
                 lambda: list_estate_overview(db, owner_id=user.id),
                 settings.CACHE_ESTATE_TTL_SECONDS,

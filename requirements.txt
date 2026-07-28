@@ -5,6 +5,7 @@ python-socketio==5.11.4
 SQLAlchemy==2.0.36
 alembic==1.14.0
 pydantic-settings==2.6.1
+eval-type-backport==0.2.2
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1

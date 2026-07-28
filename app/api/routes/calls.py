@@ -128,7 +128,7 @@ def _caller_origin_label(role: str | None) -> str:
         return "security dashboard"
     if normalized_role == "homeowner":
         return "homeowner dashboard"
-    if normalized_role == "office":
+    if normalized_role in {"office", "office_staff"}:
         return "office dashboard"
     return "approved-session screen"
 
@@ -176,11 +176,11 @@ async def start_call(
         else:
             normalized_target = None
     try:
-        homeowner_id = user.id if user and user.role.value in {"homeowner", "office"} else None
+        homeowner_id = user.id if user and user.role.value in {"homeowner", "office", "office_staff"} else None
         receiver_id = None
         if user and user.role.value == "security":
             receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
-        elif user and user.role.value == "office":
+        elif user and user.role.value in {"office", "office_staff"}:
             receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
         elif security_user:
             receiver_id = security_user.id
@@ -194,7 +194,7 @@ async def start_call(
             visitor_session_id=payload.sessionId,
             visitor_id=payload.visitorId,
             homeowner_id=homeowner_id,
-            security_user_id=security_user.id if security_user else (user.id if user and user.role.value in {"security", "office"} else None),
+            security_user_id=security_user.id if security_user else (user.id if user and user.role.value in {"security", "office", "office_staff"} else None),
             caller_id=user.id if user else None,
             receiver_id=receiver_id,
             call_type=payload.type or ("video" if payload.hasVideo else "audio"),
@@ -447,7 +447,7 @@ async def end_call(
 
     if participant_type == "homeowner" and (not user or user.role.value != "homeowner"):
         raise AppException("Homeowner authentication is required.", status_code=401)
-    if participant_type in {"security", "office"} and (not user or user.role.value not in {"security", "office"}):
+    if participant_type in {"security", "office"} and (not user or user.role.value not in {"security", "office", "office_staff"}):
         raise AppException("Security authentication is required.", status_code=401)
     if participant_type == "visitor" and not (payload.visitorId or "").strip():
         raise AppException("visitorId is required for visitor end requests.", status_code=400)

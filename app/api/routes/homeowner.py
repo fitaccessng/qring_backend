@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import json
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel
@@ -9,7 +10,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
-from app.db.models import User
+from app.db.models import Estate, Home, User
 from app.db.session import get_db
 from app.services.homeowner_settings_service import (
     get_homeowner_settings_payload,
@@ -54,6 +55,22 @@ logger = logging.getLogger(__name__)
 class DoorQrCreate(BaseModel):
     mode: str = "direct"
     plan: str = "single"
+
+
+@router.get("/artisans")
+def homeowner_artisan_contacts(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner")),
+):
+    home = db.query(Home).filter(Home.homeowner_id == user.id, Home.estate_id.is_not(None)).order_by(Home.created_at.desc()).first()
+    if not home:
+        return {"data": []}
+    estate = db.query(Estate).filter(Estate.id == home.estate_id).first()
+    try:
+        contacts = json.loads(estate.artisan_contacts_json or "[]") if estate else []
+    except Exception:
+        contacts = []
+    return {"data": contacts}
 
 
 class HomeownerDoorCreate(BaseModel):
@@ -242,6 +259,17 @@ async def homeowner_send_message(
         room=f"session:{session_id}",
         namespace=settings.SIGNALING_NAMESPACE,
     )
+    for recipient_id in data.get("recipientIds") or []:
+        await sio.emit(
+            "homeowner.message",
+            {
+                **data,
+                "clientId": payload.clientId,
+                "displayName": user.full_name or "Homeowner",
+            },
+            room=f"user:{recipient_id}",
+            namespace=settings.DASHBOARD_NAMESPACE,
+        )
     await sio.emit(
         "chat.read",
         {

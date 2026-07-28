@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
-from app.db.models import Door, Estate, Home, QRCode, User
+from app.db.models import Door, Estate, Home, Office, OfficeMember, QRCode, User
 from app.services.appointment_service import resolve_qr_appointment_token_for_request
 from app.services.payment_service import is_paid_subscription_expired
 
@@ -23,6 +23,53 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
             "active": True,
             "appointmentId": appointment.id if appointment else None,
             "appointmentStatus": appointment.status if appointment else None,
+        }
+
+    office = db.query(Office).filter(Office.qr_id == qr_id, Office.active.is_(True)).first()
+    if office:
+        members = (
+            db.query(OfficeMember)
+            .filter(OfficeMember.office_id == office.id)
+            .order_by(OfficeMember.created_at.asc())
+            .all()
+        )
+        return {
+            "qr_id": office.qr_id,
+            "plan": "office",
+            "home_id": None,
+            "doors": [],
+            "doorOptions": [],
+            "mode": "office",
+            "estate_id": None,
+            "active": office.active,
+            "type": "office",
+            "office": {
+                "id": office.id,
+                "companyName": office.company_name,
+                "businessEmail": office.business_email,
+                "phoneNumber": office.phone_number,
+                "officeAddress": office.office_address,
+                "country": office.country,
+                "state": office.state,
+                "city": office.city,
+                "employeeCount": office.employee_count,
+                "qrId": office.qr_id,
+                "scanUrl": f"/scan/{office.qr_id}",
+            },
+            "employees": [
+                {
+                    "id": member.id,
+                    "userId": member.user_id,
+                    "name": member.full_name,
+                    "role": member.role_label,
+                    "department": member.department,
+                    "floor": member.floor,
+                    "extension": member.extension,
+                    "availability": member.availability_status,
+                    "status": member.status,
+                }
+                for member in members
+            ],
         }
 
     qr = db.query(QRCode).filter(QRCode.qr_id == qr_id).first()

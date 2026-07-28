@@ -30,6 +30,7 @@ from app.services.session_service import create_visitor_session, rotate_visitor_
 from app.services.visitor_session_auth import issue_visitor_session_token, require_visitor_session_access
 from app.services.advanced_service import create_snapshot_audit, resolve_session_snapshot_public_url
 from app.services.homeowner_service import create_visitor_session_message
+from app.services.office_service import get_office_visitor_call_status, record_office_staff_clock, request_office_visitor_call
 from app.services.realtime_notification_service import (
     build_notification_envelope,
     build_notification_idempotency_key,
@@ -64,6 +65,20 @@ class VisitorAppointmentArrivalPayload(BaseModel):
 class VisitorSessionMessagePayload(BaseModel):
     text: str
     clientId: Optional[str] = None
+
+
+class OfficeVisitorRequestPayload(BaseModel):
+    qrId: str
+    employeeId: Optional[str] = None
+    visitorName: str
+    visitorPhone: Optional[str] = None
+    purpose: Optional[str] = None
+    staffName: Optional[str] = None
+    requestId: Optional[str] = None
+    callType: Optional[str] = None
+    hasVideo: Optional[bool] = None
+    entryMode: Optional[str] = "visitor"
+    staffAction: Optional[str] = None
 
 
 def _serialize_call_session(call_session) -> dict[str, object]:
@@ -711,6 +726,44 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             payload.doorId,
         )
         raise
+
+
+@router.post("/office/request")
+async def office_visitor_request(payload: OfficeVisitorRequestPayload, db: Session = Depends(get_db)):
+    try:
+        mode = str(payload.entryMode or "visitor").strip().lower()
+        if mode == "staff":
+            data = record_office_staff_clock(
+                db,
+                qr_id=payload.qrId,
+                employee_id=payload.employeeId,
+                staff_name=payload.visitorName,
+                action=payload.staffAction or "clock_in",
+                note=payload.purpose,
+            )
+        else:
+            data = request_office_visitor_call(
+                db,
+                qr_id=payload.qrId,
+                staff_name=payload.staffName or payload.employeeId or "",
+                visitor_name=payload.visitorName,
+                visitor_phone=payload.visitorPhone,
+                purpose=payload.purpose,
+                request_id=payload.requestId,
+                call_type=payload.callType or "audio",
+                has_video=payload.hasVideo,
+            )
+        return {"data": data}
+    except ValueError as exc:
+        raise AppException(str(exc), status_code=400) from exc
+
+
+@router.get("/office/calls/{call_session_id}")
+def office_visitor_call_status(call_session_id: str, db: Session = Depends(get_db)):
+    try:
+        return {"data": get_office_visitor_call_status(db, call_session_id=call_session_id)}
+    except ValueError as exc:
+        raise AppException(str(exc), status_code=404) from exc
 
 
 @router.get("/appointments/resolve/{share_token}")

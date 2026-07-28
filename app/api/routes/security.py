@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import logging
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -33,6 +35,7 @@ from app.socket.server import sio
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class SecurityActionPayload(BaseModel):
@@ -70,7 +73,7 @@ def security_dashboard(
 @router.get("/messages")
 def security_messages(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("security", "office")),
+    user: User = Depends(require_roles("security", "office", "office_staff")),
 ):
     return {"data": list_security_message_threads(db, security_user_id=user.id)}
 
@@ -79,7 +82,7 @@ def security_messages(
 def security_session_messages(
     session_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("security", "office")),
+    user: User = Depends(require_roles("security", "office", "office_staff")),
 ):
     return {"data": list_security_session_messages(db, security_user_id=user.id, session_id=session_id)}
 
@@ -100,7 +103,11 @@ def security_door_options(
         .order_by(Home.name.asc(), Door.name.asc())
     )
     if user.gate_id:
-        query = query.filter((Door.gate_label == user.gate_id) | (Door.gate_label.is_(None)))
+        normalized_gate = str(user.gate_id or "").strip().lower().replace("_", "-").replace(" ", "-")
+        query = query.filter(
+            (func.lower(func.replace(func.replace(Door.gate_label, "_", "-"), " ", "-")) == normalized_gate)
+            | (Door.gate_label.is_(None))
+        )
 
     rows = query.all()
     return {
@@ -216,6 +223,8 @@ async def security_register_request(
             "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
             "requestSource": "gateman_assisted",
             "creatorRole": "security",
+            "securityOfficerId": user.id,
+            "securityOfficerName": user.full_name or "",
             "message": f"Gate security registered {updated.visitor_label or 'a visitor'} for your approval.",
         },
         idempotency_key=build_notification_idempotency_key(
@@ -229,11 +238,32 @@ async def security_register_request(
     )
 
     serialized = serialize_security_session(db, updated)
+    initial_message = create_security_session_message(
+        db,
+        security_user_id=user.id,
+        session_id=updated.id,
+        text=(
+            f"Visitor request sent to homeowner. "
+            f"Visitor: {updated.visitor_label or 'Visitor'}. "
+            f"Phone: {updated.visitor_phone or 'Not provided'}. "
+            f"Purpose: {updated.purpose or 'Not provided'}."
+        ),
+    )
     await sio.emit(
         "visitor_forwarded",
         {"data": serialized, "action": "forward", "actorRole": user.role.value},
         namespace=settings.DASHBOARD_NAMESPACE,
     )
+    if initial_message:
+        await sio.emit(
+            "chat.message",
+            {
+                **initial_message,
+                "displayName": user.full_name or "Security",
+            },
+            room=f"session:{updated.id}",
+            namespace=settings.SIGNALING_NAMESPACE,
+        )
     await sio.emit(
         "session.status",
         {
@@ -272,6 +302,10 @@ async def security_register_request(
                 "doorId": updated.door_id,
                 "hasVideo": False,
                 "state": "ringing",
+                "requestSource": "gateman_assisted",
+                "creatorRole": "security",
+                "securityOfficerId": user.id,
+                "securityOfficerName": user.full_name or "",
                 "message": f"Security registered {updated.visitor_label or 'a visitor'} at your gate.",
             },
         ),

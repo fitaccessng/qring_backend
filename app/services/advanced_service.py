@@ -135,20 +135,34 @@ def _to_kobo(amount_naira: float | int) -> int:
 
 def _media_base_dir() -> Path:
     raw = (settings.MEDIA_STORAGE_PATH or "").strip()
-    if raw:
-        base = Path(raw)
-    else:
-        base = Path(__file__).resolve().parents[2] / "uploads" / "visitor-media"
+    base = Path(raw) if raw else Path(__file__).resolve().parents[2] / "uploads"
+    if not base.is_absolute():
+        app_root = Path(__file__).resolve().parents[2]
+        project_root = app_root.parent
+        project_candidate = (project_root / base).resolve()
+        app_candidate = (app_root / base).resolve()
+        base = project_candidate if project_candidate.exists() else app_candidate
     base.mkdir(parents=True, exist_ok=True)
     return base
 
 
 def _resolve_local_snapshot_path(media_path: str) -> Path:
     path = Path(str(media_path or "").strip().lstrip("/"))
-    uploads_root = _media_base_dir()
-    candidates = [uploads_root / path]
-    if path.parts and path.parts[0] == "visitor-media" and len(path.parts) > 1:
-        candidates.append(uploads_root / Path(*path.parts[1:]))
+    configured_root = _media_base_dir()
+    default_root = Path(__file__).resolve().parents[2] / "uploads"
+    roots: list[Path] = []
+    for root in (configured_root, default_root):
+        resolved = root.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+        if resolved.name == "visitor-media" and resolved.parent not in roots:
+            roots.append(resolved.parent)
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.append(root / path)
+        if path.parts and path.parts[0] == "visitor-media" and len(path.parts) > 1:
+            candidates.append(root / Path(*path.parts[1:]))
+            candidates.append(root / "visitor-media" / path)
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
             return candidate
