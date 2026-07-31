@@ -343,14 +343,6 @@ def signup(
     password: str,
     role: str,
     referral_code: str | None = None,
-    company_name: str | None = None,
-    business_email: str | None = None,
-    phone_number: str | None = None,
-    office_address: str | None = None,
-    country: str | None = None,
-    state: str | None = None,
-    city: str | None = None,
-    number_of_employees: int | None = None,
 ):
     existing = db.query(User).filter(User.email == email).first()
     if existing:
@@ -373,12 +365,6 @@ def signup(
         raise AppException("Admin signup is not allowed on this endpoint", status_code=403)
     if user_role == UserRole.office_staff:
         raise AppException("Office staff accounts must be created by an office admin.", status_code=403)
-    if user_role == UserRole.office:
-        if not (company_name or "").strip():
-            raise AppException("Company name is required for office signup.", status_code=400)
-        if not (business_email or "").strip():
-            raise AppException("Business email is required for office signup.", status_code=400)
-
     referrer = _resolve_referrer(db, referral_code)
 
     user = User(
@@ -387,24 +373,15 @@ def signup(
         password_hash=hash_password(password),
         role=user_role,
         referred_by_user_id=referrer.id if referrer else None,
-        email_verified=True if user_role in {UserRole.office, UserRole.office_staff} else settings.ENVIRONMENT == "development",
+        email_verified=False if user_role == UserRole.office else settings.ENVIRONMENT == "development",
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     if user_role == UserRole.office:
-        return _create_office_onboarding(
-            db,
-            user=user,
-            company_name=company_name or user.full_name,
-            business_email=business_email or user.email,
-            phone_number=phone_number,
-            office_address=office_address,
-            country=country,
-            state=state,
-            city=city,
-            number_of_employees=number_of_employees,
-        )
+        if not user.email_verified:
+            _queue_email_verification(user.email)
+        return {"id": user.id, "email": user.email, "requiresEmailVerification": True}
     # Send email verification best-effort without blocking the signup response.
     if not user.email_verified:
         _queue_email_verification(user.email)

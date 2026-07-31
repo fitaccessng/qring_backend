@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.services.office_service import (
     assign_office_visitor_request,
     accept_office_call,
+    complete_office_profile,
     create_office_staff_member,
     create_office_department,
     create_office_message,
@@ -59,6 +60,32 @@ class OfficeStaffCreatePayload(BaseModel):
 
 class OfficeDepartmentCreatePayload(BaseModel):
     name: str
+
+
+class OfficeProfileCompletionPayload(BaseModel):
+    companyName: str | None = None
+    phoneNumber: str | None = None
+    officeAddress: str | None = None
+    numberOfEmployees: int | None = None
+
+
+@router.post("/profile")
+def office_complete_profile(
+    payload: OfficeProfileCompletionPayload,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return {"data": complete_office_profile(
+            db,
+            user_id=user.id,
+            company_name=payload.companyName,
+            phone_number=payload.phoneNumber,
+            office_address=payload.officeAddress,
+            number_of_employees=payload.numberOfEmployees,
+        )}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/qr/generate")

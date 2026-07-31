@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 
 
@@ -15,21 +15,6 @@ class SignupRequest(BaseModel):
     password: str
     role: str = "homeowner"
     referralCode: Optional[str] = None
-    companyName: Optional[str] = None
-    businessEmail: Optional[EmailStr] = None
-    phoneNumber: Optional[str] = None
-    officeAddress: Optional[str] = None
-    country: Optional[str] = None
-    state: Optional[str] = None
-    city: Optional[str] = None
-    numberOfEmployees: Optional[int] = None
-
-    @field_validator("businessEmail", mode="before")
-    @classmethod
-    def normalize_optional_business_email(cls, value):
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
 
 
 class AdminSignupRequest(BaseModel):

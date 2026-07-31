@@ -468,6 +468,95 @@ def _office_call_target_user(
     return None
 
 
+def complete_office_profile(
+    db: Session,
+    *,
+    user_id: str,
+    company_name: str | None,
+    phone_number: str | None = None,
+    office_address: str | None = None,
+    number_of_employees: int | None = None,
+) -> dict[str, Any]:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise ValueError("User not found")
+    if str(getattr(user.role, "value", user.role) or "").lower() != "office":
+        raise ValueError("Only office accounts can complete an office profile")
+
+    office = db.query(Office).filter(Office.administrator_user_id == user.id).first()
+    office_name = (company_name or "").strip() or user.full_name or "Office"
+    employee_count = max(1, int(number_of_employees or 1))
+
+    if office is None:
+        qr_id = f"office-{uuid.uuid4().hex[:12]}"
+        office = Office(
+            company_name=office_name,
+            business_email=(user.email or "").strip().lower(),
+            phone_number=(phone_number or "").strip() or None,
+            office_address=(office_address or "").strip() or None,
+            employee_count=employee_count,
+            administrator_user_id=user.id,
+            qr_id=qr_id,
+        )
+        db.add(office)
+        db.flush()
+
+        reception_home = Home(
+            name=f"{office_name} Reception",
+            office_id=office.id,
+            homeowner_id=user.id,
+        )
+        db.add(reception_home)
+        db.flush()
+
+        reception_door = Door(
+            name=f"{office_name} Entrance",
+            home_id=reception_home.id,
+            gate_label="Reception",
+        )
+        db.add(reception_door)
+        db.flush()
+
+        office.reception_home_id = reception_home.id
+        office.reception_door_id = reception_door.id
+        db.add(office)
+
+        qr = QRCode(
+            qr_id=qr_id,
+            plan="office",
+            home_id=reception_home.id,
+            doors_csv=reception_door.id,
+            mode="direct",
+            estate_id=None,
+            active=True,
+        )
+        db.add(qr)
+
+        member = OfficeMember(
+            office_id=office.id,
+            user_id=user.id,
+            full_name=(user.full_name or "").strip() or user.full_name,
+            role_label="administrator",
+            department="Administration",
+            floor="Reception",
+            extension=None,
+            availability_status="available",
+            status="active",
+        )
+        db.add(member)
+    else:
+        office.company_name = office_name
+        office.phone_number = (phone_number or "").strip() or None
+        office.office_address = (office_address or "").strip() or None
+        office.employee_count = employee_count
+        office.business_email = (user.email or "").strip().lower()
+        db.add(office)
+
+    db.commit()
+    db.refresh(office)
+    return {"office": _office_payload(office)}
+
+
 def create_office_staff_member(
     db: Session,
     *,
