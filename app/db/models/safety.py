@@ -143,6 +143,18 @@ class PanicEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
+class PanicAudioSegment(Base):
+    __tablename__ = "panic_audio_segments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    panic_id: Mapped[str] = mapped_column(String(36), ForeignKey("panic_events.id"), nullable=False, index=True)
+    uploader_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    media_type: Mapped[str] = mapped_column(String(40), nullable=False, default="audio/webm")
+    media_path: Mapped[str] = mapped_column(Text, nullable=False)
+    media_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    media_sha256: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, index=True)
 
 class EmergencyAlertEvent(Base):
     __tablename__ = "emergency_alert_events"

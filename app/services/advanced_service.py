@@ -289,32 +289,53 @@ def create_snapshot_audit(
     relative_path = Path("visitor-media") / effective_resident_id / f"{media_id}{ext}"
     absolute_path = _media_base_dir() / relative_path
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
+
+    media_path: str | None = None
+    media_url: str | None = None
     try:
-        absolute_path.write_bytes(media_bytes)
+        bucket = _get_storage_bucket()
+        if bucket is not None:
+            storage_path = str(relative_path).replace("\\", "/")
+            content_type = _snapshot_content_type_from_path(str(relative_path), (media_type or "photo").strip().lower())
+            blob = bucket.blob(storage_path)
+            blob.upload_from_string(media_bytes, content_type=content_type)
+            media_path = f"firebase:{storage_path}"
+            logger.info(
+                "snapshot.audit.firebase_storage_saved resident_id=%s media_id=%s path=%s bytes=%s",
+                effective_resident_id,
+                media_id,
+                storage_path,
+                len(media_bytes),
+            )
+        else:
+            absolute_path.write_bytes(media_bytes)
+            media_path = str(relative_path).replace("\\", "/")
+            media_url = f"/uploads/{media_path}"
+            logger.info(
+                "snapshot.audit.local_storage_saved resident_id=%s media_id=%s path=%s url=%s bytes=%s",
+                effective_resident_id,
+                media_id,
+                media_path,
+                media_url,
+                len(media_bytes),
+            )
     except Exception as exc:
         logger.exception(
-            "snapshot.audit.local_storage_failed backend=filesystem resident_id=%s media_id=%s path=%s bytes=%s",
+            "snapshot.audit.storage_failed resident_id=%s media_id=%s path=%s bytes=%s",
             effective_resident_id,
             media_id,
             absolute_path,
             len(media_bytes),
         )
-        raise AppException(
-            "Snapshot image could not be saved to local uploads storage.",
-            status_code=500,
-            code="SNAPSHOT_STORAGE_FAILED",
-        ) from exc
-
-    media_path = str(relative_path).replace("\\", "/")
-    media_url = f"/uploads/{media_path}"
-    logger.info(
-        "snapshot.audit.local_storage_saved resident_id=%s media_id=%s path=%s url=%s bytes=%s",
-        effective_resident_id,
-        media_id,
-        media_path,
-        media_url,
-        len(media_bytes),
-    )
+        fallback_mime = _snapshot_content_type_from_path(str(relative_path), (media_type or "photo").strip().lower())
+        media_url = _data_url_from_bytes(media_bytes, fallback_mime)
+        media_path = str(relative_path).replace("\\", "/")
+        logger.warning(
+            "snapshot.audit.fallback_data_url resident_id=%s media_id=%s mime=%s",
+            effective_resident_id,
+            media_id,
+            fallback_mime,
+        )
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
@@ -322,7 +343,7 @@ def create_snapshot_audit(
         visitor_session_id=visitor_session_id,
         appointment_id=appointment_id,
         media_type=(media_type or "photo").strip().lower(),
-        media_path=media_path,
+        media_path=media_path or None,
         media_url=media_url or None,
         cloudinary_public_id=cloudinary_public_id or None,
         media_sha256=digest,
@@ -331,6 +352,12 @@ def create_snapshot_audit(
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    if media_path and media_path.startswith("firebase:"):
+        public_url = f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
+    else:
+        public_url = media_url or _public_snapshot_url_from_media_path(media_path or "")
+
     return {
         "id": row.id,
         "residentId": row.homeowner_id,
@@ -343,8 +370,8 @@ def create_snapshot_audit(
         "mediaSha256": row.media_sha256,
         "source": row.source,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
-        "fileUrl": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
-        "url": row.media_url or _public_snapshot_url_from_media_path(row.media_path),
+        "fileUrl": public_url,
+        "url": public_url,
     }
 
 

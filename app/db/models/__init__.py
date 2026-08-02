@@ -83,6 +83,7 @@ _EXPORT_MAP = {
     "PanicEvent": "app.db.models.safety",
     "PanicEventStatus": "app.db.models.safety",
     "PanicMode": "app.db.models.safety",
+    "PanicAudioSegment": "app.db.models.safety",
     "Message": "app.db.models.session",
     "Notification": "app.db.models.session",
     "VisitorReport": "app.db.models.safety",

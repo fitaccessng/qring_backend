@@ -119,6 +119,35 @@ def upsert_push_subscription(
     }
 
 
+def deactivate_push_subscription(
+    db: Session,
+    *,
+    user_id: str,
+    provider: str,
+    endpoint: str | None = None,
+    token: str | None = None,
+) -> int:
+    normalized_provider = (provider or "fcm").strip().lower()
+    query = db.query(PushSubscription).filter(
+        PushSubscription.user_id == user_id,
+        PushSubscription.provider == normalized_provider,
+    )
+    if endpoint:
+        query = query.filter(PushSubscription.endpoint == endpoint)
+    elif token:
+        query = query.filter(PushSubscription.token == token)
+    else:
+        return 0
+
+    rows = query.all()
+    if not rows:
+        return 0
+    for row in rows:
+        row.is_active = False
+    db.commit()
+    return len(rows)
+
+
 def send_push_fcm(
     db: Session,
     *,

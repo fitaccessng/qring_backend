@@ -135,6 +135,13 @@ def _decode_snapshot_base64(snapshot_b64: str) -> bytes:
         return b""
 
 
+def _build_placeholder_snapshot_payload() -> tuple[str, str]:
+    return (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAA3FAwAGGQdP4gOQAAAAAElFTkSuQmCC",
+        "image/png",
+    )
+
+
 def _resolve_session_messages(db: Session, *, session) -> list[dict[str, object]]:
     from app.db.models import Message
 
@@ -362,6 +369,14 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
         snapshot_audit = None
         snapshot_b64 = (payload.snapshotBase64 or "").strip()
         snapshot_mime = (payload.snapshotMime or "").strip().lower()
+        if not snapshot_b64 or not snapshot_mime:
+            snapshot_b64, snapshot_mime = _build_placeholder_snapshot_payload()
+            logger.info(
+                "visitor.request using_placeholder_snapshot request_id=%s session_id=%s qr_id=%s",
+                request_id,
+                session.id,
+                payload.qrId,
+            )
         logger.info(
             "QRING_SNAPSHOT_BACKEND_RECEIVED",
             extra={
@@ -371,14 +386,6 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "snapshot_mime": snapshot_mime,
             },
         )
-        if not snapshot_b64 or not snapshot_mime:
-            db.delete(session)
-            db.commit()
-            raise AppException(
-                "Snapshot could not be saved. Please retake the photo and try again.",
-                status_code=400,
-                code="SNAPSHOT_SAVE_FAILED",
-            )
 
         try:
             media_bytes = _decode_snapshot_base64(snapshot_b64)

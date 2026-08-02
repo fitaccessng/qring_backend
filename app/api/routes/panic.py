@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
+from app.core.exceptions import AppException
 from app.db.models import User
 from app.db.session import get_db
 from app.services.safety_service import (
     acknowledge_panic_event,
-    ignore_panic_event,
+    create_panic_audio_segment,
     list_active_panic_events,
+    list_panic_audio_segments,
+    load_panic_audio_segment_bytes,
     report_false_panic_event,
     resolve_panic_event,
     respond_to_panic_event,
@@ -108,6 +111,49 @@ def panic_report_false(
     user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
 ):
     return {"data": report_false_panic_event(db, panic_id=payload.panicId, actor=user)}
+
+
+@router.post("/audio/segment")
+async def panic_upload_audio_segment(
+    panicId: str,
+    segmentIndex: int = 0,
+    filenameHint: Optional[str] = None,
+    media: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "admin")),
+):
+    media_bytes = await media.read()
+    if not media_bytes:
+        raise AppException("Empty audio upload.", status_code=400)
+    data = create_panic_audio_segment(
+        db,
+        actor=user,
+        panic_id=panicId,
+        segment_index=segmentIndex,
+        media_bytes=media_bytes,
+        filename_hint=filenameHint or media.filename or "segment.webm",
+        media_type=media.content_type or "audio/webm",
+    )
+    return {"data": data}
+
+
+@router.get("/{panic_id}/audio/segments")
+def panic_list_audio_segments(
+    panic_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    return {"data": list_panic_audio_segments(db, panic_id=panic_id, actor=user)}
+
+
+@router.get("/audio/segment/{segment_id}/file")
+def panic_download_audio_segment(
+    segment_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("homeowner", "security", "estate", "admin")),
+):
+    data, content_type = load_panic_audio_segment_bytes(db, segment_id=segment_id, actor=user)
+    return Response(content=data, media_type=content_type, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/notes")

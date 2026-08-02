@@ -11,9 +11,15 @@ from app.db.base import Base
 from app.db.models import Estate, Home, User, UserRole
 from app.db.models.device_session import DeviceSession  # noqa: F401
 from app.db.models.homeowner_setting import HomeownerSetting  # noqa: F401
-from app.db.models.safety import EmergencyAlert, EmergencyAlertEvent, VisitorReport, WatchlistEntry  # noqa: F401
+from app.db.models.safety import EmergencyAlert, EmergencyAlertEvent, PanicAudioSegment, VisitorReport, WatchlistEntry  # noqa: F401
 from app.db.models.session import Notification, VisitorSession  # noqa: F401
-from app.services.safety_service import report_visitor, trigger_emergency_alert, trigger_panic_event, update_emergency_alert_status
+from app.services.safety_service import (
+    create_panic_audio_segment,
+    report_visitor,
+    trigger_emergency_alert,
+    trigger_panic_event,
+    update_emergency_alert_status,
+)
 
 
 class SafetyServiceTests(unittest.TestCase):
@@ -164,6 +170,23 @@ class SafetyServiceTests(unittest.TestCase):
         self.assertIn(self.neighbor.id, recipient_ids)
         self.assertEqual(self.db.query(Notification).count(), 3)
         self.assertEqual(send_email.call_count, 3)
+
+    def test_create_panic_audio_segment_persists_segment(self):
+        with patch("app.services.notification_service.send_push_fcm"):
+            panic = trigger_panic_event(self.db, actor=self.homeowner, trigger_mode="hold-security")
+        self.assertEqual(panic["status"], "active")
+        segment_data = create_panic_audio_segment(
+            self.db,
+            actor=self.homeowner,
+            panic_id=panic["id"],
+            segment_index=0,
+            media_bytes=b"test-audio",
+            filename_hint="recording.webm",
+            media_type="audio/webm",
+        )
+        self.assertEqual(segment_data["panicId"], panic["id"])
+        self.assertEqual(segment_data["segmentIndex"], 0)
+        self.assertTrue(self.db.query(PanicAudioSegment).filter(PanicAudioSegment.id == segment_data["id"]).one())
 
 
 if __name__ == "__main__":

@@ -6,13 +6,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.api.routes.visitor import _validate_visitor_consent
 from app.core.exceptions import AppException
 from app.db.base import Base
 from app.db.models import Door, Home, Notification, User, UserRole, VisitorSession
+from app.db.session import get_db
+from app.main import fastapi_app
 from app.schemas.visitor import VisitorRequestCreate
 from app.services.advanced_service import create_snapshot_audit, load_snapshot_bytes
 from app.services.homeowner_service import list_homeowner_session_messages
@@ -20,7 +24,12 @@ from app.services.homeowner_service import list_homeowner_session_messages
 
 class VisitorSnapshotAndConsentTests(unittest.TestCase):
     def setUp(self):
-        self.engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        self.engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            future=True,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
         Base.metadata.create_all(bind=self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, class_=Session, autoflush=False, autocommit=False)
         self.db = self.SessionLocal()
@@ -35,6 +44,16 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         )
         self.db.add(self.homeowner)
         self.db.flush()
+
+        def override_get_db():
+            db = self.SessionLocal()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        fastapi_app.dependency_overrides[get_db] = override_get_db
+        self.client = TestClient(fastapi_app, raise_server_exceptions=False)
 
         self.home = Home(
             id=str(uuid.uuid4()),
@@ -54,6 +73,7 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.db.commit()
 
     def tearDown(self):
+        fastapi_app.dependency_overrides.clear()
         self.db.close()
         self.engine.dispose()
 
@@ -93,7 +113,6 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
     def test_create_snapshot_audit_falls_back_to_data_url_when_file_storage_fails(self):
         media_bytes = b"test-image-bytes"
         with (
-            patch("app.services.advanced_service.upload_snapshot_to_cloudinary", return_value=None),
             patch("app.services.advanced_service._get_storage_bucket", return_value=None),
             patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")),
         ):
@@ -119,6 +138,54 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.assertEqual(logical_type, "photo")
         self.assertEqual(content_type, "image/jpeg")
 
+    def test_visitor_request_uses_fallback_placeholder_snapshot_when_missing(self):
+        with (
+            patch("app.api.routes.visitor.resolve_qr") as mock_resolve_qr,
+            patch("app.api.routes.visitor.create_snapshot_audit") as mock_create_snapshot_audit,
+            patch("app.api.routes.visitor.notify_security_request"),
+            patch("app.api.routes.visitor.sio.emit"),
+            patch("app.api.routes.visitor.emit_dashboard_notification"),
+            patch("app.api.routes.visitor.emit_signaling_notification"),
+            patch("app.services.notification_service.create_notification"),
+        ):
+            request_id = f"snapshot-fallback-{uuid.uuid4()}"
+            mock_resolve_qr.return_value = {
+                "home_id": self.home.id,
+                "doors": [self.door.id],
+                "mode": "direct",
+            }
+            mock_create_snapshot_audit.return_value = {
+                "id": "snapshot-fallback",
+                "fileUrl": "https://cdn.example.com/fallback-snapshot.jpg",
+                "url": "https://cdn.example.com/fallback-snapshot.jpg",
+            }
+
+            request_response = self.client.post(
+                "/api/v1/visitor/request",
+                json={
+                    "requestId": request_id,
+                    "qrId": self.home.id,
+                    "doorId": self.door.id,
+                    "name": "Fallback Visitor",
+                    "phoneNumber": "+2348000000002",
+                    "purpose": "delivery",
+                    "visitorType": "delivery",
+                    "snapshotBase64": "",
+                    "snapshotMime": "",
+                    "deviceId": "device-fallback-1",
+                    "consentAccepted": True,
+                    "consentAcceptedAt": datetime.now(timezone.utc).isoformat(),
+                    "consentStorage": "session",
+                },
+            )
+
+            self.assertEqual(request_response.status_code, 200, request_response.text)
+            request_payload = request_response.json().get("data") or {}
+            self.assertTrue(request_payload.get("sessionId"))
+            self.assertEqual(request_payload.get("visitorName"), "Fallback Visitor")
+            mock_create_snapshot_audit.assert_called_once()
+            self.assertTrue(mock_create_snapshot_audit.call_args.kwargs.get("media_bytes"))
+
     def test_create_snapshot_audit_returns_download_route_for_firebase_storage(self):
         class _Blob:
             def __init__(self):
@@ -133,7 +200,6 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
                 return _Blob()
 
         with (
-            patch("app.services.advanced_service.upload_snapshot_to_cloudinary", return_value=None),
             patch("app.services.advanced_service._get_storage_bucket", return_value=_Bucket()),
         ):
             data = create_snapshot_audit(

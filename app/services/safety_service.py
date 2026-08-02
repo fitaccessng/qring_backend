@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Iterable
 
 from anyio import from_thread
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from uuid import uuid4
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException
@@ -28,6 +31,7 @@ from app.db.models import (
     Estate,
     Home,
     HomeownerSetting,
+    PanicAudioSegment,
     PanicEvent,
     PanicEventStatus,
     PanicMode,
@@ -40,6 +44,7 @@ from app.db.models import (
     WatchlistEntry,
     WatchlistRiskLevel,
 )
+from app.services.advanced_service import _get_storage_bucket, _media_base_dir
 from app.services.notification_service import create_notification
 from app.services.provider_integrations import send_transactional_email
 from app.socket.server import sio
@@ -69,6 +74,7 @@ def create_safety_tables(bind) -> None:
         "emergency_alerts",
         "emergency_alert_events",
         "panic_events",
+        "panic_audio_segments",
         "visitor_reports",
         "watchlist_entries",
     ]:
@@ -139,6 +145,171 @@ def _parse_json_list(raw: str | None) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _panic_audio_content_type_from_path(path: str) -> str:
+    ext = Path(str(path or "")).suffix.lower()
+    if ext == ".webm":
+        return "audio/webm"
+    if ext == ".oga" or ext == ".ogg":
+        return "audio/ogg"
+    if ext == ".mp3":
+        return "audio/mpeg"
+    if ext == ".wav":
+        return "audio/wav"
+    if ext == ".m4a" or ext == ".mp4":
+        return "audio/mp4"
+    if ext == ".aac":
+        return "audio/aac"
+    return "application/octet-stream"
+
+
+def _build_panic_audio_relative_path(homeowner_id: str, panic_id: str, segment_index: int, filename_hint: str) -> Path:
+    ext = Path(str(filename_hint or "segment.webm")).suffix.lower() or ".webm"
+    if ext not in {".webm", ".oga", ".ogg", ".mp3", ".wav", ".m4a", ".mp4", ".aac"}:
+        ext = ".webm"
+    sanitized_index = max(0, int(segment_index or 0))
+    media_id = str(uuid4())
+    return Path("panic-audio") / str(homeowner_id) / str(panic_id) / f"{sanitized_index}-{media_id}{ext}"
+
+
+def _store_panic_audio_bytes(
+    homeowner_id: str,
+    panic_id: str,
+    segment_index: int,
+    media_bytes: bytes,
+    filename_hint: str,
+    media_type: str,
+) -> tuple[str, str | None, str]:
+    relative_path = _build_panic_audio_relative_path(homeowner_id, panic_id, segment_index, filename_hint)
+    bucket = _get_storage_bucket()
+    media_path: str | None = None
+    media_url: str | None = None
+
+    if bucket is not None:
+        storage_path = str(relative_path).replace("\\", "/")
+        blob = bucket.blob(storage_path)
+        blob.upload_from_string(media_bytes, content_type=media_type or _panic_audio_content_type_from_path(str(relative_path)))
+        media_path = f"firebase:{storage_path}"
+    else:
+        absolute_path = _media_base_dir() / relative_path
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_path.write_bytes(media_bytes)
+        media_path = str(relative_path).replace("\\", "/")
+
+    digest = hashlib.sha256(media_bytes).hexdigest()
+    return media_path, media_url, digest
+
+
+def _serialize_panic_audio_segment(segment: PanicAudioSegment) -> dict[str, Any]:
+    return {
+        "id": segment.id,
+        "panicId": segment.panic_id,
+        "segmentIndex": int(segment.segment_index or 0),
+        "mediaType": segment.media_type,
+        "mediaUrl": f"/api/v1/panic/audio/segment/{segment.id}/file",
+        "createdAt": segment.created_at.isoformat() if segment.created_at else None,
+    }
+
+
+def _load_segment_for_actor(db: Session, *, segment_id: str, actor: User) -> PanicAudioSegment:
+    segment = db.query(PanicAudioSegment).filter(PanicAudioSegment.id == segment_id).first()
+    if not segment:
+        raise AppException("Panic audio segment not found.", status_code=404)
+    _load_panic_for_actor(db, panic_id=segment.panic_id, actor=actor)
+    return segment
+
+
+def _list_panic_audio_segments(db: Session, *, panic_id: str) -> list[PanicAudioSegment]:
+    return (
+        db.query(PanicAudioSegment)
+        .filter(PanicAudioSegment.panic_id == panic_id)
+        .order_by(PanicAudioSegment.segment_index.asc(), PanicAudioSegment.created_at.asc())
+        .all()
+    )
+
+
+def create_panic_audio_segment(
+    db: Session,
+    *,
+    actor: User,
+    panic_id: str,
+    segment_index: int,
+    media_bytes: bytes,
+    filename_hint: str,
+    media_type: str,
+) -> dict[str, Any]:
+    if not media_bytes:
+        raise AppException("Empty audio upload.", status_code=400)
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    if panic.status == PanicEventStatus.resolved:
+        raise AppException("Cannot upload audio to a resolved panic event.", status_code=400)
+
+    media_path, media_url, digest = _store_panic_audio_bytes(
+        homeowner_id=panic.user_id,
+        panic_id=panic.id,
+        segment_index=segment_index,
+        media_bytes=media_bytes,
+        filename_hint=filename_hint,
+        media_type=media_type,
+    )
+
+    segment = db.query(PanicAudioSegment).filter(
+        PanicAudioSegment.panic_id == panic.id,
+        PanicAudioSegment.segment_index == segment_index,
+    ).first()
+
+    if segment is None:
+        segment = PanicAudioSegment(
+            panic_id=panic.id,
+            uploader_user_id=actor.id,
+            segment_index=segment_index,
+            media_type=media_type or _panic_audio_content_type_from_path(filename_hint),
+            media_path=media_path,
+            media_url=media_url,
+            media_sha256=digest,
+        )
+        db.add(segment)
+    else:
+        segment.uploader_user_id = actor.id
+        segment.media_type = media_type or _panic_audio_content_type_from_path(filename_hint)
+        segment.media_path = media_path
+        segment.media_url = media_url
+        segment.media_sha256 = digest
+
+    db.commit()
+    db.refresh(segment)
+    return _serialize_panic_audio_segment(segment)
+
+
+def list_panic_audio_segments(db: Session, *, panic_id: str, actor: User) -> list[dict[str, Any]]:
+    panic = _load_panic_for_actor(db, panic_id=panic_id, actor=actor)
+    segments = _list_panic_audio_segments(db, panic_id=panic.id)
+    return [_serialize_panic_audio_segment(segment) for segment in segments]
+
+
+def load_panic_audio_segment_bytes(db: Session, *, segment_id: str, actor: User) -> tuple[bytes, str]:
+    segment = _load_segment_for_actor(db, segment_id=segment_id, actor=actor)
+    media_path = str(segment.media_path or "").strip()
+    if not media_path:
+        raise AppException("Audio file is unavailable.", status_code=404)
+    if media_path.startswith("firebase:"):
+        storage_path = media_path.split("firebase:", 1)[1]
+        bucket = _get_storage_bucket()
+        if bucket is None:
+            raise AppException("Audio storage is unavailable.", status_code=404)
+        blob = bucket.blob(storage_path)
+        try:
+            blob.reload()
+            data = blob.download_as_bytes()
+        except Exception:
+            raise AppException("Audio file is unavailable.", status_code=404)
+        content_type = _panic_audio_content_type_from_path(storage_path)
+        return data, content_type
+    path = _media_base_dir() / Path(media_path)
+    if not path.exists() or not path.is_file():
+        raise AppException("Audio file is unavailable.", status_code=404)
+    return path.read_bytes(), _panic_audio_content_type_from_path(media_path)
 
 
 def _dedupe_users(rows: list[User]) -> list[User]:
@@ -528,6 +699,7 @@ def _panic_recipient_users(
 
     if estate_id:
         recipients.extend(_list_security_users(db, estate_id))
+        recipients.extend(_list_estate_homeowner_users(db, estate_id=estate_id, exclude_user_id=homeowner.id))
 
     recipients.extend(
         _community_panic_recipients(
@@ -637,9 +809,17 @@ async def _panic_retry_loop(panic_id: str) -> None:
 
 def _schedule_panic_retries(panic_id: str) -> None:
     try:
-        sio.start_background_task(_panic_retry_loop, panic_id)
-    except Exception:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
         return
+
+    try:
+        loop.create_task(_panic_retry_loop(panic_id))
+    except Exception:
+        try:
+            sio.start_background_task(_panic_retry_loop, panic_id)
+        except Exception:
+            return
 
 
 def _can_access_panic(db: Session, *, panic: PanicEvent, actor: User) -> bool:
