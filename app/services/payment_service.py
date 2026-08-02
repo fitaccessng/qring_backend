@@ -20,6 +20,8 @@ from app.db.models import (
     Estate,
     Home,
     Notification,
+    Office,
+    OfficeMember,
     PaymentAttempt,
     PaymentPurpose,
     ReferralReward,
@@ -27,6 +29,7 @@ from app.db.models import (
     SubscriptionInvoice,
     SubscriptionPlan,
     User,
+    UserRole,
 )
 from app.services.subscription_policy_service import (
     build_subscription_summary,
@@ -1287,6 +1290,65 @@ def _finalize_successful_payment(
     return row, plan
 
 
+def ensure_signup_trial_subscription(db: Session, user_id: str, *, now: datetime | None = None) -> Subscription:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise AppException("User not found", status_code=404)
+
+    existing = (
+        db.query(Subscription)
+        .filter(Subscription.user_id == user_id)
+        .order_by(Subscription.starts_at.desc(), Subscription.id.desc())
+        .first()
+    )
+    if existing:
+        return existing
+
+    created_at = ensure_utc(getattr(user, "created_at", None) or now or utc_now())
+    trial_start_at = created_at.replace(tzinfo=None)
+    trial_ends_at = trial_start_at + timedelta(days=SIGNUP_TRIAL_DAYS)
+    role = getattr(user, "role", None)
+
+    if role == UserRole.estate:
+        plan_id = "estate_starter"
+        tenant_type = "estate"
+        billing_scope = "estate"
+    elif role == UserRole.office:
+        plan_id = "free"
+        tenant_type = "office"
+        billing_scope = "office"
+    else:
+        plan_id = "free"
+        tenant_type = "resident"
+        billing_scope = "homeowner"
+
+    row = Subscription(
+        user_id=user_id,
+        plan=plan_id,
+        status="active",
+        payment_status="trialing",
+        billing_cycle="monthly",
+        tenant_type=tenant_type,
+        tenant_id=user_id,
+        billing_scope=billing_scope,
+        auto_renew=False,
+        cancel_at_period_end=False,
+        grace_days=DEFAULT_GRACE_DAYS,
+        grace_ends_at=trial_ends_at + timedelta(days=DEFAULT_GRACE_DAYS),
+        amount_due=0,
+        amount_paid=0,
+        timezone="Africa/Lagos",
+        starts_at=trial_start_at,
+        ends_at=trial_ends_at,
+        trial_started_at=trial_start_at,
+        trial_ends_at=trial_ends_at,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def _create_default_estate_trial(db: Session, user_id: str) -> Subscription:
     now = utc_now()
     row = Subscription(
@@ -1572,8 +1634,26 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             estate_name = estate_row[1].name
             subscription_owner_id = estate_row[1].owner_id or user_id
             audience = "estate"
+    elif audience == "office_staff":
+        try:
+            membership = (
+                db.query(OfficeMember)
+                .filter(OfficeMember.user_id == user_id)
+                .order_by(OfficeMember.created_at.desc())
+                .first()
+            )
+        except Exception:
+            membership = None
+        if membership and membership.office_id:
+            try:
+                office = db.query(Office).filter(Office.id == membership.office_id).first()
+            except Exception:
+                office = None
+            if office and office.administrator_user_id:
+                subscription_owner_id = office.administrator_user_id
+                audience = "office"
     trial_user = user
-    if managed_by_estate and subscription_owner_id and subscription_owner_id != user_id:
+    if subscription_owner_id and subscription_owner_id != user_id:
         try:
             trial_user = db.query(User).filter(User.id == subscription_owner_id).first() or user
         except Exception:

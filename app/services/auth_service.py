@@ -30,6 +30,7 @@ from app.db.session import SessionLocal
 from app.schemas.auth import AuthResponse
 from app.services.provider_integrations import send_transactional_email
 from app.db.models.user_token import UserToken, UserTokenType, generate_user_token, hash_user_token
+from app.services.payment_service import ensure_signup_trial_subscription
 
 settings = get_settings()
 _firebase_init_lock = Lock()
@@ -378,6 +379,7 @@ def signup(
     db.add(user)
     db.commit()
     db.refresh(user)
+    ensure_signup_trial_subscription(db, user.id, now=user.created_at)
     if user_role == UserRole.office:
         if not user.email_verified:
             _queue_email_verification(user.email)
@@ -423,6 +425,7 @@ def admin_signup(
     db.add(user)
     db.commit()
     db.refresh(user)
+    ensure_signup_trial_subscription(db, user.id, now=user.created_at)
     return {"id": user.id, "email": user.email}
 
 
@@ -511,6 +514,7 @@ def google_signup(
     db.add(user)
     db.commit()
     db.refresh(user)
+    ensure_signup_trial_subscription(db, user.id, now=user.created_at)
     return _issue_auth_tokens(db=db, user=user, user_agent=user_agent, ip_address=ip_address)
 
 
