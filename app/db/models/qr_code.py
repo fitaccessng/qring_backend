@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.time import utc_now
@@ -13,6 +13,7 @@ from app.db.base import Base
 
 class QRCode(Base):
     __tablename__ = "qr_codes"
+    __table_args__ = (UniqueConstraint("estate_id", "mode", name="uq_qr_estate_mode"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     qr_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)

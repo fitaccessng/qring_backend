@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import AppException
 from app.core.config import get_settings
@@ -1160,6 +1161,21 @@ def create_estate_shared_selector_qr(db: Session, owner_id: str, estate_id: str)
     usage = _usage_for_owner(db, owner_id)
     if max_qr and usage["qr_codes"] >= max_qr:
         raise AppException(f"QR limit reached ({max_qr})", status_code=402)
+    # If an active selector QR already exists for this estate, return it (idempotent)
+    existing = (
+        db.query(QRCode)
+        .filter(QRCode.estate_id == estate_id, QRCode.mode == "selector", QRCode.active.is_(True))
+        .order_by(QRCode.created_at.desc())
+        .first()
+    )
+    if existing:
+        return {
+            "id": existing.id,
+            "qrId": existing.qr_id,
+            "scanUrl": f"/scan/{existing.qr_id}",
+            "mode": existing.mode,
+            "doorCount": len([d for d in (existing.doors_csv or "").split(",") if d.strip()]),
+        }
 
     qr = QRCode(
         qr_id=f"qr-{uuid.uuid4().hex[:12]}",
@@ -1171,7 +1187,26 @@ def create_estate_shared_selector_qr(db: Session, owner_id: str, estate_id: str)
         active=True,
     )
     db.add(qr)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Possible concurrent insert for same (estate_id, mode). Rollback and return existing row.
+        db.rollback()
+        existing_after = (
+            db.query(QRCode)
+            .filter(QRCode.estate_id == estate_id, QRCode.mode == "selector", QRCode.active.is_(True))
+            .order_by(QRCode.created_at.desc())
+            .first()
+        )
+        if existing_after:
+            return {
+                "id": existing_after.id,
+                "qrId": existing_after.qr_id,
+                "scanUrl": f"/scan/{existing_after.qr_id}",
+                "mode": existing_after.mode,
+                "doorCount": len([d for d in (existing_after.doors_csv or "").split(",") if d.strip()]),
+            }
+        raise
     db.refresh(qr)
     return {
         "id": qr.id,

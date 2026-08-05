@@ -622,7 +622,7 @@ def list_estate_alerts(
                 db.query(EstatePollVote)
                 .filter(
                     EstatePollVote.estate_alert_id.in_(alert_ids),
-                    EstatePollVote.homeowner_id == actor_id,
+                    EstatePollVote.resident_id == actor_id,
                 )
                 .all()
             )
@@ -734,7 +734,7 @@ def record_poll_vote(
 
     row = (
         db.query(EstatePollVote)
-        .filter(EstatePollVote.estate_alert_id == alert_id, EstatePollVote.homeowner_id == homeowner_id)
+        .filter(EstatePollVote.estate_alert_id == alert_id, EstatePollVote.resident_id == homeowner_id)
         .first()
     )
     if row:
@@ -742,7 +742,7 @@ def record_poll_vote(
     else:
         row = EstatePollVote(
             estate_alert_id=alert_id,
-            homeowner_id=homeowner_id,
+            resident_id=homeowner_id,
             option_index=int(option_index),
         )
         db.add(row)
