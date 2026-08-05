@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.db.models import Subscription, User, UserRole
-from app.services.payment_service import ensure_signup_trial_subscription, get_effective_subscription
+from app.services.payment_service import (
+    ensure_signup_trial_subscription,
+    get_effective_subscription,
+    is_paid_subscription_expired,
+)
 
 
 class SignupTrialSubscriptionTests(unittest.TestCase):
@@ -56,6 +60,50 @@ class SignupTrialSubscriptionTests(unittest.TestCase):
 
         duplicate = ensure_signup_trial_subscription(self.db, user.id, now=created_at + timedelta(days=6))
         self.assertEqual(duplicate.id, subscription.id)
+
+    def test_signup_trial_allows_subscription_features_during_first_30_days(self):
+        created_at = datetime.now() - timedelta(days=10)
+        user = User(
+            id=str(uuid.uuid4()),
+            full_name="Ada Lovelace",
+            email="ada2@example.com",
+            password_hash="hashed",
+            role=UserRole.homeowner,
+            email_verified=True,
+            created_at=created_at,
+        )
+        self.db.add(user)
+        self.db.commit()
+
+        ensure_signup_trial_subscription(self.db, user.id, now=created_at + timedelta(days=10))
+        subscription = get_effective_subscription(self.db, user.id, user_role=user.role.value)
+
+        self.assertTrue(subscription.get("inSignupTrial"))
+        self.assertEqual(subscription.get("status"), "trial")
+        self.assertEqual(subscription.get("paymentStatus"), "trialing")
+        self.assertTrue(subscription.get("featureFlags", {}).get("analytics"))
+        self.assertTrue(subscription.get("can", lambda key: True)("view_dashboard"))
+        self.assertFalse(is_paid_subscription_expired(self.db, user.id))
+
+    def test_signup_trial_ends_after_30_days(self):
+        created_at = datetime.now() - timedelta(days=31)
+        user = User(
+            id=str(uuid.uuid4()),
+            full_name="Ada Lovelace",
+            email="ada3@example.com",
+            password_hash="hashed",
+            role=UserRole.homeowner,
+            email_verified=True,
+            created_at=created_at,
+        )
+        self.db.add(user)
+        self.db.commit()
+
+        ensure_signup_trial_subscription(self.db, user.id, now=created_at)
+        subscription = get_effective_subscription(self.db, user.id, user_role=user.role.value)
+
+        self.assertFalse(subscription.get("inSignupTrial"))
+        self.assertEqual(subscription.get("trialStatus"), "not_applicable")
 
 
 if __name__ == "__main__":
