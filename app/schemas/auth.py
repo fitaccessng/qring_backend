@@ -61,6 +61,7 @@ class AuthUser(BaseModel):
     fullName: str
     email: EmailStr
     role: str
+    phone: Optional[str] = None
     referralCode: Optional[str] = None
     referralEarnings: Optional[int] = None
 

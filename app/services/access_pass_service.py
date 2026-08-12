@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppException
 from app.core.time import utc_now
 from app.db.models import DigitalAccessPass, Door, GateLog, Home
+from app.services.payment_service import require_subscription_feature
 
 
 def _serialize_access_pass(row: DigitalAccessPass) -> dict[str, Any]:
@@ -65,6 +66,7 @@ def create_homeowner_access_pass(
     valid_for_hours: int = 24,
     max_uses: int = 1,
 ) -> dict[str, Any]:
+    require_subscription_feature(db, homeowner_id, "visitor_pass_basic", user_role="homeowner")
     clean_type = (pass_type or "qr").strip().lower()
     if clean_type not in {"qr", "pin"}:
         raise AppException("passType must be qr or pin", status_code=400)
@@ -118,6 +120,7 @@ def create_homeowner_access_pass(
 
 
 def deactivate_access_pass(db: Session, *, homeowner_id: str, access_pass_id: str) -> dict[str, Any]:
+    require_subscription_feature(db, homeowner_id, "visitor_pass_basic", user_role="homeowner")
     row = (
         db.query(DigitalAccessPass)
         .filter(DigitalAccessPass.id == access_pass_id, DigitalAccessPass.homeowner_id == homeowner_id)
@@ -150,6 +153,14 @@ def validate_access_pass(
         raise AppException("Access code is no longer active", status_code=400)
     if row.estate_id and estate_id and row.estate_id != estate_id:
         raise AppException("Access code does not belong to this estate", status_code=403)
+    if row.estate_id:
+        home = db.query(Home).filter(Home.id == row.home_id).first() if row.home_id else None
+        if home:
+            from app.db.models import Estate
+
+            estate = db.query(Estate).filter(Estate.id == home.estate_id).first()
+            if estate:
+                require_subscription_feature(db, estate.owner_id, "visitor_pass_basic", user_role="estate")
     if row.valid_from and now < row.valid_from:
         raise AppException("Access code is not active yet", status_code=400)
     if row.valid_until and now > row.valid_until:

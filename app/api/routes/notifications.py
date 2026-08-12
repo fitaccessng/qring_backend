@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.api.deps import get_current_user
-from app.db.models import User
+from app.db.models import PushSubscription, User
 from app.db.session import get_db
 from app.core.exceptions import AppException
 from app.services.notification_service import (
@@ -15,7 +15,7 @@ from app.services.notification_service import (
     mark_all_notifications_read,
     mark_notification_read,
 )
-from app.services.provider_integrations import upsert_push_subscription
+from app.services.provider_integrations import deactivate_push_subscription, upsert_push_subscription
 
 router = APIRouter()
 
@@ -24,6 +24,12 @@ class PushSubscriptionCreate(BaseModel):
     provider: str = "fcm"
     endpoint: str
     keys: dict
+    token: Optional[str] = None
+
+
+class PushSubscriptionDisable(BaseModel):
+    provider: str = "fcm"
+    endpoint: Optional[str] = None
     token: Optional[str] = None
 
 
@@ -53,6 +59,41 @@ def add_push_subscription(
     except ValueError as exc:
         raise AppException(str(exc), status_code=400) from exc
     return {"data": {"userId": user.id, **data, "status": "registered"}}
+
+
+@router.get("/push-subscriptions/status")
+def push_subscription_status(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(PushSubscription)
+        .filter(PushSubscription.user_id == user.id, PushSubscription.is_active == True)  # noqa: E712
+        .all()
+    )
+    return {
+        "data": {
+            "enabled": bool(rows),
+            "activeCount": len(rows),
+            "providers": sorted({row.provider for row in rows}),
+        }
+    }
+
+
+@router.post("/push-subscriptions/disable")
+def disable_push_subscription(
+    payload: PushSubscriptionDisable,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    count = deactivate_push_subscription(
+        db,
+        user_id=user.id,
+        provider=payload.provider,
+        endpoint=payload.endpoint,
+        token=payload.token,
+    )
+    return {"data": {"disabled": count, "enabled": False if count else None}}
 
 
 @router.post("/{notification_id}/read")

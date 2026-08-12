@@ -25,7 +25,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.db.models import DeviceSession, Door, Home, Notification, Office, OfficeMember, QRCode, User, UserRole
+from app.db.models import DeviceSession, Door, Estate, Home, Notification, Office, OfficeMember, QRCode, User, UserRole
 from app.db.session import SessionLocal
 from app.schemas.auth import AuthResponse
 from app.services.provider_integrations import send_transactional_email
@@ -205,10 +205,44 @@ def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address
             "fullName": user.full_name,
             "email": user.email,
             "role": user.role.value,
+            "phone": user.phone,
             "referralCode": user.referral_code,
             "referralEarnings": int(user.referral_earnings or 0),
         },
     )
+
+
+def serialize_current_user(db: Session, user: User) -> dict:
+    estates = []
+    if user.role == UserRole.estate:
+        estates = [
+            {"id": row.id, "name": row.name, "status": "active", "createdAt": row.created_at.isoformat() if row.created_at else None}
+            for row in db.query(Estate).filter(Estate.owner_id == user.id).order_by(Estate.created_at.desc()).all()
+        ]
+    return {
+        "id": user.id,
+        "fullName": user.full_name,
+        "email": user.email,
+        "phone": user.phone,
+        "role": user.role.value,
+        "estateId": user.estate_id,
+        "gateId": user.gate_id,
+        "referralCode": user.referral_code,
+        "referralEarnings": int(user.referral_earnings or 0),
+        "managedEstates": estates,
+        "createdAt": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def update_current_user_profile(db: Session, user: User, *, full_name: str, phone: str | None = None) -> dict:
+    clean_name = (full_name or "").strip()
+    if not clean_name:
+        raise AppException("Full name is required", status_code=400)
+    user.full_name = clean_name
+    user.phone = (phone or "").strip() or None
+    db.commit()
+    db.refresh(user)
+    return serialize_current_user(db, user)
 
 
 def _normalize_referral_code(referral_code: str | None) -> str | None:

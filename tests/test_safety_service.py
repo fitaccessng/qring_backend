@@ -55,6 +55,14 @@ class SafetyServiceTests(unittest.TestCase):
             role=UserRole.security,
             email_verified=True,
         )
+        self.other_guard = User(
+            id=str(uuid.uuid4()),
+            full_name="Other Guard",
+            email="other-guard@example.com",
+            password_hash="hashed",
+            role=UserRole.security,
+            email_verified=True,
+        )
         self.neighbor = User(
             id=str(uuid.uuid4()),
             full_name="Neighbor",
@@ -68,7 +76,9 @@ class SafetyServiceTests(unittest.TestCase):
         self.neighbor_home = Home(id=str(uuid.uuid4()), name="Unit B3", estate_id=self.estate.id, homeowner_id=self.neighbor.id)
         self.guard.estate_id = self.estate.id
         self.estate_owner.estate_id = self.estate.id
-        self.db.add_all([self.estate_owner, self.homeowner, self.guard, self.neighbor, self.estate, self.home, self.neighbor_home])
+        other_estate = Estate(id=str(uuid.uuid4()), name="Other Safe Estate", owner_id=self.estate_owner.id)
+        self.other_guard.estate_id = other_estate.id
+        self.db.add_all([self.estate_owner, self.homeowner, self.guard, self.other_guard, self.neighbor, self.estate, other_estate, self.home, self.neighbor_home])
         self.db.commit()
 
     def tearDown(self):
@@ -95,6 +105,12 @@ class SafetyServiceTests(unittest.TestCase):
         self.assertEqual(self.db.query(EmergencyAlert).count(), 1)
         self.assertGreaterEqual(self.db.query(EmergencyAlertEvent).count(), 2)
         self.assertGreaterEqual(self.db.query(Notification).count(), 1)
+        emergency_recipients = {
+            row.user_id
+            for row in self.db.query(Notification).filter(Notification.kind == "safety.emergency").all()
+        }
+        self.assertIn(self.guard.id, emergency_recipients)
+        self.assertNotIn(self.other_guard.id, emergency_recipients)
 
     def test_acknowledge_and_resolve_alert(self):
         with patch("app.services.notification_service.send_push_fcm"):

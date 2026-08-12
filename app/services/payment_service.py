@@ -43,218 +43,241 @@ REFERRAL_REWARD_AMOUNT = 2000
 DEFAULT_GRACE_DAYS = 5
 SIGNUP_TRIAL_DAYS = 30
 
+ESTATE_STARTER_FEATURES = [
+    "register_residents",
+    "register_security_guards",
+    "approve_reject_visitor_access",
+    "create_qr",
+    "visitor_pass_basic",
+    "scan_qr",
+    "record_visitor_entry",
+    "record_visitor_exit",
+    "visitor_history_by_house",
+    "digital_gate_records",
+    "resident_visitor_management",
+    "security_confirms_approved_visitors",
+    "recent_visitor_activity",
+    "resident_management",
+    "manual_visitor_logging",
+    "basic_notifications",
+    "basic_dashboard",
+    "visitor_logs",
+    "mobile_dashboard",
+]
+
+ESTATE_BASIC_FEATURES = ESTATE_STARTER_FEATURES + [
+    "vehicle_registration",
+    "regular_visitor_registration",
+    "delivery_management",
+    "realtime_alerts",
+    "emergency_sos",
+    "block_unwanted_visitors",
+    "visitor_search",
+    "multiple_security_guards",
+    "visitors_inside_estate",
+    "visitor_check_in_out",
+    "vehicle_entry_exit_records",
+    "delivery_records",
+    "visitor_pre_approval",
+    "resident_generated_qr_passes",
+    "security_to_resident_confirmation",
+    "estate_announcements",
+    "daily_visitor_activity",
+    "daily_gate_activity",
+    "security_resident_search",
+]
+
+ESTATE_PLUS_FEATURES = ESTATE_BASIC_FEATURES + [
+    "visitor_scheduling",
+    "expiring_visitor_passes",
+    "frequent_visitor_passes",
+    "domestic_staff_registration",
+    "artisan_contractor_registration",
+    "access_days",
+    "access_time_windows",
+    "video_verification",
+    "audio_verification",
+    "chat_call_verification",
+    "package_tracking",
+    "package_notifications",
+    "incident_reporting",
+    "incident_photo_attachments",
+    "security_incident_history",
+    "multiple_gates",
+    "record_gate_used",
+    "guard_attendance",
+    "resident_security_concerns",
+    "urgent_announcements",
+    "trusted_visitor_management",
+    "artisan_contractor_history",
+]
+
+ESTATE_GROWTH_FEATURES = ESTATE_PLUS_FEATURES + [
+    "multi_admin_roles",
+    "role_permissions",
+    "multi_gate_administration",
+    "daily_visitor_statistics",
+    "weekly_visitor_statistics",
+    "monthly_visitor_statistics",
+    "busiest_gate_hours",
+    "estate_wide_visitor_activity",
+    "security_guard_activity",
+    "security_incident_tracking",
+    "export_reports",
+    "download_visitor_records",
+    "download_resident_records",
+    "download_security_reports",
+    "download_gate_activity_reports",
+    "management_activity_history",
+    "targeted_announcements",
+    "move_in_management",
+    "move_out_management",
+    "suspend_former_resident_access",
+    "extended_history",
+    "vehicle_entry_exit_tracking",
+    "analytics",
+    "advanced_analytics",
+    "activity_tracking",
+    "advanced_reporting",
+    "security_audit_logs",
+]
+
+ESTATE_PRO_FEATURES = ESTATE_GROWTH_FEATURES + [
+    "multi_location_control",
+    "central_multi_estate_dashboard",
+    "custom_house_capacity",
+    "unlimited_admins",
+    "unlimited_security_guards",
+    "advanced_multi_gate_management",
+    "custom_reports",
+    "estate_branding",
+    "dedicated_onboarding",
+    "priority_support",
+    "staff_training",
+    "resident_data_import",
+    "custom_integrations",
+    "dedicated_account_manager",
+    "sla_support",
+    "api_access",
+]
+
+ESTATE_PLAN_FEATURE_LEVELS = {
+    "estate_starter": set(ESTATE_STARTER_FEATURES),
+    "estate_basic": set(ESTATE_BASIC_FEATURES),
+    "estate_plus": set(ESTATE_PLUS_FEATURES),
+    "estate_growth": set(ESTATE_GROWTH_FEATURES),
+    "estate_pro": set(ESTATE_PRO_FEATURES),
+}
+
 DEFAULT_PLAN_CATALOG = [
     {
         "id": "estate_starter",
-        "name": "Starter Estate",
-        "amount": 0,
+        "name": "Starter",
+        "amount": 15000,
         "currency": "NGN",
         "billingLabel": "month",
         "maxEstates": 1,
-        "maxHomes": 3,
-        "maxDoors": 3,
-        "maxQrCodes": 3,
+        "maxHomes": 8,
+        "maxDoors": 8,
+        "maxQrCodes": 8,
         "maxAdmins": 1,
+        "extraHouseAmount": 2500,
         "active": True,
         "audience": "estate",
         "durationDays": 30,
         "trialDays": 30,
         "selfServe": True,
-        "description": "Up to 3 houses. Full system access at limited scale for 30 days.",
-        "enabledFeatures": [
-            "manual_visitor_logging",
-            "basic_notifications",
-            "basic_dashboard",
-            "approve_reject_visitor_access",
-            "limited_logs",
-            "realtime_alerts",
-            "visitor_logs",
-            "resident_management",
-            "mobile_dashboard",
-            "chat_call_verification",
-            "multi_admin_roles",
-            "visitor_scheduling",
-            "access_time_windows",
-            "analytics",
-            "activity_tracking",
-            "advanced_analytics",
-            "security_audit_logs",
-            "role_permissions",
-        ],
+        "description": "Everything a small estate needs to move away from manual gate records.",
+        "enabledFeatures": ESTATE_STARTER_FEATURES,
         "restrictions": [
-            "multi_location_control",
-            "priority_support",
-            "sla_support",
-            "api_access",
+            feature for feature in ESTATE_PRO_FEATURES if feature not in ESTATE_STARTER_FEATURES
         ],
     },
     {
         "id": "estate_basic",
-        "name": "Estate Basic",
-        "amount": 6000,
+        "name": "Basic",
+        "amount": 25000,
         "currency": "NGN",
         "billingLabel": "month",
         "maxEstates": 1,
-        "maxHomes": 10,
-        "maxDoors": 10,
-        "maxQrCodes": 10,
+        "maxHomes": 30,
+        "maxDoors": 30,
+        "maxQrCodes": 30,
         "maxAdmins": 1,
+        "extraHouseAmount": 3500,
         "active": True,
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
-        "description": "Up to 10 houses with realtime alerts, visitor logs, resident management, and mobile dashboard.",
-        "enabledFeatures": [
-            "manual_visitor_logging",
-            "basic_notifications",
-            "basic_dashboard",
-            "approve_reject_visitor_access",
-            "limited_logs",
-            "realtime_alerts",
-            "visitor_logs",
-            "resident_management",
-            "mobile_dashboard",
-        ],
+        "description": "Everything needed to manage everyday estate access and security.",
+        "enabledFeatures": ESTATE_BASIC_FEATURES,
         "restrictions": [
-            "visitor_scheduling",
-            "chat_call_verification",
-            "multi_admin_roles",
-            "analytics",
-            "activity_tracking",
-            "advanced_analytics",
-            "access_time_windows",
-            "security_audit_logs",
-            "role_permissions",
-            "priority_support",
-            "multi_location_control",
-            "sla_support",
-            "api_access",
+            feature for feature in ESTATE_PRO_FEATURES if feature not in ESTATE_BASIC_FEATURES
         ],
     },
     {
         "id": "estate_plus",
         "name": "Estate Plus",
-        "amount": 9000,
+        "amount": 45000,
         "currency": "NGN",
         "billingLabel": "month",
         "maxEstates": 1,
-        "maxHomes": 15,
-        "maxDoors": 15,
-        "maxQrCodes": 15,
+        "maxHomes": 50,
+        "maxDoors": 50,
+        "maxQrCodes": 50,
         "maxAdmins": 2,
+        "extraHouseAmount": 4500,
         "active": True,
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
-        "description": "Everything in Basic plus visitor scheduling, access time windows, and chat + call verification.",
-        "enabledFeatures": [
-            "manual_visitor_logging",
-            "basic_notifications",
-            "basic_dashboard",
-            "approve_reject_visitor_access",
-            "limited_logs",
-            "realtime_alerts",
-            "visitor_logs",
-            "resident_management",
-            "mobile_dashboard",
-            "visitor_scheduling",
-            "access_time_windows",
-            "chat_call_verification",
-        ],
+        "description": "For estates that want stronger security and more control.",
+        "enabledFeatures": ESTATE_PLUS_FEATURES,
         "restrictions": [
-            "multi_admin_roles",
-            "analytics",
-            "activity_tracking",
-            "advanced_analytics",
-            "security_audit_logs",
-            "role_permissions",
-            "priority_support",
-            "multi_location_control",
-            "sla_support",
-            "api_access",
+            feature for feature in ESTATE_PRO_FEATURES if feature not in ESTATE_PLUS_FEATURES
         ],
     },
     {
         "id": "estate_growth",
         "name": "Estate Growth",
-        "amount": 18000,
+        "amount": 85000,
         "currency": "NGN",
         "billingLabel": "month",
-        "maxEstates": 2,
-        "maxHomes": 30,
-        "maxDoors": 30,
-        "maxQrCodes": 30,
+        "maxEstates": 1,
+        "maxHomes": 100,
+        "maxDoors": 100,
+        "maxQrCodes": 100,
         "maxAdmins": 5,
+        "extraHouseAmount": 6000,
         "active": True,
         "audience": "estate",
         "durationDays": 30,
         "selfServe": True,
-        "description": "Everything in Plus with multi-admin roles, analytics dashboard, and activity tracking.",
-        "enabledFeatures": [
-            "manual_visitor_logging",
-            "basic_notifications",
-            "basic_dashboard",
-            "approve_reject_visitor_access",
-            "limited_logs",
-            "realtime_alerts",
-            "visitor_logs",
-            "resident_management",
-            "mobile_dashboard",
-            "chat_call_verification",
-            "multi_admin_roles",
-            "visitor_scheduling",
-            "access_time_windows",
-            "analytics",
-            "activity_tracking",
-        ],
+        "description": "For larger and professionally managed estates.",
+        "enabledFeatures": ESTATE_GROWTH_FEATURES,
         "restrictions": [
-            "advanced_analytics",
-            "security_audit_logs",
-            "multi_location_control",
-            "role_permissions",
-            "priority_support",
-            "sla_support",
-            "api_access",
+            feature for feature in ESTATE_PRO_FEATURES if feature not in ESTATE_GROWTH_FEATURES
         ],
     },
     {
         "id": "estate_pro",
-        "name": "Estate Pro",
-        "amount": 30000,
+        "name": "Pro",
+        "amount": 0,
         "currency": "NGN",
-        "billingLabel": "month",
-        "maxEstates": 5,
-        "maxHomes": 50,
-        "maxDoors": 50,
-        "maxQrCodes": 50,
-        "maxAdmins": 15,
+        "billingLabel": "custom",
+        "maxEstates": 0,
+        "maxHomes": 0,
+        "maxDoors": 0,
+        "maxQrCodes": 0,
+        "maxAdmins": 0,
         "active": True,
         "audience": "estate",
-        "durationDays": 30,
-        "selfServe": True,
-        "description": "Everything in Growth with advanced analytics, security audit logs, role permissions, and priority support.",
-        "enabledFeatures": [
-            "manual_visitor_logging",
-            "basic_notifications",
-            "basic_dashboard",
-            "approve_reject_visitor_access",
-            "limited_logs",
-            "realtime_alerts",
-            "visitor_logs",
-            "resident_management",
-            "mobile_dashboard",
-            "chat_call_verification",
-            "multi_admin_roles",
-            "visitor_scheduling",
-            "access_time_windows",
-            "analytics",
-            "activity_tracking",
-            "advanced_analytics",
-            "security_audit_logs",
-            "role_permissions",
-            "priority_support",
-        ],
-        "restrictions": ["multi_location_control", "api_access", "sla_support"],
+        "durationDays": 365,
+        "selfServe": False,
+        "manualActivationRequired": True,
+        "description": "Custom plan for large estates, estate groups, and multi-estate operators.",
+        "enabledFeatures": ESTATE_PRO_FEATURES,
+        "restrictions": [],
     },
     {
         "id": "estate_enterprise",
@@ -620,6 +643,8 @@ DEFAULT_PLAN_CATALOG = [
 ]
 
 ALL_FEATURE_FLAGS = {
+    "access_time_windows",
+    "activity_reports",
     "manual_visitor_logging",
     "basic_notifications",
     "basic_dashboard",
@@ -636,6 +661,7 @@ ALL_FEATURE_FLAGS = {
     "analytics",
     "activity_tracking",
     "advanced_analytics",
+    "advanced_reporting",
     "security_audit_logs",
     "multi_location_control",
     "role_permissions",
@@ -646,7 +672,28 @@ ALL_FEATURE_FLAGS = {
     "visitor_history",
     "multi_door_access",
     "advanced_privacy_controls",
-}
+    "audit_logs",
+    "custom_branding",
+    "custom_integrations",
+    "dedicated_account_manager",
+    "delivery_management",
+    "department_management",
+    "email_notifications",
+    "employee_attendance",
+    "employee_directory",
+    "export_reports",
+    "host_approval",
+    "meeting_visitor_management",
+    "multi_admin",
+    "multiple_branches",
+    "multiple_receptionists",
+    "qr_visitor_check_in",
+    "reception_dashboard",
+    "security_alerts",
+    "sso",
+    "visitor_badges",
+    "visitor_management",
+} | set(ESTATE_PRO_FEATURES)
 
 LIMITED_LOG_RETENTION_DAYS = 14
 USAGE_WARNING_THRESHOLD = 0.8
@@ -667,6 +714,7 @@ FEATURE_LABELS = {
     "analytics": "analytics",
     "activity_tracking": "activity tracking",
     "advanced_analytics": "advanced analytics",
+    "advanced_reporting": "advanced reporting",
     "security_audit_logs": "security audit logs",
     "multi_location_control": "multi-location control",
     "role_permissions": "role permissions",
@@ -677,6 +725,20 @@ FEATURE_LABELS = {
     "visitor_history": "visitor history",
     "multi_door_access": "multiple door access",
     "advanced_privacy_controls": "advanced privacy controls",
+    "audit_logs": "audit logs",
+    "delivery_management": "delivery management",
+    "employee_directory": "employee directory",
+    "export_reports": "export reports",
+    "host_approval": "host approval",
+    "meeting_visitor_management": "meeting visitor management",
+    "multi_admin": "multi-admin",
+    "multiple_branches": "multiple branches",
+    "multiple_receptionists": "multiple receptionists",
+    "qr_visitor_check_in": "QR visitor check-in",
+    "reception_dashboard": "reception dashboard",
+    "security_alerts": "security alerts",
+    "visitor_badges": "visitor badges",
+    "visitor_management": "visitor management",
 }
 
 
@@ -702,6 +764,46 @@ def _compute_expected_amount_kobo(plan_amount: int | float, billing_cycle: str |
         cycle = "monthly"
     cycle_multiplier = 12 if cycle == "yearly" else 1
     return int(plan_amount * cycle_multiplier * 100)
+
+
+def count_estate_houses_for_owner(db: Session, owner_id: str) -> int:
+    return (
+        db.query(Home)
+        .join(Estate, Estate.id == Home.estate_id)
+        .filter(Estate.owner_id == owner_id)
+        .count()
+    )
+
+
+def calculate_plan_billing_amount(
+    db: Session,
+    *,
+    user_id: str,
+    plan: dict[str, Any],
+    billing_cycle: str | None = "monthly",
+) -> dict[str, Any]:
+    cycle = (billing_cycle or "monthly").strip().lower()
+    if cycle not in {"monthly", "yearly"}:
+        cycle = "monthly"
+    cycle_multiplier = 12 if cycle == "yearly" else 1
+    base_amount = int(plan.get("amount") or 0)
+    included_houses = int(plan.get("includedHouses") or plan.get("maxHomes") or plan.get("maxDoors") or 0)
+    extra_house_amount = int(plan.get("extraHouseAmount") or 0)
+    house_count = count_estate_houses_for_owner(db, user_id) if plan.get("audience") == "estate" else 0
+    extra_houses = max(0, house_count - included_houses) if included_houses > 0 else 0
+    monthly_total = base_amount + (extra_houses * extra_house_amount)
+    total_amount = monthly_total * cycle_multiplier
+    return {
+        "baseAmount": base_amount,
+        "includedHouses": included_houses,
+        "activeHouseCount": house_count,
+        "extraHouses": extra_houses,
+        "extraHouseAmount": extra_house_amount,
+        "monthlyTotal": monthly_total,
+        "billingCycle": cycle,
+        "totalAmount": total_amount,
+        "totalAmountKobo": int(total_amount * 100),
+    }
 
 
 def _extract_paystack_error(detail: str) -> tuple[str | None, str]:
@@ -868,6 +970,9 @@ def _plan_payload(row: SubscriptionPlan, catalog_row: dict[str, Any], user: User
         "maxDoors": int(row.max_doors or 0),
         "maxQrCodes": int(row.max_qr_codes or 0),
         "maxAdmins": int(getattr(row, "max_admins", 1) or 1),
+        "maxHomes": int(catalog_row.get("maxHomes") or row.max_doors or 0),
+        "includedHouses": int(catalog_row.get("maxHomes") or row.max_doors or 0),
+        "extraHouseAmount": int(catalog_row.get("extraHouseAmount") or 0),
         "active": bool(row.active),
         "audience": getattr(row, "audience", None) or catalog_row.get("audience", "homeowner"),
         "trialDays": int(getattr(row, "trial_days", None) or catalog_row.get("trialDays", 0) or 0),
@@ -1093,7 +1198,7 @@ def _ensure_subscription_billing_record(
         cancel_at_period_end=False,
         grace_days=DEFAULT_GRACE_DAYS,
         last_payment_attempt_at=current_time,
-        amount_due=plan_meta.get("amount") or 0,
+        amount_due=calculate_plan_billing_amount(db, user_id=user_id, plan=plan_meta, billing_cycle=billing_cycle)["totalAmount"],
         amount_paid=0,
         timezone="Africa/Lagos",
         starts_at=current_time,
@@ -1723,6 +1828,10 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
             "trialDaysRemaining": 0,
             "expiresSoon": False,
             "requiresManualActivation": bool(free_plan.get("manualActivationRequired")),
+            "amount": int(free_plan.get("amount") or 0),
+            "monthlyAmount": int(free_plan.get("amount") or 0),
+            "includedHouses": int(free_plan.get("maxHomes") or free_plan.get("maxDoors") or 0),
+            "extraHouseAmount": int(free_plan.get("extraHouseAmount") or 0),
             "limits": {
                 "maxEstates": int(free_plan.get("maxEstates") or (1 if audience == "estate" else 0)),
                 "maxHomes": int(free_plan.get("maxHomes") or free_plan.get("maxDoors") or 0),
@@ -1774,6 +1883,7 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         now=now,
     )
 
+    row_is_trial = bool(row.trial_ends_at and ensure_utc(row.trial_ends_at) > now) or str(row.payment_status or "").lower() == "trialing"
     result = {
         "id": row.id,
         "plan": plan_meta["id"],
@@ -1784,11 +1894,18 @@ def get_effective_subscription(db: Session, user_id: str, user_role: str | None 
         "startsAt": row.starts_at.isoformat() if row.starts_at else None,
         "endsAt": row.ends_at.isoformat() if row.ends_at else None,
         "expiresAt": expires_at.isoformat() if expires_at else None,
-        "isTrial": bool(plan_meta.get("trialDays") and int(plan_meta.get("amount") or 0) == 0),
+        "isTrial": row_is_trial,
         "trialStatus": "expired" if row.status == "expired" and plan_meta.get("trialDays") else ("active" if plan_meta.get("trialDays") else "not_applicable"),
         "trialDaysRemaining": trial_days_remaining if plan_meta.get("trialDays") else 0,
         "expiresSoon": bool(expires_at and 0 <= (expires_at - now).days <= 3),
         "requiresManualActivation": bool(plan_meta.get("manualActivationRequired")),
+        "amount": int(plan_meta.get("amount") or 0),
+        "monthlyAmount": int(plan_meta.get("monthlyAmount") or plan_meta.get("amount") or 0),
+        "includedHouses": int(plan_meta.get("includedHouses") or plan_meta.get("maxHomes") or plan_meta["maxDoors"] or 0),
+        "extraHouseAmount": int(plan_meta.get("extraHouseAmount") or 0),
+        "billingEstimate": calculate_plan_billing_amount(db, user_id=subscription_owner_id, plan=plan_meta, billing_cycle=row.billing_cycle or "monthly")
+        if plan_meta.get("audience") == "estate"
+        else None,
         "limits": {
             "maxEstates": int(plan_meta.get("maxEstates") or (0 if plan_meta["id"] == "estate_enterprise" else (1 if audience == "estate" else 0))),
             "maxHomes": int(plan_meta.get("maxHomes") or plan_meta["maxDoors"]),
@@ -1837,7 +1954,11 @@ def require_subscription_feature(db: Session, user_id: str, feature: str, user_r
             code="SUBSCRIPTION_ACTION_BLOCKED",
             extra={"subscription": subscription, "renew_url": "/billing/paywall"},
         )
+
     feature_key = str(feature or "").strip()
+    if subscription.get("inSignupTrial") or subscription.get("status") == "trial":
+        return subscription
+
     if subscription.get("allowed_actions") and subscription.get("allowed_actions", {}).get(feature_key) is False:
         raise AppException(
             "This action is temporarily limited by your current subscription state.",
@@ -1845,7 +1966,7 @@ def require_subscription_feature(db: Session, user_id: str, feature: str, user_r
             code="SUBSCRIPTION_ACTION_BLOCKED",
             extra={"subscription": subscription, "renew_url": "/billing/paywall"},
         )
-    if subscription.get("featureFlags", {}).get(feature_key):
+    if not feature_key or subscription.get("featureFlags", {}).get(feature_key):
         return subscription
     feature_name = FEATURE_LABELS.get(feature_key, feature_key.replace("_", " "))
     _insert_notification_if_missing(
@@ -1888,6 +2009,7 @@ def initialize_paystack_transaction_db(
     cycle = (billing_cycle or "monthly").strip().lower()
     if cycle not in {"monthly", "yearly"}:
         raise AppException("Invalid billing cycle", status_code=400)
+    billing_amount = calculate_plan_billing_amount(db, user_id=user_id, plan=plan, billing_cycle=cycle)
     paystack_secret = _normalize_secret(settings.PAYSTACK_SECRET_KEY)
     if not paystack_secret:
         raise AppException("Paystack is not configured", status_code=500)
@@ -1909,7 +2031,7 @@ def initialize_paystack_transaction_db(
     )
     payload = {
         "email": email,
-        "amount": _compute_expected_amount_kobo(plan["amount"], cycle),
+        "amount": billing_amount["totalAmountKobo"],
         "currency": (plan.get("currency") or "NGN").upper(),
         "reference": reference,
         "metadata": {
@@ -1917,6 +2039,11 @@ def initialize_paystack_transaction_db(
             "plan": plan_id,
             "billing_cycle": cycle,
             "source": "qring-billing",
+            "included_houses": billing_amount["includedHouses"],
+            "active_house_count": billing_amount["activeHouseCount"],
+            "extra_houses": billing_amount["extraHouses"],
+            "extra_house_amount": billing_amount["extraHouseAmount"],
+            "monthly_total": billing_amount["monthlyTotal"],
         },
     }
     _create_or_update_invoice_and_attempt(
@@ -2054,7 +2181,13 @@ def verify_paystack_and_activate(db: Session, reference: str, user_id: str):
     if payment_user_id != user_id:
         raise AppException("Payment reference is not linked to this user", status_code=403)
     plan = get_plan_or_raise(db, plan_id)
-    expected_amount_kobo = _compute_expected_amount_kobo(plan["amount"], billing_cycle)
+    invoice = _find_invoice_by_reference(db, reference)
+    expected_amount_kobo = int((invoice.amount_expected * Decimal("100")).to_integral_value()) if invoice else calculate_plan_billing_amount(
+        db,
+        user_id=user_id,
+        plan=plan,
+        billing_cycle=billing_cycle,
+    )["totalAmountKobo"]
     paid_amount_kobo = int(payment.get("amount") or 0)
     paid_currency = str(payment.get("currency") or "").upper()
     expected_currency = (plan.get("currency") or "NGN").upper()

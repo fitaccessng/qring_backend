@@ -26,6 +26,7 @@ from app.services.advanced_service import (
     list_community_posts,
     list_digital_receipts,
     list_live_queue,
+    load_session_snapshot_bytes,
     load_snapshot_bytes,
     mark_community_post_read,
     notify_multi_channel,
@@ -196,6 +197,8 @@ def advanced_download_snapshot(
         snapshot_id=snapshot_id,
         requester_user_id=user.id,
         is_admin=user.role == UserRole.admin,
+        requester_role=user.role.value,
+        requester_estate_id=user.estate_id,
     )
     return {
         "data": {
@@ -218,6 +221,25 @@ def advanced_download_snapshot_file(
         snapshot_id=snapshot_id,
         requester_user_id=user.id,
         is_admin=user.role == UserRole.admin,
+        requester_role=user.role.value,
+        requester_estate_id=user.estate_id,
+    )
+    return Response(content=blob, media_type=content_type, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/visitor/sessions/{session_id}/snapshot/file")
+def advanced_download_session_snapshot_file(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    blob, logical_type, content_type = load_session_snapshot_bytes(
+        db,
+        visitor_session_id=session_id,
+        requester_user_id=user.id,
+        is_admin=user.role == UserRole.admin,
+        requester_role=user.role.value,
+        requester_estate_id=user.estate_id,
     )
     return Response(content=blob, media_type=content_type, headers={"Cache-Control": "no-store"})
 

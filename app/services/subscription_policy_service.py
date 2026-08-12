@@ -110,6 +110,8 @@ def build_subscription_summary(subscription: Any, *, actor_role: str, is_bill_pa
     current_time = ensure_utc(now) or ensure_utc(utc_now())
     ends_at = _coerce_datetime(getattr(subscription, "ends_at", None))
     grace_ends_at = _coerce_datetime(getattr(subscription, "grace_ends_at", None))
+    trial_ends_at = _coerce_datetime(getattr(subscription, "trial_ends_at", None))
+    trial_active = bool(trial_ends_at and trial_ends_at > current_time)
 
     return {
         "plan": getattr(subscription, "plan", None),
@@ -122,6 +124,8 @@ def build_subscription_summary(subscription: Any, *, actor_role: str, is_bill_pa
         "current_period_end": ends_at.isoformat() if ends_at else None,
         "grace_ends_at": grace_ends_at.isoformat() if grace_ends_at else None,
         "billing_scope": getattr(subscription, "billing_scope", actor_role),
+        "trialActive": trial_active,
+        "trialEndsAt": trial_ends_at.isoformat() if trial_ends_at else None,
     }
 
 

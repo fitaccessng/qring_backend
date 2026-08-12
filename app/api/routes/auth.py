@@ -24,9 +24,15 @@ from app.schemas.auth import (
     VerifyEmailRequest,
 )
 from app.services import auth_service
+from pydantic import BaseModel
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class ProfileUpdateRequest(BaseModel):
+    fullName: str
+    phone: str | None = None
 
 
 @router.post("/signup")
@@ -168,3 +174,20 @@ def change_password(
     user: User = Depends(get_current_user),
 ):
     return {"data": auth_service.change_password(db, user.id, payload.currentPassword, payload.newPassword)}
+
+
+@router.get("/me")
+def current_user_profile(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": auth_service.serialize_current_user(db, user)}
+
+
+@router.put("/me")
+def update_current_user_profile(
+    payload: ProfileUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": auth_service.update_current_user_profile(db, user, full_name=payload.fullName, phone=payload.phone)}

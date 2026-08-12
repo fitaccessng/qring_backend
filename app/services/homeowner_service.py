@@ -74,6 +74,9 @@ def _resolve_snapshot_url_with_source(
     metadata = _coerce_mapping(source.get("metadata"))
 
     candidates: list[tuple[str, Any]] = [
+        ("payload.snapshotAudit.fileUrl", resolve_snapshot_public_url(db, snapshot_audit_id)),
+        ("payload.sessionSnapshot.fileUrl", resolve_session_snapshot_public_url(db, session.id)),
+        ("session.resolve.snapshotUrl", resolve_session_snapshot_public_url(db, session.id)),
         ("session.snapshot_url", session.snapshot_url),
         ("session.photo_url", session.photo_url),
         ("payload.snapshotUrl", source.get("snapshotUrl")),
@@ -99,9 +102,6 @@ def _resolve_snapshot_url_with_source(
         ("payload.payload.imageUrl", snapshot_payload.get("imageUrl")),
         ("payload.payload.fileUrl", snapshot_payload.get("fileUrl")),
         ("payload.payload.url", snapshot_payload.get("url")),
-        ("payload.snapshotAudit.fileUrl", resolve_snapshot_public_url(db, snapshot_audit_id)),
-        ("payload.sessionSnapshot.fileUrl", resolve_session_snapshot_public_url(db, session.id)),
-        ("session.resolve.snapshotUrl", resolve_session_snapshot_public_url(db, session.id)),
     ]
 
     snapshot_url = ""
@@ -129,6 +129,8 @@ def _resolve_session_snapshot_payload(
         else None
     )
     snapshot_url = _canonical_snapshot_url(
+        resolve_snapshot_public_url(db, snapshot_audit_id),
+        resolve_session_snapshot_public_url(db, session.id),
         source.get("snapshotUrl"),
         source.get("photoUrl"),
         source.get("snapshot_url"),
@@ -137,8 +139,6 @@ def _resolve_session_snapshot_payload(
         source.get("image_url"),
         session.snapshot_url,
         session.photo_url,
-        resolve_snapshot_public_url(db, snapshot_audit_id),
-        resolve_session_snapshot_public_url(db, session.id),
     )
     return {
         "messageId": f"snapshot:{session.id}",

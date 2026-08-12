@@ -110,6 +110,23 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.assertEqual(rows[0]["snapshotUrl"], "https://example.com/snapshot.jpg")
         self.assertEqual(rows[0]["photoUrl"], "https://example.com/snapshot.jpg")
 
+    def test_list_homeowner_session_messages_prefers_audit_file_route_over_stale_upload_url(self):
+        session = self._create_session(snapshot_url="/uploads/visitor-media/missing/snapshot.jpg")
+        audit = create_snapshot_audit(
+            self.db,
+            homeowner_id=self.homeowner.id,
+            media_bytes=b"snapshot-bytes",
+            filename_hint="snapshot.jpg",
+            media_type="photo",
+            visitor_session_id=session.id,
+            source="test",
+        )
+
+        rows = list_homeowner_session_messages(self.db, homeowner_id=self.homeowner.id, session_id=session.id)
+
+        self.assertEqual(rows[0]["messageType"], "visitor_snapshot")
+        self.assertEqual(rows[0]["snapshotUrl"], f"/api/v1/advanced/visitor/snapshots/{audit['id']}/file")
+
     def test_create_snapshot_audit_falls_back_to_data_url_when_file_storage_fails(self):
         media_bytes = b"test-image-bytes"
         with (

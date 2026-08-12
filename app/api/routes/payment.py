@@ -108,18 +108,16 @@ def payment_referral_me(
 def payment_plans(
     db: Session = Depends(get_db),
 ):
-    return {"data": list_subscription_plans(db)}
+    return {"data": [plan for plan in list_subscription_plans(db) if str(plan.get("audience") or "").lower() == "estate"]}
 
 
 @router.post("/paystack/initialize")
 def payment_paystack_initialize(
     payload: PaystackInitializePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("homeowner", "estate")),
+    user: User = Depends(require_roles("estate")),
 ):
     subscription = get_effective_subscription(db, user.id, user_role=user.role.value)
-    if user.role.value == "homeowner" and subscription.get("managedByEstate"):
-        raise AppException("Estate-managed homeowners cannot manage billing directly.", status_code=403)
     data = initialize_paystack_transaction_db(
         db=db,
         user_id=user.id,
@@ -135,7 +133,7 @@ def payment_paystack_initialize(
 def payment_paystack_verify(
     reference: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("homeowner", "estate")),
+    user: User = Depends(require_roles("estate")),
 ):
     data = verify_paystack_and_activate(db=db, reference=reference, user_id=user.id)
     return {"data": data}
@@ -145,11 +143,9 @@ def payment_paystack_verify(
 def payment_request_subscription(
     payload: SubscriptionRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("homeowner", "estate")),
+    user: User = Depends(require_roles("estate")),
 ):
     subscription = get_effective_subscription(db, user.id, user_role=user.role.value)
-    if user.role.value == "homeowner" and subscription.get("managedByEstate"):
-        raise AppException("Estate-managed homeowners cannot manage billing directly.", status_code=403)
     plan = get_plan_or_raise(db, payload.plan)
     if plan.get("audience") not in {"legacy", user.role.value}:
         raise AppException("Selected plan is not available for this account type", status_code=400)

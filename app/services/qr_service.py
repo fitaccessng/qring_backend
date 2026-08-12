@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppException
 from app.db.models import Door, Estate, Home, Office, OfficeMember, QRCode, User
 from app.services.appointment_service import resolve_qr_appointment_token_for_request
-from app.services.payment_service import is_paid_subscription_expired
+from app.services.payment_service import get_effective_subscription
 
 
 def resolve_qr(db: Session, qr_id: str) -> dict:
@@ -78,13 +78,15 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
 
     if qr.estate_id:
         estate = db.query(Estate).filter(Estate.id == qr.estate_id).first()
-        if estate and is_paid_subscription_expired(db, estate.owner_id):
-            db.query(QRCode).filter(QRCode.estate_id == qr.estate_id, QRCode.active.is_(True)).update(
-                {QRCode.active: False},
-                synchronize_session=False,
-            )
-            db.commit()
-            raise AppException("Estate subscription expired. QR codes are inactive.", status_code=402)
+        if estate:
+            subscription = get_effective_subscription(db, estate.owner_id, user_role="estate")
+            if subscription.get("status") == "suspended" and not subscription.get("inSignupTrial"):
+                db.query(QRCode).filter(QRCode.estate_id == qr.estate_id, QRCode.active.is_(True)).update(
+                    {QRCode.active: False},
+                    synchronize_session=False,
+                )
+                db.commit()
+                raise AppException("Estate subscription expired. QR codes are inactive.", status_code=402)
 
     door_ids = [d.strip() for d in qr.doors_csv.split(",") if d.strip()]
     rows = (

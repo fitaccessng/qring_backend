@@ -10,6 +10,7 @@ from app.api.routes import (
     auth,
     dashboard,
     estate,
+    estate_operations,
     health,
     homeowner,
     office,
@@ -40,6 +41,7 @@ api_router.include_router(visitor.router, prefix="/visitor", tags=["visitor"])
 api_router.include_router(visitor.canonical_router, tags=["visitor-contract"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(estate.router, prefix="/estate", tags=["estate"])
+api_router.include_router(estate_operations.router, prefix="/estate-ops", tags=["estate-operations"])
 api_router.include_router(alert.router, prefix="/alert", tags=["alert"])
 api_router.include_router(payment.router, prefix="/payment", tags=["payment"])
 api_router.include_router(subscription_policy.router, prefix="/payment", tags=["payment"])

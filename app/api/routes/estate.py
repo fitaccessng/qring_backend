@@ -39,6 +39,8 @@ from app.services.estate_service import (
     delete_estate_security_user,
     create_estate_shared_selector_qr,
     get_estate_settings,
+    get_estate_resident_detail,
+    get_estate_security_user_detail,
     get_estate_plan_restrictions,
     get_estate_stats_summary,
     invite_homeowner,
@@ -416,6 +418,26 @@ def estate_security_users(
     return {"data": list_estate_security_users(db=db, owner_id=user.id, estate_id=estate_id)}
 
 
+@router.get("/{estate_id}/security-users/{security_user_id}")
+def estate_security_user_detail(
+    estate_id: str,
+    security_user_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {"data": get_estate_security_user_detail(db=db, owner_id=user.id, estate_id=estate_id, security_user_id=security_user_id)}
+
+
+@router.get("/{estate_id}/residents/{resident_id}")
+def estate_resident_detail(
+    estate_id: str,
+    resident_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("estate", "admin")),
+):
+    return {"data": get_estate_resident_detail(db=db, owner_id=user.id, estate_id=estate_id, resident_id=resident_id)}
+
+
 @router.post("/security-users")
 def estate_create_security_account(
     payload: EstateSecurityCreatePayload,
@@ -663,10 +685,12 @@ def estate_mappings(
 
 @router.get("/access-logs")
 def estate_access_logs(
+    category: str = "visitors",
+    limit: int = 100,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("estate", "admin")),
 ):
-    return {"data": list_estate_access_logs(db=db, owner_id=user.id)}
+    return {"data": list_estate_access_logs(db=db, owner_id=user.id, limit=limit, category=category)}
 
 
 @router.get("/plan-restrictions")

@@ -34,8 +34,17 @@ from app.db.models import (
 from app.socket.server import sio
 from app.services.provider_integrations import send_push_fcm, send_transactional_email
 from app.services.payment_proof_service import save_payment_proof
+from app.services.payment_service import require_subscription_feature
 
 settings = get_settings()
+
+ALERT_TYPE_FEATURES = {
+    EstateAlertType.notice: "estate_announcements",
+    EstateAlertType.payment_request: "estate_announcements",
+    EstateAlertType.meeting: "targeted_announcements",
+    EstateAlertType.poll: "targeted_announcements",
+    EstateAlertType.maintenance_request: "resident_security_concerns",
+}
 
 
 def _build_estate_due_reminder_email_body(
@@ -353,6 +362,14 @@ def create_estate_alert(
         alert_type_enum = EstateAlertType(normalized_type)
     except ValueError:
         raise AppException("Invalid alert_type", status_code=400)
+    require_subscription_feature(
+        db,
+        estate_admin_id,
+        ALERT_TYPE_FEATURES.get(alert_type_enum, "estate_announcements"),
+        user_role="estate",
+    )
+    if target_homeowner_ids:
+        require_subscription_feature(db, estate_admin_id, "targeted_announcements", user_role="estate")
 
     normalized_amount = None
     if alert_type_enum == EstateAlertType.payment_request:
@@ -768,6 +785,14 @@ def update_estate_alert(
     if not alert:
         raise AppException("Alert not found", status_code=404)
     _require_estate_admin_access(db, estate_id=alert.estate_id, user_id=estate_admin_id)
+    require_subscription_feature(
+        db,
+        estate_admin_id,
+        ALERT_TYPE_FEATURES.get(alert.alert_type, "estate_announcements"),
+        user_role="estate",
+    )
+    if target_homeowner_ids:
+        require_subscription_feature(db, estate_admin_id, "targeted_announcements", user_role="estate")
 
     clean_title = (title or "").strip()
     if not clean_title:
@@ -855,6 +880,12 @@ def delete_estate_alert(
     if not alert:
         raise AppException("Alert not found", status_code=404)
     _require_estate_admin_access(db, estate_id=alert.estate_id, user_id=estate_admin_id)
+    require_subscription_feature(
+        db,
+        estate_admin_id,
+        ALERT_TYPE_FEATURES.get(alert.alert_type, "estate_announcements"),
+        user_role="estate",
+    )
 
     alert_payload = _serialize_alert(alert)
     estate_id = alert.estate_id
@@ -898,6 +929,7 @@ def list_maintenance_status_audits(
     estate_admin_id: str,
 ) -> list[dict]:
     _require_estate_admin_access(db, estate_id=estate_id, user_id=estate_admin_id)
+    require_subscription_feature(db, estate_admin_id, "security_incident_history", user_role="estate")
     rows = (
         db.query(MaintenanceStatusAudit, User)
         .join(User, MaintenanceStatusAudit.changed_by_user_id == User.id)
@@ -941,6 +973,7 @@ def create_homeowner_maintenance_request(
     if not estate_row or not estate_row[0]:
         raise AppException("You are not linked to any estate", status_code=404)
     estate = _resolve_estate_or_404(db, estate_id=estate_row[0])
+    require_subscription_feature(db, estate.owner_id, "resident_security_concerns", user_role="estate")
     clean_title = (title or "").strip()
     if not clean_title:
         raise AppException("title is required", status_code=400)

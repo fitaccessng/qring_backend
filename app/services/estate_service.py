@@ -5,14 +5,32 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import AppException
 from app.core.config import get_settings
 from app.core.time import utc_now
 from app.core.security import hash_password
-from app.db.models import Door, Estate, GateLog, Home, Notification, QRCode, User, UserRole, VisitorSession
+from app.db.models import (
+    Door,
+    Estate,
+    EstateAlert,
+    EstateAlertType,
+    EstatePackage,
+    GateLog,
+    GuardAttendance,
+    Home,
+    HomeownerPayment,
+    Notification,
+    QRCode,
+    ResidentVehicle,
+    SecurityIncident,
+    User,
+    UserRole,
+    VisitorSession,
+)
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired, require_subscription_feature
 from app.services.provider_integrations import send_push_fcm, send_transactional_email
 settings = get_settings()
@@ -82,7 +100,13 @@ def _usage_for_owner(db: Session, owner_id: str) -> dict[str, int]:
         return {"homes": 0, "doors": 0, "qr_codes": 0}
     door_ids = [row.id for row in db.query(Door).filter(Door.home_id.in_(home_ids)).all()]
     qr_count = (
-        db.query(QRCode).filter(QRCode.home_id.in_(home_ids), QRCode.active.is_(True)).count()
+        db.query(func.count(func.distinct(QRCode.home_id)))
+        .filter(
+            QRCode.home_id.in_(home_ids),
+            QRCode.active.is_(True),
+            QRCode.mode != "selector",
+        )
+        .scalar()
         if home_ids
         else 0
     )
@@ -91,6 +115,36 @@ def _usage_for_owner(db: Session, owner_id: str) -> dict[str, int]:
         "doors": len(door_ids),
         "qr_codes": qr_count,
     }
+
+
+def _house_qr_mode(home_id: str) -> str:
+    return f"house:{home_id}"
+
+
+def _ensure_house_qr(db: Session, *, estate_id: str, home: Home, door: Door) -> QRCode:
+    existing = (
+        db.query(QRCode)
+        .filter(QRCode.home_id == home.id, QRCode.mode == _house_qr_mode(home.id), QRCode.active.is_(True))
+        .order_by(QRCode.created_at.desc())
+        .first()
+    )
+    if existing:
+        if door.id not in [item.strip() for item in (existing.doors_csv or "").split(",") if item.strip()]:
+            existing.doors_csv = ",".join([item for item in [existing.doors_csv, door.id] if item])
+            db.flush()
+        return existing
+    qr = QRCode(
+        qr_id=f"qr-{uuid.uuid4().hex[:12]}",
+        plan="single",
+        home_id=home.id,
+        doors_csv=door.id,
+        mode=_house_qr_mode(home.id),
+        estate_id=estate_id,
+        active=True,
+    )
+    db.add(qr)
+    db.flush()
+    return qr
 
 
 def _estate_plan_capacity(subscription: dict[str, Any]) -> dict[str, int]:
@@ -126,15 +180,9 @@ def _enforce_estate_limit(db: Session, owner_id: str, subscription: dict[str, An
 
 
 def _enforce_home_limit(db: Session, owner_id: str, subscription: dict[str, Any]) -> None:
-    max_homes = _estate_plan_capacity(subscription)["maxHomes"]
-    if max_homes <= 0:
-        return
-    used_homes = _estate_scope_homes_query(db, owner_id).count()
-    if used_homes >= max_homes:
-        raise AppException(
-            f"Your {subscription.get('planName') or subscription.get('plan') or 'current'} plan supports only {max_homes} homes. Upgrade to add more units.",
-            status_code=402,
-        )
+    # Estate billing is house/unit based. Houses over the included capacity are billed
+    # as add-ons, so adding a unit should not force an upgrade by itself.
+    return
 
 
 def _limited_log_cutoff(subscription: dict[str, Any]) -> datetime | None:
@@ -540,6 +588,7 @@ def create_estate_homeowner(
     unit_name: str | None = None,
     door_name: str | None = None,
 ) -> dict[str, Any]:
+    require_subscription_feature(db, owner_id, "register_residents", user_role="estate")
     _require_estate_owner(db, estate_id, owner_id)
     subscription = get_effective_subscription(db, owner_id, user_role="estate")
     _enforce_home_limit(db, owner_id, subscription)
@@ -576,22 +625,8 @@ def create_estate_homeowner(
         home_name = f"{base_home_name} {suffix}"
         suffix += 1
 
-    effective_sub = get_effective_subscription(db, owner_id, user_role="estate")
-    capacity = _estate_plan_capacity(effective_sub)
-    usage = _usage_for_owner(db, owner_id)
-
-    max_doors = int(capacity.get("maxDoors") or 0)
-    max_qr_codes = int(capacity.get("maxQrCodes") or 0)
-    if max_doors and usage["doors"] >= max_doors:
-        raise AppException(
-            f"Your {effective_sub.get('planName') or effective_sub.get('plan') or 'current'} plan supports only {max_doors} doors. Upgrade to add another resident access point.",
-            status_code=402,
-        )
-    if max_qr_codes and usage["qr_codes"] >= max_qr_codes:
-        raise AppException(
-            f"Your {effective_sub.get('planName') or effective_sub.get('plan') or 'current'} plan supports only {max_qr_codes} QR codes. Upgrade to add another resident access point.",
-            status_code=402,
-        )
+    # Estate subscription capacity is based on houses/units only. Doors/gates
+    # and QR records attached to a house do not create extra billable capacity.
 
     home = Home(name=home_name, estate_id=estate_id, homeowner_id=user.id)
     db.add(home)
@@ -602,16 +637,7 @@ def create_estate_homeowner(
     db.add(door)
     db.flush()
 
-    qr = QRCode(
-        qr_id=f"qr-{uuid.uuid4().hex[:12]}",
-        plan="single",
-        home_id=home.id,
-        doors_csv=door.id,
-        mode="direct",
-        estate_id=estate_id,
-        active=True,
-    )
-    db.add(qr)
+    qr = _ensure_house_qr(db, estate_id=estate_id, home=home, door=door)
 
     db.commit()
     db.refresh(user)
@@ -638,6 +664,17 @@ def create_estate_security_user(
     gate_id: str | None = None,
 ) -> User:
     _require_estate_owner(db, estate_id, owner_id)
+    existing_security_count = (
+        db.query(User)
+        .filter(User.estate_id == estate_id, User.role == UserRole.security)
+        .count()
+    )
+    require_subscription_feature(
+        db,
+        owner_id,
+        "multiple_security_guards" if existing_security_count else "register_security_guards",
+        user_role="estate",
+    )
 
     clean_name = (full_name or "").strip()
     clean_email = (email or "").strip().lower()
@@ -689,6 +726,132 @@ def list_estate_security_users(db: Session, *, owner_id: str, estate_id: str) ->
     ]
 
 
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _to_money(value: Any) -> float:
+    return float(value or 0)
+
+
+def _append_timeline(items: list[dict[str, Any]], *, kind: str, label: str, at: Any, details: dict[str, Any] | None = None) -> None:
+    if not at:
+        return
+    items.append({"kind": kind, "label": label, "at": _iso(at), "details": details or {}})
+
+
+def get_estate_security_user_detail(db: Session, *, owner_id: str, estate_id: str, security_user_id: str) -> dict[str, Any]:
+    estate = _require_estate_owner(db, estate_id, owner_id)
+    guard = (
+        db.query(User)
+        .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
+        .first()
+    )
+    if not guard:
+        raise AppException("Security account not found", status_code=404)
+
+    attendance_rows = (
+        db.query(GuardAttendance)
+        .filter(GuardAttendance.estate_id == estate_id, GuardAttendance.guard_user_id == guard.id)
+        .order_by(GuardAttendance.clock_in_at.desc())
+        .limit(25)
+        .all()
+    )
+    gate_rows = (
+        db.query(GateLog, VisitorSession, Home)
+        .outerjoin(VisitorSession, VisitorSession.id == GateLog.visitor_session_id)
+        .outerjoin(Home, Home.id == GateLog.home_id)
+        .filter(GateLog.estate_id == estate_id, GateLog.actor_user_id == guard.id)
+        .order_by(GateLog.created_at.desc())
+        .limit(60)
+        .all()
+    )
+    incident_rows = (
+        db.query(SecurityIncident)
+        .filter(SecurityIncident.estate_id == estate_id, SecurityIncident.reported_by_user_id == guard.id)
+        .order_by(SecurityIncident.created_at.desc())
+        .limit(25)
+        .all()
+    )
+    package_rows = (
+        db.query(EstatePackage, Home)
+        .join(Home, Home.id == EstatePackage.home_id)
+        .filter(EstatePackage.estate_id == estate_id, EstatePackage.recorded_by_user_id == guard.id)
+        .order_by(EstatePackage.arrived_at.desc())
+        .limit(25)
+        .all()
+    )
+
+    timeline: list[dict[str, Any]] = []
+    for row in attendance_rows:
+        _append_timeline(timeline, kind="attendance", label="Clocked in", at=row.clock_in_at, details={"gateId": row.gate_id, "status": row.status})
+        _append_timeline(timeline, kind="attendance", label="Clocked out", at=row.clock_out_at, details={"gateId": row.gate_id, "status": "off_duty"})
+    for log, session, home in gate_rows:
+        label = {
+            "security_confirm_entry": "Checked in visitor",
+            "security_checkout": "Checked out visitor",
+            "vehicle_entry": "Recorded vehicle entry",
+            "vehicle_exit": "Recorded vehicle exit",
+        }.get(log.action, log.action.replace("_", " ").title())
+        _append_timeline(
+            timeline,
+            kind="gate",
+            label=label,
+            at=log.created_at,
+            details={
+                "gateId": log.gate_id,
+                "house": home.name if home else "",
+                "visitor": session.visitor_label if session else "",
+                "status": log.resulting_status,
+            },
+        )
+    for row in incident_rows:
+        _append_timeline(timeline, kind="incident", label=f"Reported {row.incident_type}", at=row.created_at, details={"status": row.status, "gateId": row.gate_id})
+    for package, home in package_rows:
+        _append_timeline(timeline, kind="package", label="Registered package", at=package.arrived_at, details={"house": home.name, "status": package.status})
+    timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    current_shift = next((row for row in attendance_rows if row.status == "on_duty" and not row.clock_out_at), None)
+    return {
+        "id": guard.id,
+        "fullName": guard.full_name,
+        "email": guard.email,
+        "phone": guard.phone,
+        "estateId": estate.id,
+        "estateName": estate.name,
+        "gateId": guard.gate_id,
+        "active": bool(guard.is_active),
+        "status": "active" if guard.is_active else "suspended",
+        "createdAt": _iso(guard.created_at),
+        "lastActivityAt": timeline[0]["at"] if timeline else None,
+        "currentShift": {
+            "status": current_shift.status,
+            "gateId": current_shift.gate_id,
+            "clockInAt": _iso(current_shift.clock_in_at),
+        } if current_shift else None,
+        "summary": {
+            "attendanceRecords": len(attendance_rows),
+            "visitorActions": len([row for row, _, _ in gate_rows if row.action not in {"vehicle_entry", "vehicle_exit"}]),
+            "entriesConfirmed": len([row for row, _, _ in gate_rows if row.action == "security_confirm_entry"]),
+            "checkoutsPerformed": len([row for row, _, _ in gate_rows if row.action == "security_checkout"]),
+            "vehicleActions": len([row for row, _, _ in gate_rows if row.action in {"vehicle_entry", "vehicle_exit"}]),
+            "incidentsReported": len(incident_rows),
+            "packagesRegistered": len(package_rows),
+        },
+        "attendanceHistory": [
+            {
+                "id": row.id,
+                "status": row.status,
+                "gateId": row.gate_id,
+                "clockInAt": _iso(row.clock_in_at),
+                "clockOutAt": _iso(row.clock_out_at),
+            }
+            for row in attendance_rows
+        ],
+        "activityHistory": timeline[:80],
+    }
+
+
 def update_estate_security_user(
     db: Session,
     *,
@@ -702,6 +865,7 @@ def update_estate_security_user(
     password: str | None = None,
 ) -> User:
     _require_estate_owner(db, estate_id, owner_id)
+    require_subscription_feature(db, owner_id, "register_security_guards", user_role="estate")
     row = (
         db.query(User)
         .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
@@ -740,6 +904,7 @@ def set_estate_security_user_active_state(
     is_active: bool,
 ) -> User:
     _require_estate_owner(db, estate_id, owner_id)
+    require_subscription_feature(db, owner_id, "register_security_guards", user_role="estate")
     row = (
         db.query(User)
         .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
@@ -761,6 +926,7 @@ def delete_estate_security_user(
     security_user_id: str,
 ) -> dict[str, Any]:
     _require_estate_owner(db, estate_id, owner_id)
+    require_subscription_feature(db, owner_id, "register_security_guards", user_role="estate")
     row = (
         db.query(User)
         .filter(User.id == security_user_id, User.estate_id == estate_id, User.role == UserRole.security)
@@ -774,6 +940,168 @@ def delete_estate_security_user(
     return {"id": deleted_id, "deleted": True}
 
 
+def get_estate_resident_detail(db: Session, *, owner_id: str, estate_id: str, resident_id: str) -> dict[str, Any]:
+    estate = _require_estate_owner(db, estate_id, owner_id)
+    resident = db.query(User).filter(User.id == resident_id, User.role == UserRole.homeowner).first()
+    if not resident:
+        raise AppException("Resident not found", status_code=404)
+    homes = (
+        db.query(Home)
+        .filter(Home.estate_id == estate_id, Home.homeowner_id == resident_id)
+        .order_by(Home.created_at.desc())
+        .all()
+    )
+    if not homes:
+        raise AppException("Resident is not linked to this estate", status_code=404)
+    home_ids = [home.id for home in homes]
+
+    visitor_rows = (
+        db.query(VisitorSession)
+        .filter(VisitorSession.estate_id == estate_id, VisitorSession.homeowner_id == resident_id)
+        .order_by(VisitorSession.started_at.desc())
+        .limit(50)
+        .all()
+    )
+    vehicle_rows = (
+        db.query(ResidentVehicle)
+        .filter(ResidentVehicle.estate_id == estate_id, ResidentVehicle.resident_id == resident_id)
+        .order_by(ResidentVehicle.created_at.desc())
+        .all()
+    )
+    vehicle_logs = (
+        db.query(GateLog)
+        .filter(GateLog.estate_id == estate_id, GateLog.home_id.in_(home_ids), GateLog.action.in_(["vehicle_entry", "vehicle_exit"]))
+        .order_by(GateLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    package_rows = (
+        db.query(EstatePackage)
+        .filter(EstatePackage.estate_id == estate_id, EstatePackage.resident_id == resident_id)
+        .order_by(EstatePackage.arrived_at.desc())
+        .limit(50)
+        .all()
+    )
+    alert_rows = (
+        db.query(EstateAlert)
+        .filter(EstateAlert.estate_id == estate_id)
+        .order_by(EstateAlert.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    payment_rows = (
+        db.query(HomeownerPayment, EstateAlert)
+        .join(EstateAlert, EstateAlert.id == HomeownerPayment.estate_alert_id)
+        .filter(EstateAlert.estate_id == estate_id, HomeownerPayment.homeowner_id == resident_id)
+        .order_by(HomeownerPayment.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    targeted_alerts = []
+    for alert in alert_rows:
+        if not alert.target_homeowner_ids:
+            targeted_alerts.append(alert)
+            continue
+        try:
+            target_ids = json.loads(alert.target_homeowner_ids) or []
+        except Exception:
+            target_ids = []
+        if not target_ids or resident_id in target_ids:
+            targeted_alerts.append(alert)
+
+    timeline: list[dict[str, Any]] = []
+    for row in visitor_rows:
+        _append_timeline(timeline, kind="visitor", label=f"Visitor {row.visitor_label or 'Visitor'} {row.status}", at=row.started_at, details={"status": row.status, "gateId": row.gate_id})
+    for row in package_rows:
+        _append_timeline(timeline, kind="package", label=f"Package {row.status}", at=row.collected_at or row.arrived_at, details={"description": row.description, "status": row.status})
+    for row in vehicle_logs:
+        meta = {}
+        try:
+            meta = json.loads(row.meta_json or "{}")
+        except Exception:
+            meta = {}
+        _append_timeline(
+            timeline,
+            kind="vehicle",
+            label="Vehicle entered estate" if row.action == "vehicle_entry" else "Vehicle exited estate",
+            at=row.created_at,
+            details={"plateNumber": meta.get("plateNumber") or "", "gateId": row.gate_id},
+        )
+    for payment, alert in payment_rows:
+        status = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
+        _append_timeline(timeline, kind="dues", label=f"Dues payment {status}", at=payment.paid_at or payment.created_at, details={"title": alert.title, "amount": _to_money(payment.amount_paid)})
+    for alert in targeted_alerts:
+        if alert.alert_type == EstateAlertType.maintenance_request:
+            _append_timeline(timeline, kind="maintenance", label=f"Maintenance request {alert.maintenance_status or 'pending'}", at=alert.created_at, details={"title": alert.title})
+    timeline.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    dues = [alert for alert in targeted_alerts if alert.alert_type == EstateAlertType.payment_request]
+    maintenance = [alert for alert in targeted_alerts if alert.alert_type == EstateAlertType.maintenance_request]
+    paid_alert_ids = {payment.estate_alert_id for payment, _ in payment_rows if (payment.status.value if hasattr(payment.status, "value") else str(payment.status)) == "paid"}
+
+    return {
+        "id": resident.id,
+        "personal": {
+            "fullName": resident.full_name,
+            "phone": resident.phone,
+            "email": resident.email,
+            "estateId": estate.id,
+            "estateName": estate.name,
+            "accountStatus": "active" if resident.is_active else "inactive",
+            "createdAt": _iso(resident.created_at),
+            "joinedAt": _iso(resident.created_at),
+        },
+        "household": {
+            "homes": [{"id": home.id, "name": home.name, "estateId": home.estate_id, "createdAt": _iso(home.created_at)} for home in homes],
+            "members": [],
+            "trustedVisitors": [],
+        },
+        "visitors": {
+            "total": db.query(VisitorSession).filter(VisitorSession.estate_id == estate_id, VisitorSession.homeowner_id == resident_id).count(),
+            "recent": [
+                {"id": row.id, "visitorName": row.visitor_label, "status": row.status, "gateId": row.gate_id, "startedAt": _iso(row.started_at), "endedAt": _iso(row.ended_at)}
+                for row in visitor_rows[:10]
+            ],
+        },
+        "maintenance": {
+            "total": len(maintenance),
+            "open": len([row for row in maintenance if (row.maintenance_status or "pending") != "solved"]),
+            "closed": len([row for row in maintenance if (row.maintenance_status or "pending") == "solved"]),
+            "recent": [{"id": row.id, "title": row.title, "status": row.maintenance_status or "pending", "createdAt": _iso(row.created_at)} for row in maintenance[:10]],
+        },
+        "dues": {
+            "assigned": len(dues),
+            "paid": len([row for row in dues if row.id in paid_alert_ids]),
+            "outstanding": len([row for row in dues if row.id not in paid_alert_ids]),
+            "history": [
+                {
+                    "id": payment.id,
+                    "title": alert.title,
+                    "status": payment.status.value if hasattr(payment.status, "value") else str(payment.status),
+                    "amountPaid": _to_money(payment.amount_paid),
+                    "paidAt": _iso(payment.paid_at),
+                    "createdAt": _iso(payment.created_at),
+                }
+                for payment, alert in payment_rows
+            ],
+        },
+        "packages": {
+            "waiting": len([row for row in package_rows if row.status == "arrived"]),
+            "collected": len([row for row in package_rows if row.status == "collected"]),
+            "history": [{"id": row.id, "description": row.description, "status": row.status, "arrivedAt": _iso(row.arrived_at), "collectedAt": _iso(row.collected_at)} for row in package_rows],
+        },
+        "vehicles": {
+            "registered": [
+                {"id": row.id, "plateNumber": row.plate_number, "vehicleType": row.vehicle_type, "makeModel": row.make_model, "color": row.color, "active": row.is_active}
+                for row in vehicle_rows
+            ],
+            "history": timeline[:50],
+        },
+        "auditTimeline": timeline[:100],
+    }
+
+
 def add_home(
     db: Session,
     name: str,
@@ -785,6 +1113,7 @@ def add_home(
     if not home_name:
         raise AppException("Home name is required", status_code=400)
     if owner_id and estate_id:
+        require_subscription_feature(db, owner_id, "register_residents", user_role="estate")
         _require_estate_owner(db, estate_id, owner_id)
         subscription = get_effective_subscription(db, owner_id, user_role="estate")
         _enforce_home_limit(db, owner_id, subscription)
@@ -820,37 +1149,13 @@ def add_estate_door(
     if not clean_name:
         raise AppException("Door name is required", status_code=400)
 
-    effective_sub = get_effective_subscription(db, owner_id)
-    limits = effective_sub.get("limits", {})
-    usage = _usage_for_owner(db, owner_id)
-    max_doors = int(limits.get("maxDoors", 0) or 0)
-    max_qr = int(limits.get("maxQrCodes", 0) or 0)
-    if effective_sub.get("plan") == "free":
-        max_doors = max(max_doors, FREE_ESTATE_LIMIT)
-        max_qr = max(max_qr, FREE_ESTATE_LIMIT)
-
-    if max_doors and usage["doors"] >= max_doors:
-        raise AppException(f"Door limit reached ({max_doors})", status_code=402)
-
     door = Door(name=clean_name, home_id=home.id, is_active="online")
     db.add(door)
     db.flush()
 
     qr_payload = None
     if generate_qr:
-        if max_qr and usage["qr_codes"] >= max_qr:
-            raise AppException(f"QR limit reached ({max_qr})", status_code=402)
-        qr = QRCode(
-            qr_id=f"qr-{uuid.uuid4().hex[:12]}",
-            plan=plan,
-            home_id=home.id,
-            doors_csv=door.id,
-            mode=mode,
-            estate_id=estate_id,
-            active=True,
-        )
-        db.add(qr)
-        db.flush()
+        qr = _ensure_house_qr(db, estate_id=estate_id, home=home, door=door)
         qr_payload = {
             "id": qr.id,
             "qrId": qr.qr_id,
@@ -906,6 +1211,7 @@ def provision_estate_door_with_homeowner(
 
 
 def assign_door_to_homeowner(db: Session, owner_id: str, door_id: str, homeowner_id: str) -> dict[str, Any]:
+    require_subscription_feature(db, owner_id, "resident_management", user_role="estate")
     door_with_home = (
         db.query(Door, Home, Estate)
         .join(Home, Home.id == Door.home_id)
@@ -940,6 +1246,7 @@ def invite_homeowner(
     temporary_password: str | None = None,
     unit_name: str | None = None,
 ) -> dict[str, Any]:
+    require_subscription_feature(db, owner_id, "register_residents", user_role="estate")
     homeowner = db.query(User).filter(User.id == homeowner_id, User.role == UserRole.homeowner).first()
     if not homeowner:
         raise AppException("Homeowner not found", status_code=404)
@@ -1056,32 +1363,81 @@ def list_estate_mappings(db: Session, owner_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def list_estate_access_logs(db: Session, owner_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def list_estate_access_logs(db: Session, owner_id: str, limit: int = 100, category: str = "visitors") -> list[dict[str, Any]]:
     subscription = get_effective_subscription(db, owner_id, user_role="estate")
     cutoff = _limited_log_cutoff(subscription)
-    rows = (
-        db.query(VisitorSession, Door, Home)
-        .join(Door, Door.id == VisitorSession.door_id)
-        .join(Home, Home.id == Door.home_id)
-        .join(Estate, Estate.id == Home.estate_id)
-        .filter(Estate.owner_id == owner_id)
-        .filter(VisitorSession.started_at >= cutoff if cutoff else True)
-        .order_by(VisitorSession.started_at.desc())
-        .limit(limit)
-        .all()
-    )
-    return [
-        {
+    normalized_category = (category or "visitors").strip().lower()
+    estate_ids = [row.id for row in db.query(Estate.id).filter(Estate.owner_id == owner_id).all()]
+    items: list[dict[str, Any]] = []
+
+    if normalized_category in {"visitors", "all"}:
+        rows = (
+            db.query(VisitorSession, Door, Home)
+            .join(Door, Door.id == VisitorSession.door_id)
+            .join(Home, Home.id == Door.home_id)
+            .join(Estate, Estate.id == Home.estate_id)
+            .filter(Estate.owner_id == owner_id)
+            .filter(VisitorSession.started_at >= cutoff if cutoff else True)
+            .order_by(VisitorSession.started_at.desc())
+            .limit(limit)
+            .all()
+        )
+        items.extend({
             "id": session.id,
+            "category": "visitor",
             "visitor": session.visitor_label,
             "status": session.status,
             "doorName": door.name,
             "homeName": home.name,
             "startedAt": session.started_at.isoformat(),
             "endedAt": session.ended_at.isoformat() if session.ended_at else None,
-        }
-        for session, door, home in rows
-    ]
+            "timestamp": session.started_at.isoformat() if session.started_at else None,
+        } for session, door, home in rows)
+
+    if normalized_category in {"vehicles", "all"} and estate_ids:
+        require_subscription_feature(db, owner_id, "vehicle_entry_exit_records", user_role="estate")
+        GuardUser = aliased(User)
+        ResidentUser = aliased(User)
+        vehicle_logs = (
+            db.query(GateLog, Home, GuardUser, ResidentUser)
+            .outerjoin(Home, Home.id == GateLog.home_id)
+            .outerjoin(GuardUser, GuardUser.id == GateLog.actor_user_id)
+            .outerjoin(ResidentUser, ResidentUser.id == Home.homeowner_id)
+            .filter(GateLog.estate_id.in_(estate_ids), GateLog.action.in_(["vehicle_entry", "vehicle_exit"]))
+            .order_by(GateLog.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for log, home, guard, resident in vehicle_logs:
+            meta = {}
+            try:
+                meta = json.loads(log.meta_json or "{}")
+            except Exception:
+                meta = {}
+            action = "entry" if log.action == "vehicle_entry" else "exit"
+            items.append(
+                {
+                    "id": log.id,
+                    "category": "vehicle",
+                    "vehiclePlate": meta.get("plateNumber") or "",
+                    "vehicleId": meta.get("vehicleId") or "",
+                    "action": action,
+                    "status": action,
+                    "gateId": log.gate_id,
+                    "guardId": log.actor_user_id,
+                    "guardName": guard.full_name if guard else "",
+                    "homeId": log.home_id,
+                    "homeName": home.name if home else "",
+                    "residentName": resident.full_name if resident else "",
+                    "notes": log.notes or "",
+                    "timestamp": log.created_at.isoformat() if log.created_at else None,
+                    "startedAt": log.created_at.isoformat() if log.created_at else None,
+                    "endedAt": None,
+                }
+            )
+
+    items.sort(key=lambda row: row.get("timestamp") or "", reverse=True)
+    return items[:limit]
 
 
 def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
@@ -1089,6 +1445,11 @@ def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
     effective_sub = get_effective_subscription(db, owner_id, user_role="estate")
     capacity = _estate_plan_capacity(effective_sub)
     used_estates = db.query(Estate).filter(Estate.owner_id == owner_id).count()
+    included_houses = int(effective_sub.get("includedHouses") or capacity["maxHomes"] or 0)
+    extra_house_amount = int(effective_sub.get("extraHouseAmount") or 0)
+    extra_houses = max(0, usage["homes"] - included_houses) if included_houses > 0 else 0
+    monthly_base_amount = int(effective_sub.get("amount") or effective_sub.get("monthlyAmount") or 0)
+    extra_house_total = extra_houses * extra_house_amount
 
     return {
         "plan": effective_sub.get("plan", "free"),
@@ -1104,6 +1465,11 @@ def get_estate_plan_restrictions(db: Session, owner_id: str) -> dict[str, Any]:
         "maxAdmins": int((effective_sub.get("limits") or {}).get("maxAdmins", 1) or 1),
         "maxEstates": capacity["maxEstates"],
         "maxHomes": capacity["maxHomes"],
+        "includedHouses": included_houses,
+        "extraHouseAmount": extra_house_amount,
+        "extraHouses": extra_houses,
+        "extraHouseMonthlyTotal": extra_house_total,
+        "estimatedMonthlyTotal": monthly_base_amount + extra_house_total,
         "maxDoors": capacity["maxDoors"],
         "maxQrCodes": capacity["maxQrCodes"],
         "usedEstates": used_estates,
@@ -1153,14 +1519,6 @@ def create_estate_shared_selector_qr(db: Session, owner_id: str, estate_id: str)
             status_code=400,
         )
 
-    effective_sub = get_effective_subscription(db, owner_id)
-    limits = effective_sub.get("limits", {})
-    max_qr = int(limits.get("maxQrCodes", 0) or 0)
-    if effective_sub.get("plan") == "free":
-        max_qr = max(max_qr, FREE_ESTATE_LIMIT)
-    usage = _usage_for_owner(db, owner_id)
-    if max_qr and usage["qr_codes"] >= max_qr:
-        raise AppException(f"QR limit reached ({max_qr})", status_code=402)
     # If an active selector QR already exists for this estate, return it (idempotent)
     existing = (
         db.query(QRCode)

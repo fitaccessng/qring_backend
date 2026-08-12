@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from unittest.mock import patch
 
+from app.core.time import utc_now
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.models import CallSession, Door, Home, Message, User, UserRole, VisitorSession
@@ -242,7 +243,7 @@ class VisitorSessionCallContractTests(unittest.TestCase):
                     "snapshotMime": "image/png",
                     "deviceId": "device-smoke-1",
                     "consentAccepted": True,
-                    "consentAcceptedAt": "2026-06-22T00:00:00Z",
+                    "consentAcceptedAt": utc_now().isoformat(),
                     "consentStorage": "session",
                 },
             )

@@ -14,6 +14,7 @@ from app.core.exceptions import AppException
 from app.db.models import Door, Home, User
 from app.db.session import get_db
 from app.services.advanced_service import create_snapshot_audit
+from app.services.estate_operations_service import assert_visitor_not_blocked
 from app.services.notification_service import create_notification
 from app.services.realtime_notification_service import (
     build_notification_envelope,
@@ -158,6 +159,13 @@ async def security_register_request(
     if len(media_bytes) > max(1, int(getattr(settings, "MAX_VISITOR_SNAPSHOT_BYTES", 3 * 1024 * 1024) or 3 * 1024 * 1024)):
         raise AppException("Snapshot is too large. Please retake the photo.", status_code=400)
 
+    assert_visitor_not_blocked(
+        db,
+        estate_id=home.estate_id,
+        visitor_name=payload.name,
+        visitor_phone=payload.phoneNumber,
+    )
+
     session = create_visitor_session(
         db=db,
         qr_id="manual-security-entry",
@@ -190,7 +198,9 @@ async def security_register_request(
         source="security_register_visitor",
     )
     if snapshot_audit and isinstance(snapshot_audit, dict):
-        session.photo_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
+        snapshot_audit_id = str(snapshot_audit.get("id") or "").strip()
+        audit_file_url = f"/api/v1/advanced/visitor/snapshots/{snapshot_audit_id}/file" if snapshot_audit_id else ""
+        session.photo_url = audit_file_url or str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip() or None
         session.snapshot_url = session.photo_url
         db.commit()
         db.refresh(session)
@@ -385,6 +395,8 @@ async def security_request_action(
         "reject": "gate_action_completed",
         "delivery_drop_off": "gate_action_completed",
         "confirm_entry": "gate_action_completed",
+        "checkout": "gate_action_completed",
+        "confirm_exit": "gate_action_completed",
         "deny_gate": "gate_action_completed",
     }.get((payload.action or "").strip().lower(), "security_request_updated")
 

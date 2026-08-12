@@ -226,12 +226,7 @@ def resolve_session_snapshot_public_url(db: Session, visitor_session_id: str | N
     )
     if not row:
         return ""
-    row_url = str(row.media_url or "").strip()
-    if row_url:
-        return row_url
-    if str(row.media_path or "").strip().startswith("firebase:"):
-        return f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
-    return _public_snapshot_url_from_media_path(row.media_path)
+    return f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
 
 
 def notify_multi_channel(
@@ -399,12 +394,22 @@ def _snapshot_content_type_from_path(path: str, logical_type: str) -> str:
 
 
 def load_snapshot_bytes(
-    db: Session, *, snapshot_id: str, requester_user_id: str, is_admin: bool
+    db: Session,
+    *,
+    snapshot_id: str,
+    requester_user_id: str,
+    is_admin: bool,
+    requester_role: str | None = None,
+    requester_estate_id: str | None = None,
 ) -> tuple[bytes, str, str]:
     row = db.query(VisitorSnapshotAudit).filter(VisitorSnapshotAudit.id == snapshot_id).first()
     if not row:
         raise AppException("Snapshot not found.", status_code=404)
-    if not is_admin and row.homeowner_id != requester_user_id:
+    is_security_for_estate = False
+    if str(requester_role or "").lower() == UserRole.security.value and requester_estate_id and row.visitor_session_id:
+        session = db.query(VisitorSession).filter(VisitorSession.id == row.visitor_session_id).first()
+        is_security_for_estate = bool(session and session.estate_id == requester_estate_id)
+    if not is_admin and row.homeowner_id != requester_user_id and not is_security_for_estate:
         raise AppException("Not authorized to access this snapshot.", status_code=403)
 
     media_path = str(row.media_path or "")
@@ -422,9 +427,8 @@ def load_snapshot_bytes(
                 raise AppException("Snapshot file is unavailable.", status_code=404) from exc
         if row.media_url.startswith("/"):
             local_path = Path(__file__).resolve().parents[2] / row.media_url.lstrip("/")
-            if not local_path.exists():
-                raise AppException("Snapshot file is unavailable.", status_code=404)
-            return local_path.read_bytes(), logical_type, content_type
+            if local_path.exists():
+                return local_path.read_bytes(), logical_type, content_type
         try:
             with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
                 response = client.get(row.media_url)
@@ -459,10 +463,43 @@ def load_snapshot_bytes(
     return path.read_bytes(), logical_type, content_type
 
 
-def list_live_queue(db: Session, *, resident_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def load_session_snapshot_bytes(
+    db: Session,
+    *,
+    visitor_session_id: str,
+    requester_user_id: str,
+    is_admin: bool,
+    requester_role: str | None = None,
+    requester_estate_id: str | None = None,
+) -> tuple[bytes, str, str]:
+    session_id = str(visitor_session_id or "").strip()
+    if not session_id:
+        raise AppException("Visitor session is required.", status_code=400)
+    row = (
+        db.query(VisitorSnapshotAudit)
+        .filter(VisitorSnapshotAudit.visitor_session_id == session_id)
+        .order_by(VisitorSnapshotAudit.created_at.desc())
+        .first()
+    )
+    if not row:
+        raise AppException("Snapshot not found.", status_code=404)
+    return load_snapshot_bytes(
+        db,
+        snapshot_id=row.id,
+        requester_user_id=requester_user_id,
+        is_admin=is_admin,
+        requester_role=requester_role,
+        requester_estate_id=requester_estate_id,
+    )
+
+
+def list_live_queue(db: Session, *, resident_id: str | None = None, homeowner_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    effective_resident_id = resident_id or homeowner_id
+    if not effective_resident_id:
+        raise AppException("Resident context is required.", status_code=400)
     rows = (
         db.query(VisitorSession)
-        .filter(VisitorSession.homeowner_id == homeowner_id)
+        .filter(VisitorSession.homeowner_id == effective_resident_id)
         .order_by(VisitorSession.started_at.desc())
         .limit(max(1, min(int(limit), 300)))
         .all()

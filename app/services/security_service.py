@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppException
 from app.core.time import utc_now
 from app.db.models import AuditLog, Appointment, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, Office, OfficeMember, User, UserRole, VisitorSession
+from app.services.advanced_service import resolve_session_snapshot_public_url
 from app.services.notification_service import create_notification
 
 OPEN_SECURITY_STATUSES = {"submitted", "received_by_security", "forwarded_to_homeowner", "approved"}
@@ -251,6 +252,7 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
     creator_role = (session.creator_role or "").strip().lower()
     if creator_role not in {"visitor", "security"}:
         creator_role = "security" if request_source == "gateman_assisted" else "visitor"
+    snapshot_url = resolve_session_snapshot_public_url(db, session.id) or session.snapshot_url or session.photo_url
     return {
         "id": session.id,
         "sessionId": session.id,
@@ -259,8 +261,8 @@ def serialize_security_session(db: Session, session: VisitorSession) -> dict[str
         "visitorName": session.visitor_label or "Visitor",
         "visitorPhone": session.visitor_phone,
         "purpose": session.purpose or "",
-        "photoUrl": session.snapshot_url or session.photo_url,
-        "snapshotUrl": session.snapshot_url or session.photo_url,
+        "photoUrl": snapshot_url,
+        "snapshotUrl": snapshot_url,
         "doorId": session.door_id,
         "doorName": door.name if door else "",
         "gateId": session.gate_id or (door.gate_label if door else None),
@@ -552,11 +554,21 @@ def update_security_session_status(
             session.gate_status = "allowed_in" if action == "confirm_entry" else "denied_at_gate"
             _transition_session(session, "gate_confirmed" if action == "confirm_entry" else "rejected", now=now)
             session.handled_by_security_id = actor.id
-            if action == "confirm_entry":
-                _transition_session(session, "completed", now=now)
-            else:
+            if action != "confirm_entry":
                 session.ended_at = now
             _create_gate_log(db, session=session, actor=actor, action=f"security_{action}")
+            db.commit()
+            db.refresh(session)
+            return session
+        if action in {"checkout", "confirm_exit"}:
+            if session.gate_status != "allowed_in":
+                raise AppException("Visitor must be checked in before checkout.", status_code=400)
+            if session.status == "completed":
+                raise AppException("Visitor has already been checked out.", status_code=400)
+            _transition_session(session, "completed", now=now)
+            session.gate_status = "checked_out"
+            session.handled_by_security_id = actor.id
+            _create_gate_log(db, session=session, actor=actor, action="security_checkout")
             db.commit()
             db.refresh(session)
             return session
@@ -598,7 +610,7 @@ def update_security_session_status(
 
 def list_security_message_threads(db: Session, security_user_id: str, limit: int = 60) -> list[dict[str, Any]]:
     security_user = _get_security_user(db, security_user_id)
-    sessions = _security_session_query(db, security_user).order_by(VisitorSession.started_at.desc()).limit(limit).all()
+    sessions = _security_session_query(db, security_user).order_by(VisitorSession.started_at.desc()).limit(max(limit * 3, limit)).all()
     if not sessions:
         return []
 
@@ -617,7 +629,7 @@ def list_security_message_threads(db: Session, security_user_id: str, limit: int
         if row.sender_type != "security" and row.read_by_security_at is None:
             unread_by_session[row.session_id] = unread_by_session.get(row.session_id, 0) + 1
 
-    return [
+    threads = [
         {
             "id": session.id,
             "name": session.visitor_label or "Visitor",
@@ -634,6 +646,8 @@ def list_security_message_threads(db: Session, security_user_id: str, limit: int
         }
         for session in sessions
     ]
+    threads.sort(key=lambda item: item["time"], reverse=True)
+    return threads[:limit]
 
 
 def list_security_session_messages(
@@ -660,7 +674,7 @@ def list_security_session_messages(
 
     rows = db.query(Message).filter(Message.session_id == session_id).order_by(Message.created_at.asc()).limit(limit).all()
     security_user_obj = _get_security_user(db, security_user_id)
-    snapshot_url = session.snapshot_url or session.photo_url
+    snapshot_url = resolve_session_snapshot_public_url(db, session.id) or session.snapshot_url or session.photo_url
     serialized = [
         {
             "id": row.id,
