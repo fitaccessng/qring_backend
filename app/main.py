@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.routes import api_router
-from app.core.config import get_settings
+from app.core.config import get_settings, BACKEND_ROOT
 from app.core.cors import get_cors_settings, is_allowed_origin
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
@@ -43,7 +43,7 @@ from app.services.subscription_lifecycle_service import run_subscription_lifecyc
 settings = get_settings()
 setup_logging(logging.DEBUG if settings.DEBUG else logging.INFO)
 cors_settings = get_cors_settings(settings)
-default_uploads_dir = Path(__file__).resolve().parents[2] / "uploads"
+default_uploads_dir = BACKEND_ROOT / "uploads"
 
 
 class NormalizeCorsHeadersMiddleware:

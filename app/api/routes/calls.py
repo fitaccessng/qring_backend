@@ -133,6 +133,88 @@ def _caller_origin_label(role: str | None) -> str:
     return "approved-session screen"
 
 
+async def _emit_call_requested_events(
+    *,
+    row: CallSession,
+    linked_session: str,
+    incoming_room_user_id: str | None,
+    caller_user: User | None,
+    payload_has_video: bool,
+    source: str,
+) -> None:
+    if not linked_session or not incoming_room_user_id:
+        return
+    caller_name = (caller_user.full_name if caller_user else "") or row.visitor_id or "Visitor"
+    caller_role = row.initiated_by_role or (caller_user.role.value if caller_user else "visitor")
+    caller_origin = _caller_origin_label(caller_role)
+    call_invite_key = build_notification_idempotency_key(
+        event_type="call.invite",
+        user_id=incoming_room_user_id,
+        session_id=linked_session,
+        entity_id=row.id,
+        action=row.status,
+    )
+    payload = {
+        "eventId": row.id,
+        "sessionId": linked_session,
+        "callSessionId": row.id,
+        "appointmentId": row.appointment_id,
+        "roomName": row.room_name,
+        "deliveryRoom": f"session:{linked_session}",
+        "status": row.status,
+        "visitorId": row.visitor_id,
+        "hasVideo": payload_has_video,
+        "type": row.call_type,
+        "role": caller_user.role.value if caller_user else "visitor",
+        "callerName": caller_name,
+        "callerRole": caller_role,
+        "callerOrigin": caller_origin,
+        "receiverId": incoming_room_user_id,
+        "receiverRole": "security" if incoming_room_user_id == row.security_user_id and row.security_user_id else "homeowner",
+    }
+    event_payload = build_notification_envelope(
+        notification_id=row.id,
+        event_type="call.requested",
+        idempotency_key=call_invite_key,
+        session_id=linked_session,
+        user_id=caller_user.id if caller_user else None,
+        source=source,
+        payload=payload,
+    )
+    await emit_signaling_notification(
+        event_name="call.requested",
+        rooms=[f"session:{linked_session}", f"user:{incoming_room_user_id}"],
+        payload=event_payload,
+        idempotency_key=call_invite_key,
+        source=source,
+    )
+    logger.info(
+        "qring.call.incoming.emit call_id=%s session_id=%s caller_user_id=%s recipient_user_id=%s event=%s room=%s call_type=%s",
+        row.id,
+        linked_session,
+        caller_user.id if caller_user else None,
+        incoming_room_user_id,
+        "incoming-call",
+        f"user:{incoming_room_user_id}",
+        row.call_type,
+    )
+    await emit_dashboard_notification(
+        event_name="incoming-call",
+        rooms=[f"user:{incoming_room_user_id}"],
+        payload=build_notification_envelope(
+            notification_id=row.id,
+            event_type="incoming-call",
+            idempotency_key=f"dashboard:{call_invite_key}",
+            session_id=linked_session,
+            user_id=incoming_room_user_id,
+            source=source,
+            payload={**payload, "message": f"{caller_name} is calling from the {caller_origin}."},
+        ),
+        idempotency_key=f"dashboard:{call_invite_key}",
+        source=source,
+    )
+
+
 @router.post("/start")
 async def start_call(
     payload: StartCallPayload,
@@ -162,8 +244,8 @@ async def start_call(
         raise AppException("Appointment not found.", status_code=404)
 
     normalized_target = (payload.communicationTarget or "").strip().lower() or None
-    if normalized_target not in {None, "visitor", "gateman"}:
-        raise AppException("communicationTarget must be visitor or gateman.", status_code=400)
+    if normalized_target not in {None, "visitor", "gateman", "homeowner"}:
+        raise AppException("communicationTarget must be visitor, gateman, or homeowner.", status_code=400)
     if normalized_target is None and visitor_session:
         normalized_target = (visitor_session.preferred_communication_target or "").strip().lower() or None
 
@@ -227,6 +309,13 @@ async def start_call(
         linked_session = visit.id if visit else None
 
     incoming_room_user_id = row.security_user_id if (user and user.role.value == "homeowner" and row.security_user_id) else row.homeowner_id
+    logger.info(
+        "qring.call.start.received caller_user_id=%s recipient_user_id=%s session_id=%s call_type=%s",
+        user.id if user else None,
+        incoming_room_user_id,
+        linked_session,
+        row.call_type,
+    )
     caller_name = (user.full_name if user else "") or (payload.visitorName or row.visitor_id or "Visitor")
     caller_role = row.initiated_by_role or (user.role.value if user else "visitor")
     caller_origin = _caller_origin_label(caller_role)
@@ -259,7 +348,7 @@ async def start_call(
                 "deliveryRoom": f"session:{linked_session}",
                 "status": row.status,
                 "visitorId": row.visitor_id,
-                "hasVideo": bool(payload.hasVideo),
+                "hasVideo": bool(payload.hasVideo) or row.call_type == "video",
                 "type": row.call_type,
                 "role": user.role.value if user else "visitor",
                 "callerName": caller_name,
@@ -272,10 +361,20 @@ async def start_call(
         )
         await emit_signaling_notification(
             event_name="call.requested",
-            rooms=[f"session:{linked_session}"],
+            rooms=[f"session:{linked_session}", f"user:{incoming_room_user_id}"],
             payload=event_payload,
             idempotency_key=call_invite_key,
             source="calls.start",
+        )
+        logger.info(
+            "qring.call.incoming.emit call_id=%s session_id=%s caller_user_id=%s recipient_user_id=%s event=%s room=%s call_type=%s",
+            row.id,
+            linked_session,
+            user.id if user else None,
+            incoming_room_user_id,
+            "incoming-call",
+            f"user:{incoming_room_user_id}",
+            row.call_type,
         )
         await emit_dashboard_notification(
             event_name="incoming-call",
@@ -296,7 +395,7 @@ async def start_call(
                     "deliveryRoom": f"session:{linked_session}",
                     "status": row.status,
                     "visitorId": row.visitor_id,
-                    "hasVideo": bool(payload.hasVideo),
+                    "hasVideo": bool(payload.hasVideo) or row.call_type == "video",
                     "type": row.call_type,
                     "role": user.role.value if user else "visitor",
                     "callerName": caller_name,
@@ -348,15 +447,40 @@ async def request_call(
         raise AppException("You are not allowed to start this call.", status_code=403)
 
     call_type = (payload.type or "").strip().lower() or ("video" if payload.hasVideo else "audio")
+    normalized_target = (payload.communicationTarget or "").strip().lower() or None
+    if normalized_target not in {None, "visitor", "gateman"}:
+        raise AppException("communicationTarget must be visitor or gateman.", status_code=400)
+    security_user = None
+    if normalized_target == "gateman":
+        security_user = resolve_security_call_target(db, visitor_session=session, appointment=None)
+        if not security_user:
+            raise AppException("No security user is available for this estate.", status_code=404)
+    receiver_id = security_user.id if security_user else session.homeowner_id
     row = await start_call_session(
         db,
         visitor_session_id=session.id,
         visitor_id=session.id,
         homeowner_id=user.id,
+        security_user_id=security_user.id if security_user else None,
         caller_id=user.id,
-        receiver_id=session.homeowner_id,
+        receiver_id=receiver_id,
         call_type=call_type,
         visitor_name=payload.visitorName or session.visitor_label,
+    )
+    logger.info(
+        "qring.call.start.received caller_user_id=%s recipient_user_id=%s session_id=%s call_type=%s",
+        user.id,
+        receiver_id,
+        session.id,
+        row.call_type,
+    )
+    await _emit_call_requested_events(
+        row=row,
+        linked_session=session.id,
+        incoming_room_user_id=receiver_id,
+        caller_user=user,
+        payload_has_video=bool(payload.hasVideo) or row.call_type == "video",
+        source="calls.request",
     )
 
     return {

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.db.models import Notification, VisitorSession, VisitorSnapshotAudit
+from app.services.cloudinary_service import upload_snapshot_to_cloudinary
 from app.db.session import SessionLocal
 
 settings = get_settings()
@@ -66,16 +67,33 @@ def _rewrite_upload_urls(value: Any) -> Any:
     return _rewrite_upload_url(value)
 
 
-def _migrate_snapshot_audits(db, storage_root: Path, dry_run: bool) -> dict[str, int]:
+def _replace_with_cloudinary_urls(value: Any, cloud_map: dict[str, tuple[str, str]] | None) -> Any:
+    if not cloud_map:
+        return value
+    if isinstance(value, dict):
+        return {key: _replace_with_cloudinary_urls(item, cloud_map) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_with_cloudinary_urls(item, cloud_map) for item in value]
+    if isinstance(value, str):
+        mapped = cloud_map.get(value.strip())
+        return mapped[0] if mapped else value
+    return value
+
+
+def _migrate_snapshot_audits(db, storage_root: Path, dry_run: bool, upload_to_cloud: bool = False) -> tuple[dict[str, int], dict[str, tuple[str, str]]]:
     stats = {
         "snapshot_rows_seen": 0,
         "snapshot_rows_updated": 0,
         "snapshot_files_moved": 0,
         "snapshot_files_missing": 0,
         "snapshot_files_already_migrated": 0,
+        "snapshot_files_uploaded": 0,
+        "snapshot_rows_cloud_migrated": 0,
     }
 
     rows = db.query(VisitorSnapshotAudit).all()
+    # mapping from old public url -> (secure_url, public_id)
+    cloud_map: dict[str, tuple[str, str]] = {}
     for row in rows:
         stats["snapshot_rows_seen"] += 1
         current_rel = _normalize_relative_path(row.media_path)
@@ -84,27 +102,63 @@ def _migrate_snapshot_audits(db, storage_root: Path, dry_run: bool) -> dict[str,
 
         new_rel = _migrate_relative_path(current_rel)
         old_path = storage_root / current_rel
-        new_path = storage_root / new_rel
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-
+        # Attempt to upload the existing local file to Cloudinary when possible
         if old_path.exists() and old_path.is_file():
-            if not new_path.exists():
-                if not dry_run:
-                    shutil.move(str(old_path), str(new_path))
-                stats["snapshot_files_moved"] += 1
-            else:
-                stats["snapshot_files_already_migrated"] += 1
+            try:
+                if upload_to_cloud and not dry_run:
+                    media_bytes = old_path.read_bytes()
+                    mime = None
+                    # best-effort mime type from extension
+                    if str(old_path).lower().endswith(".png"):
+                        mime = "image/png"
+                    elif str(old_path).lower().endswith(('.jpg', '.jpeg')):
+                        mime = "image/jpeg"
+                    elif str(old_path).lower().endswith('.webp'):
+                        mime = "image/webp"
+                    result = upload_snapshot_to_cloudinary(
+                        media_bytes=media_bytes,
+                        mime_type=mime or "application/octet-stream",
+                        filename_hint=old_path.name,
+                        public_id_prefix=None,
+                    )
+                    if result is not None:
+                        secure, pid = result.secure_url, result.public_id
+                        cloud_map[_public_upload_url(current_rel)] = (secure, pid)
+                        row.media_path = f"cloudinary:{pid}"
+                        row.media_url = secure
+                        row.cloudinary_public_id = pid
+                        stats["snapshot_files_uploaded"] += 1
+                        stats["snapshot_rows_cloud_migrated"] += 1
+                    else:
+                        # Cloudinary not configured or upload skipped; move file under visitor-media path like legacy script
+                        new_path = storage_root / new_rel
+                        new_path.parent.mkdir(parents=True, exist_ok=True)
+                        if not new_path.exists():
+                            shutil.move(str(old_path), str(new_path))
+                            stats["snapshot_files_moved"] += 1
+                        else:
+                            stats["snapshot_files_already_migrated"] += 1
+                        row.media_path = new_rel
+                        row.media_url = _public_upload_url(new_rel)
+                        stats["snapshot_rows_updated"] += 1
+                else:
+                    # dry-run path: report as would-upload
+                    stats["snapshot_files_moved"] += 1
+            except Exception:
+                stats["snapshot_files_missing"] += 1
         else:
             stats["snapshot_files_missing"] += 1
 
-        row.media_path = new_rel
-        row.media_url = _public_upload_url(new_rel)
-        stats["snapshot_rows_updated"] += 1
+        # If not migrated to cloud above and row still has legacy path, ensure DB reflects visitor-media layout
+        if not row.media_url:
+            row.media_path = new_rel
+            row.media_url = _public_upload_url(new_rel)
+            stats["snapshot_rows_updated"] += 1
 
-    return stats
+    return stats, cloud_map
 
 
-def _migrate_sessions(db, dry_run: bool) -> dict[str, int]:
+def _migrate_sessions(db, dry_run: bool, cloud_map: dict[str, tuple[str, str]] | None = None) -> dict[str, int]:
     stats = {
         "session_rows_seen": 0,
         "session_rows_updated": 0,
@@ -117,6 +171,11 @@ def _migrate_sessions(db, dry_run: bool) -> dict[str, int]:
         for field_name in ("photo_url", "snapshot_url"):
             current_value = getattr(row, field_name)
             rewritten = _rewrite_upload_url(current_value)
+            # If cloud_map is provided and current value maps to a cloud entry, prefer cloud secure_url
+            if cloud_map and isinstance(current_value, str):
+                mapped = cloud_map.get(str(current_value).strip())
+                if mapped:
+                    rewritten = mapped[0]
             if rewritten != current_value:
                 setattr(row, field_name, rewritten)
                 changed = True
@@ -126,7 +185,7 @@ def _migrate_sessions(db, dry_run: bool) -> dict[str, int]:
     return stats
 
 
-def _migrate_notifications(db, dry_run: bool) -> dict[str, int]:
+def _migrate_notifications(db, dry_run: bool, cloud_map: dict[str, tuple[str, str]] | None = None) -> dict[str, int]:
     stats = {
         "notification_rows_seen": 0,
         "notification_rows_updated": 0,
@@ -142,8 +201,9 @@ def _migrate_notifications(db, dry_run: bool) -> dict[str, int]:
         if not isinstance(payload, (dict, list)):
             continue
         rewritten = _rewrite_upload_urls(payload)
-        if rewritten != payload:
-            row.payload = json.dumps(rewritten, separators=(",", ":"))
+        replaced = _replace_with_cloudinary_urls(rewritten, cloud_map)
+        if replaced != payload:
+            row.payload = json.dumps(replaced, separators=(",", ":"))
             stats["notification_rows_updated"] += 1
 
     return stats
@@ -163,15 +223,21 @@ def main() -> int:
         action="store_true",
         help="Print what would change without moving files or writing database updates.",
     )
+    parser.add_argument(
+        "--to-cloudinary",
+        action="store_true",
+        help="Upload found files to Cloudinary and update DB with secure_url/public_id. Requires Cloudinary env configured.",
+    )
     args = parser.parse_args()
 
     storage_root = _storage_root(args.storage_root)
     db = SessionLocal()
     try:
         stats = {}
-        stats.update(_migrate_snapshot_audits(db, storage_root, dry_run=args.dry_run))
-        stats.update(_migrate_sessions(db, dry_run=args.dry_run))
-        stats.update(_migrate_notifications(db, dry_run=args.dry_run))
+        snap_stats, cloud_map = _migrate_snapshot_audits(db, storage_root, dry_run=args.dry_run, upload_to_cloud=bool(args.to_cloudinary))
+        stats.update(snap_stats)
+        stats.update(_migrate_sessions(db, dry_run=args.dry_run, cloud_map=cloud_map))
+        stats.update(_migrate_notifications(db, dry_run=args.dry_run, cloud_map=cloud_map))
 
         if args.dry_run:
             db.rollback()

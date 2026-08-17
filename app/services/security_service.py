@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
@@ -359,8 +359,11 @@ def _security_session_query(db: Session, security_user: User):
     if security_user.gate_id:
         normalized_gate = str(security_user.gate_id or "").strip().lower().replace("_", "-").replace(" ", "-")
         query = query.filter(
-            (func.lower(func.replace(func.replace(VisitorSession.gate_id, "_", "-"), " ", "-")) == normalized_gate)
-            | (VisitorSession.gate_id.is_(None))
+            or_(
+                VisitorSession.handled_by_security_id == security_user.id,
+                func.lower(func.replace(func.replace(VisitorSession.gate_id, "_", "-"), " ", "-")) == normalized_gate,
+                VisitorSession.gate_id.is_(None),
+            )
         )
     return query
 
@@ -629,23 +632,47 @@ def list_security_message_threads(db: Session, security_user_id: str, limit: int
         if row.sender_type != "security" and row.read_by_security_at is None:
             unread_by_session[row.session_id] = unread_by_session.get(row.session_id, 0) + 1
 
-    threads = [
-        {
-            "id": session.id,
-            "name": session.visitor_label or "Visitor",
-            "door": serialize_security_session(db, session).get("doorName") or "Door",
-            "last": latest_by_session[session.id].body if session.id in latest_by_session else (session.purpose or "Security conversation"),
-            "unread": unread_by_session.get(session.id, 0),
-            "time": (
-                latest_by_session[session.id].created_at.isoformat()
-                if session.id in latest_by_session
-                else session.started_at.isoformat()
-            ),
-            "sessionStatus": session.status,
-            "gateStatus": session.gate_status,
-        }
-        for session in sessions
-    ]
+    threads = []
+    for session in sessions:
+        serialized_session = serialize_security_session(db, session)
+        latest_message = latest_by_session.get(session.id)
+        activity_at = (
+            latest_message.created_at
+            if latest_message
+            else session.state_updated_at
+            or session.homeowner_decision_at
+            or session.gate_action_at
+            or session.ended_at
+            or session.forwarded_to_homeowner_at
+            or session.received_by_security_at
+            or session.started_at
+        )
+        threads.append(
+            {
+                "id": session.id,
+                "session_id": session.id,
+                "sessionId": session.id,
+                "name": session.visitor_label or "Visitor",
+                "visitorName": session.visitor_label or "Visitor",
+                "door": serialized_session.get("doorName") or "Door",
+                "doorName": serialized_session.get("doorName") or "Door",
+                "homeName": serialized_session.get("homeName"),
+                "unitName": serialized_session.get("unitName"),
+                "visitorPhone": session.visitor_phone,
+                "homeownerId": serialized_session.get("homeownerId") or session.homeowner_id,
+                "purpose": session.purpose or "",
+                "last": latest_message.body if latest_message else (session.purpose or "Security conversation"),
+                "unread": unread_by_session.get(session.id, 0),
+                "time": activity_at.isoformat() if activity_at else "",
+                "updatedAt": activity_at.isoformat() if activity_at else "",
+                "startedAt": session.started_at.isoformat() if session.started_at else None,
+                "stateUpdatedAt": session.state_updated_at.isoformat() if session.state_updated_at else None,
+                "homeownerDecisionAt": session.homeowner_decision_at.isoformat() if session.homeowner_decision_at else None,
+                "endedAt": session.ended_at.isoformat() if session.ended_at else None,
+                "sessionStatus": session.status,
+                "gateStatus": session.gate_status,
+            }
+        )
     threads.sort(key=lambda item: item["time"], reverse=True)
     return threads[:limit]
 
@@ -655,7 +682,7 @@ def list_security_session_messages(
     *,
     security_user_id: str,
     session_id: str,
-    limit: int = 300,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     security_user = _get_security_user(db, security_user_id)
     session = _security_session_query(db, security_user).filter(VisitorSession.id == session_id).first()
@@ -672,7 +699,10 @@ def list_security_session_messages(
     )
     db.commit()
 
-    rows = db.query(Message).filter(Message.session_id == session_id).order_by(Message.created_at.asc()).limit(limit).all()
+    query = db.query(Message).filter(Message.session_id == session_id).order_by(Message.created_at.asc())
+    if limit is not None:
+        query = query.limit(limit)
+    rows = query.all()
     security_user_obj = _get_security_user(db, security_user_id)
     snapshot_url = resolve_session_snapshot_public_url(db, session.id) or session.snapshot_url or session.photo_url
     serialized = [
@@ -697,13 +727,24 @@ def list_security_session_messages(
                 "id": f"snapshot:{session.id}",
                 "messageId": f"snapshot:{session.id}",
                 "sessionId": session.id,
+                "session_id": session.id,
+                "type": "snapshot",
+                "kind": "snapshot",
                 "text": "Visitor snapshot submitted.",
                 "messageType": "visitor_snapshot",
                 "snapshotUrl": snapshot_url,
+                "snapshot_url": snapshot_url,
+                "mediaUrl": snapshot_url,
+                "media_url": snapshot_url,
                 "photoUrl": snapshot_url,
+                "photo_url": snapshot_url,
                 "senderType": "visitor",
+                "senderRole": "security" if session.request_source == "gateman_assisted" else "visitor",
+                "sender_role": "security" if session.request_source == "gateman_assisted" else "visitor",
                 "displayName": session.visitor_label or "Visitor",
                 "at": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
+                "createdAt": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
+                "created_at": session.started_at.isoformat() if session.started_at else utc_now().isoformat(),
             },
         )
     return serialized

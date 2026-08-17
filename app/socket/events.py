@@ -382,8 +382,10 @@ def register_socket_events(sio):
     async def connect(sid, environ, auth):
         user_id, _role = _resolve_user_id(auth)
         if user_id:
-            await sio.enter_room(sid, f"user:{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
+            user_room = f"user:{user_id}"
+            await sio.enter_room(sid, user_room, namespace=settings.DASHBOARD_NAMESPACE)
             await sio.enter_room(sid, f"user_{user_id}", namespace=settings.DASHBOARD_NAMESPACE)
+            logger.info("qring.socket.user_room.joined user_id=%s room=%s", user_id, user_room)
             db = SessionLocal()
             try:
                 user = db.query(User).filter(User.id == user_id).first()
@@ -425,6 +427,8 @@ def register_socket_events(sio):
         user_id, _role = _resolve_user_id(auth)
         if user_id:
             await socket_state.bind(user_id, sid)
+            await sio.enter_room(sid, f"user:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
+            await sio.enter_room(sid, f"user_{user_id}", namespace=settings.SIGNALING_NAMESPACE)
             await sio.enter_room(sid, f"resident:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
             await sio.enter_room(sid, f"homeowner:{user_id}", namespace=settings.SIGNALING_NAMESPACE)
             db = SessionLocal()

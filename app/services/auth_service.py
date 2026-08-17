@@ -206,6 +206,8 @@ def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address
             "email": user.email,
             "role": user.role.value,
             "phone": user.phone,
+            "estateId": user.estate_id,
+            "gateId": user.gate_id,
             "referralCode": user.referral_code,
             "referralEarnings": int(user.referral_earnings or 0),
         },

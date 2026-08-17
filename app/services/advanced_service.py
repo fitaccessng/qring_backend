@@ -42,6 +42,7 @@ from app.services.provider_integrations import (
     send_push_fcm,
     send_sms_provider,
 )
+from app.services.cloudinary_service import upload_snapshot_to_cloudinary, destroy_cloudinary_asset
 
 logger = logging.getLogger(__name__)
 
@@ -282,55 +283,77 @@ def create_snapshot_audit(
     media_id = str(uuid.uuid4())
     cloudinary_public_id = None
     relative_path = Path("visitor-media") / effective_resident_id / f"{media_id}{ext}"
-    absolute_path = _media_base_dir() / relative_path
-    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # determine content type for potential Cloudinary upload
+    content_type = _snapshot_content_type_from_path(str(relative_path), (media_type or "photo").strip().lower())
 
     media_path: str | None = None
     media_url: str | None = None
+
+    cloud_upload_result = None
     try:
-        bucket = _get_storage_bucket()
-        if bucket is not None:
-            storage_path = str(relative_path).replace("\\", "/")
-            content_type = _snapshot_content_type_from_path(str(relative_path), (media_type or "photo").strip().lower())
-            blob = bucket.blob(storage_path)
-            blob.upload_from_string(media_bytes, content_type=content_type)
-            media_path = f"firebase:{storage_path}"
-            logger.info(
-                "snapshot.audit.firebase_storage_saved resident_id=%s media_id=%s path=%s bytes=%s",
-                effective_resident_id,
-                media_id,
-                storage_path,
-                len(media_bytes),
-            )
-        else:
+        cloud_upload_result = upload_snapshot_to_cloudinary(
+            media_bytes=media_bytes,
+            mime_type=content_type,
+            filename_hint=filename_hint,
+            public_id_prefix=f"{effective_resident_id}_{media_id}",
+        )
+    except AppException:
+        logger.warning(
+            "snapshot.audit.cloudinary_unavailable resident_id=%s media_id=%s reason=cloudinary_upload_failed",
+            effective_resident_id,
+            media_id,
+        )
+    except Exception:
+        logger.exception(
+            "snapshot.audit.cloudinary_error resident_id=%s media_id=%s reason=unexpected_upload_error",
+            effective_resident_id,
+            media_id,
+        )
+
+    if cloud_upload_result is not None:
+        cloudinary_public_id = cloud_upload_result.public_id
+        media_url = cloud_upload_result.secure_url
+        media_path = f"cloudinary:{cloudinary_public_id}"
+        logger.info(
+            "snapshot.audit.cloudinary_saved resident_id=%s media_id=%s public_id=%s url=%s bytes=%s",
+            effective_resident_id,
+            media_id,
+            cloudinary_public_id,
+            media_url,
+            cloud_upload_result.bytes or len(media_bytes),
+        )
+    else:
+        absolute_path = _media_base_dir() / relative_path
+        try:
+            absolute_path.parent.mkdir(parents=True, exist_ok=True)
             absolute_path.write_bytes(media_bytes)
             media_path = str(relative_path).replace("\\", "/")
-            media_url = f"/uploads/{media_path}"
+            media_url = _public_snapshot_url_from_media_path(media_path)
             logger.info(
-                "snapshot.audit.local_storage_saved resident_id=%s media_id=%s path=%s url=%s bytes=%s",
+                "snapshot.audit.local_fallback_saved resident_id=%s media_id=%s path=%s url=%s bytes=%s",
                 effective_resident_id,
                 media_id,
                 media_path,
                 media_url,
                 len(media_bytes),
             )
-    except Exception as exc:
-        logger.exception(
-            "snapshot.audit.storage_failed resident_id=%s media_id=%s path=%s bytes=%s",
-            effective_resident_id,
-            media_id,
-            absolute_path,
-            len(media_bytes),
-        )
-        fallback_mime = _snapshot_content_type_from_path(str(relative_path), (media_type or "photo").strip().lower())
-        media_url = _data_url_from_bytes(media_bytes, fallback_mime)
-        media_path = str(relative_path).replace("\\", "/")
-        logger.warning(
-            "snapshot.audit.fallback_data_url resident_id=%s media_id=%s mime=%s",
-            effective_resident_id,
-            media_id,
-            fallback_mime,
-        )
+        except Exception:
+            logger.exception(
+                "snapshot.audit.local_fallback_failed resident_id=%s media_id=%s path=%s bytes=%s",
+                effective_resident_id,
+                media_id,
+                str(relative_path),
+                len(media_bytes),
+            )
+            media_url = _data_url_from_bytes(media_bytes, content_type)
+            media_path = media_url
+            logger.warning(
+                "snapshot.audit.data_url_fallback resident_id=%s media_id=%s bytes=%s",
+                effective_resident_id,
+                media_id,
+                len(media_bytes),
+            )
 
     digest = hashlib.sha256(media_bytes).hexdigest()
     row = VisitorSnapshotAudit(
@@ -345,13 +368,20 @@ def create_snapshot_audit(
         source=source,
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        # If DB commit fails but we uploaded to Cloudinary, remove the asset to avoid orphaned uploads
+        if cloudinary_public_id:
+            try:
+                destroy_cloudinary_asset(cloudinary_public_id)
+            except Exception:
+                logger.exception("failed to cleanup cloudinary asset after DB commit failure %s", cloudinary_public_id)
+        raise
     db.refresh(row)
 
-    if media_path and media_path.startswith("firebase:"):
-        public_url = f"/api/v1/advanced/visitor/snapshots/{row.id}/file"
-    else:
-        public_url = media_url or _public_snapshot_url_from_media_path(media_path or "")
+    # For Cloudinary-backed snapshots, return the absolute secure URL as canonical.
+    public_url = media_url or ""
 
     return {
         "id": row.id,

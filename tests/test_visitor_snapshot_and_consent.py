@@ -14,12 +14,13 @@ from sqlalchemy.pool import StaticPool
 from app.api.routes.visitor import _validate_visitor_consent
 from app.core.exceptions import AppException
 from app.db.base import Base
-from app.db.models import Door, Home, Notification, User, UserRole, VisitorSession
+from app.db.models import Door, Estate, Home, Notification, User, UserRole, VisitorSession
 from app.db.session import get_db
 from app.main import fastapi_app
 from app.schemas.visitor import VisitorRequestCreate
 from app.services.advanced_service import create_snapshot_audit, load_snapshot_bytes
 from app.services.homeowner_service import list_homeowner_session_messages
+from app.services.security_service import list_security_session_messages
 
 
 class VisitorSnapshotAndConsentTests(unittest.TestCase):
@@ -45,6 +46,26 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.db.add(self.homeowner)
         self.db.flush()
 
+        self.estate = Estate(
+            id=str(uuid.uuid4()),
+            name="Snapshot Estate",
+            owner_id=self.homeowner.id,
+        )
+        self.db.add(self.estate)
+        self.db.flush()
+
+        self.security = User(
+            id=str(uuid.uuid4()),
+            full_name="Security Test",
+            email="security-snapshot@test.com",
+            password_hash="hashed",
+            role=UserRole.security,
+            estate_id=self.estate.id,
+            email_verified=True,
+        )
+        self.db.add(self.security)
+        self.db.flush()
+
         def override_get_db():
             db = self.SessionLocal()
             try:
@@ -59,6 +80,7 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
             id=str(uuid.uuid4()),
             name="Unit 4B",
             homeowner_id=self.homeowner.id,
+            estate_id=self.estate.id,
         )
         self.db.add(self.home)
         self.db.flush()
@@ -84,6 +106,7 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
             home_id=self.home.id,
             door_id=self.door.id,
             homeowner_id=self.homeowner.id,
+            estate_id=self.estate.id,
             visitor_label="Visitor Example",
             status="submitted",
             photo_url=snapshot_url,
@@ -126,6 +149,34 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["messageType"], "visitor_snapshot")
         self.assertEqual(rows[0]["snapshotUrl"], f"/api/v1/advanced/visitor/snapshots/{audit['id']}/file")
+
+    def test_list_security_session_messages_prepends_snapshot_with_media_aliases(self):
+        session = self._create_session(snapshot_url="/uploads/visitor-media/missing/security-snapshot.jpg")
+        session.request_source = "gateman_assisted"
+        audit = create_snapshot_audit(
+            self.db,
+            homeowner_id=self.homeowner.id,
+            media_bytes=b"security-snapshot-bytes",
+            filename_hint="security-snapshot.jpg",
+            media_type="photo",
+            visitor_session_id=session.id,
+            source="security_register_visitor",
+        )
+
+        rows = list_security_session_messages(self.db, security_user_id=self.security.id, session_id=session.id)
+
+        expected_url = f"/api/v1/advanced/visitor/snapshots/{audit['id']}/file"
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertEqual(rows[0]["type"], "snapshot")
+        self.assertEqual(rows[0]["kind"], "snapshot")
+        self.assertEqual(rows[0]["messageType"], "visitor_snapshot")
+        self.assertEqual(rows[0]["session_id"], session.id)
+        self.assertEqual(rows[0]["snapshotUrl"], expected_url)
+        self.assertEqual(rows[0]["snapshot_url"], expected_url)
+        self.assertEqual(rows[0]["mediaUrl"], expected_url)
+        self.assertEqual(rows[0]["media_url"], expected_url)
+        self.assertEqual(rows[0]["senderRole"], "security")
+        self.assertEqual(rows[0]["sender_role"], "security")
 
     def test_create_snapshot_audit_falls_back_to_data_url_when_file_storage_fails(self):
         media_bytes = b"test-image-bytes"

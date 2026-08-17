@@ -248,32 +248,35 @@ async def security_register_request(
     )
 
     serialized = serialize_security_session(db, updated)
-    initial_message = create_security_session_message(
-        db,
-        security_user_id=user.id,
-        session_id=updated.id,
-        text=(
-            f"Visitor request sent to homeowner. "
-            f"Visitor: {updated.visitor_label or 'Visitor'}. "
-            f"Phone: {updated.visitor_phone or 'Not provided'}. "
-            f"Purpose: {updated.purpose or 'Not provided'}."
-        ),
-    )
     await sio.emit(
         "visitor_forwarded",
         {"data": serialized, "action": "forward", "actorRole": user.role.value},
         namespace=settings.DASHBOARD_NAMESPACE,
     )
-    if initial_message:
-        await sio.emit(
-            "chat.message",
-            {
-                **initial_message,
-                "displayName": user.full_name or "Security",
-            },
-            room=f"session:{updated.id}",
-            namespace=settings.SIGNALING_NAMESPACE,
-        )
+    await emit_dashboard_notification(
+        event_name="security.request.created",
+        rooms=[f"user:{user.id}"],
+        payload=build_notification_envelope(
+            event_type="security.request.created",
+            idempotency_key=build_notification_idempotency_key(
+                event_type="security.request.created",
+                user_id=user.id,
+                session_id=updated.id,
+                entity_id=updated.id,
+            ),
+            session_id=updated.id,
+            user_id=user.id,
+            source="security.register_visitor",
+            payload={"data": serialized, "sessionId": updated.id, "estateId": updated.estate_id},
+        ),
+        idempotency_key=build_notification_idempotency_key(
+            event_type="security.request.created",
+            user_id=user.id,
+            session_id=updated.id,
+            entity_id=updated.id,
+        ),
+        source="security.register_visitor",
+    )
     await sio.emit(
         "session.status",
         {

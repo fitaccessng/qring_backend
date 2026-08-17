@@ -515,12 +515,18 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 logger.exception("Failed to emit visitor.snapshot realtime event")
 
         if snapshot_audit and isinstance(snapshot_audit, dict):
-            snapshot_url = str(snapshot_audit.get("fileUrl") or snapshot_audit.get("url") or "").strip()
+            snapshot_url = str(
+                snapshot_audit.get("fileUrl")
+                or snapshot_audit.get("url")
+                or snapshot_audit.get("mediaUrl")
+                or snapshot_audit.get("mediaPath")
+                or ""
+            ).strip()
             if not snapshot_url:
                 db.delete(session)
                 db.commit()
                 logger.error(
-                    "visitor.request snapshot url missing request_id=%s session_id=%s qr_id=%s snapshot_audit_id=%s media_path=%s media_url=%s",
+                    "visitor.request snapshot missing_url request_id=%s session_id=%s qr_id=%s snapshot_audit_id=%s media_path=%s media_url=%s",
                     request_id,
                     session.id,
                     payload.qrId,

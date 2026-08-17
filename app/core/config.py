@@ -138,9 +138,11 @@ class Settings(BaseSettings):
         "http://localhost:5173,"  # Vite/React dev server
         "http://localhost:5174," 
         "http://localhost:5175," 
+        "http://localhost:4174,"
         "http://127.0.0.1:5173,"  # Vite/React dev server (IP)
         "http://127.0.0.1:5174," 
         "http://127.0.0.1:5175," 
+        "http://127.0.0.1:4174,"
         "capacitor://localhost," 
         "ionic://localhost," 
         "https://qring.io," 
@@ -179,6 +181,7 @@ class Settings(BaseSettings):
     FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
     FIREBASE_SERVICE_ACCOUNT_BASE64: str = ""
     FIREBASE_STORAGE_BUCKET: str = ""
+    # Cloudinary credentials must be provided via environment variables only.
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""

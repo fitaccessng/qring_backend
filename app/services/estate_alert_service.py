@@ -1006,6 +1006,12 @@ def create_homeowner_maintenance_request(
     db.refresh(alert)
     payload = _serialize_alert(alert)
     payload["status"] = "created"
+    _emit_alert_event(
+        event="ALERT_CREATED",
+        payload=payload,
+        estate_id=estate.id,
+        homeowner_ids=[homeowner_id],
+    )
     return payload
 
 

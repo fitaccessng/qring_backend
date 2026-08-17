@@ -58,7 +58,7 @@ def upload_snapshot_to_cloudinary(
     public_id_prefix: Optional[str] = None,
 ) -> Optional[CloudinaryUploadResult]:
     if not _cloudinary_configured():
-        return None
+        raise AppException("Cloudinary is not configured. Snapshot storage unavailable.", status_code=503)
 
     folder_name = _normalize_folder(folder)
     timestamp = int(time.time())
