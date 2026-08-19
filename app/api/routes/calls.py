@@ -260,16 +260,19 @@ async def start_call(
     try:
         homeowner_id = user.id if user and user.role.value in {"homeowner", "office", "office_staff"} else None
         receiver_id = None
-        if user and user.role.value == "security":
+        # If a security target was explicitly resolved, notify that security user.
+        if security_user:
+            receiver_id = security_user.id
+        # If the caller is a security/office user, notify the homeowner as the recipient.
+        elif user and user.role.value == "security":
             receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
         elif user and user.role.value in {"office", "office_staff"}:
             receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
-        elif security_user:
-            receiver_id = security_user.id
-        elif appointment:
-            receiver_id = appointment.homeowner_id
-        elif visitor_session:
-            receiver_id = visitor_session.homeowner_id
+        # If this is a visitor-initiated call (no authenticated user), notify the homeowner.
+        elif not user:
+            receiver_id = appointment.homeowner_id if appointment else (visitor_session.homeowner_id if visitor_session else None)
+        # If the caller is the homeowner and no security_user is available, do not set a dashboard recipient
+        # (the call will be delivered to the session room so the visitor receives it).
         row = await start_call_session(
             db,
             appointment_id=payload.appointmentId,
@@ -308,7 +311,17 @@ async def start_call(
         )
         linked_session = visit.id if visit else None
 
-    incoming_room_user_id = row.security_user_id if (user and user.role.value == "homeowner" and row.security_user_id) else row.homeowner_id
+    # Deliver session-wide signaling to the session room. For dashboard notifications, only target
+    # the security user when homeowner explicitly requested gateman, or target the homeowner when
+    # the call was initiated by security/office or originated from a visitor.
+    if user and user.role.value == "homeowner":
+        incoming_room_user_id = row.security_user_id if row.security_user_id else None
+    elif user and user.role.value == "security":
+        incoming_room_user_id = row.homeowner_id
+    elif user and user.role.value in {"office", "office_staff"}:
+        incoming_room_user_id = row.homeowner_id
+    else:
+        incoming_room_user_id = None
     logger.info(
         "qring.call.start.received caller_user_id=%s recipient_user_id=%s session_id=%s call_type=%s",
         user.id if user else None,
@@ -359,57 +372,60 @@ async def start_call(
                 "receiverRole": "security" if incoming_room_user_id == row.security_user_id and row.security_user_id else "homeowner",
             },
         )
+        signaling_rooms = [f"session:{linked_session}"]
+        if incoming_room_user_id:
+            signaling_rooms.append(f"user:{incoming_room_user_id}")
         await emit_signaling_notification(
             event_name="call.requested",
-            rooms=[f"session:{linked_session}", f"user:{incoming_room_user_id}"],
+            rooms=signaling_rooms,
             payload=event_payload,
             idempotency_key=call_invite_key,
             source="calls.start",
         )
         logger.info(
-            "qring.call.incoming.emit call_id=%s session_id=%s caller_user_id=%s recipient_user_id=%s event=%s room=%s call_type=%s",
+            "qring.call.incoming.emit call_id=%s session_id=%s caller_user_id=%s recipient_user_id=%s event=%s call_type=%s",
             row.id,
             linked_session,
             user.id if user else None,
             incoming_room_user_id,
             "incoming-call",
-            f"user:{incoming_room_user_id}",
             row.call_type,
         )
-        await emit_dashboard_notification(
-            event_name="incoming-call",
-            rooms=[f"user:{incoming_room_user_id}"],
-            payload=build_notification_envelope(
-                notification_id=row.id,
-                event_type="incoming-call",
+        if incoming_room_user_id:
+            await emit_dashboard_notification(
+                event_name="incoming-call",
+                rooms=[f"user:{incoming_room_user_id}"],
+                payload=build_notification_envelope(
+                    notification_id=row.id,
+                    event_type="incoming-call",
+                    idempotency_key=f"dashboard:{call_invite_key}",
+                    session_id=linked_session,
+                    user_id=incoming_room_user_id,
+                    source="calls.start",
+                    payload={
+                        "eventId": row.id,
+                        "sessionId": linked_session,
+                        "callSessionId": row.id,
+                        "appointmentId": row.appointment_id,
+                        "roomName": row.room_name,
+                        "deliveryRoom": f"session:{linked_session}",
+                        "status": row.status,
+                        "visitorId": row.visitor_id,
+                        "hasVideo": bool(payload.hasVideo) or row.call_type == "video",
+                        "type": row.call_type,
+                        "role": user.role.value if user else "visitor",
+                        "callerName": caller_name,
+                        "callerRole": caller_role,
+                        "callerOrigin": caller_origin,
+                        "homeownerName": homeowner_name,
+                        "receiverId": incoming_room_user_id,
+                        "receiverRole": "security" if incoming_room_user_id == row.security_user_id and row.security_user_id else "homeowner",
+                        "message": f"{caller_name} is calling from the {caller_origin}.",
+                    },
+                ),
                 idempotency_key=f"dashboard:{call_invite_key}",
-                session_id=linked_session,
-                user_id=incoming_room_user_id,
                 source="calls.start",
-                payload={
-                    "eventId": row.id,
-                    "sessionId": linked_session,
-                    "callSessionId": row.id,
-                    "appointmentId": row.appointment_id,
-                    "roomName": row.room_name,
-                    "deliveryRoom": f"session:{linked_session}",
-                    "status": row.status,
-                    "visitorId": row.visitor_id,
-                    "hasVideo": bool(payload.hasVideo) or row.call_type == "video",
-                    "type": row.call_type,
-                    "role": user.role.value if user else "visitor",
-                    "callerName": caller_name,
-                    "callerRole": caller_role,
-                    "callerOrigin": caller_origin,
-                    "homeownerName": homeowner_name,
-                    "receiverId": incoming_room_user_id,
-                    "receiverRole": "security" if incoming_room_user_id == row.security_user_id and row.security_user_id else "homeowner",
-                    "message": f"{caller_name} is calling from the {caller_origin}.",
-                },
-            ),
-            idempotency_key=f"dashboard:{call_invite_key}",
-            source="calls.start",
-        )
+            )
 
     return {
         "data": {
@@ -455,7 +471,10 @@ async def request_call(
         security_user = resolve_security_call_target(db, visitor_session=session, appointment=None)
         if not security_user:
             raise AppException("No security user is available for this estate.", status_code=404)
-    receiver_id = security_user.id if security_user else session.homeowner_id
+    # If a gateman/security target was resolved, notify that user on the dashboard.
+    # If no security is available, do not set the homeowner as the dashboard recipient
+    # (the call is delivered via the session room to the visitor).
+    receiver_id = security_user.id if security_user else None
     row = await start_call_session(
         db,
         visitor_session_id=session.id,

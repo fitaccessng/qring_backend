@@ -566,7 +566,7 @@ def list_homeowner_session_messages(
 
 
 def create_homeowner_session_message(
-    db: Session, homeowner_id: str, session_id: str, text: str
+    db: Session, homeowner_id: str, session_id: str, text: str, communication_target: str | None = None
 ) -> dict[str, Any] | None:
     session = (
         db.query(VisitorSession)
@@ -581,40 +581,52 @@ def create_homeowner_session_message(
         return None
 
     homeowner = db.query(User).filter(User.id == homeowner_id).first()
-    recipients = _security_recipients_for_session(db, session)
-    primary_recipient = recipients[0] if recipients else None
+    # Deliver homeowner messages to the session (visitor) by default. If the
+    # homeowner requested "gateman" as communication_target and a security user
+    # is available, notify security users instead.
+    message_receiver_id = None
+    recipient_ids: list[str] = []
+    if communication_target and str(communication_target).strip().lower() == "gateman":
+        recipients = _security_recipients_for_session(db, session)
+        primary_recipient = recipients[0] if recipients else None
+        if primary_recipient:
+            message_receiver_id = primary_recipient.id
+            recipient_ids = [r.id for r in recipients]
+
     message = Message(
         session_id=session_id,
         sender_type="homeowner",
         sender_id=homeowner_id,
-        receiver_id=primary_recipient.id if primary_recipient else None,
+        receiver_id=message_receiver_id,
         body=body,
         created_at=utc_now(),
     )
     db.add(message)
     db.commit()
     db.refresh(message)
-    recipient_ids = [row.id for row in recipients]
-    for recipient in recipients:
-        create_notification(
-            db,
-            user_id=recipient.id,
-            kind="homeowner.message",
-            payload={
-                "type": "homeowner.message",
-                "sessionId": session.id,
-                "messageId": message.id,
-                "visitorName": session.visitor_label or "Visitor",
-                "visitorPhone": session.visitor_phone,
-                "purpose": session.purpose,
-                "homeownerId": homeowner_id,
-                "homeownerName": homeowner.full_name if homeowner else "Homeowner",
-                "message": body,
-                "route": f"/dashboard/security/messages?sessionId={session.id}",
-            },
-            idempotency_key=f"homeowner-message:{message.id}:{recipient.id}",
-            source="homeowner_service.create_homeowner_session_message",
-        )
+    # If homeowner targeted gateman, create notifications for security recipients
+    if recipient_ids:
+        homeowner = db.query(User).filter(User.id == homeowner_id).first()
+        for recipient in (_security_recipients_for_session(db, session)):
+            create_notification(
+                db,
+                user_id=recipient.id,
+                kind="homeowner.message",
+                payload={
+                    "type": "homeowner.message",
+                    "sessionId": session.id,
+                    "messageId": message.id,
+                    "visitorName": session.visitor_label or "Visitor",
+                    "visitorPhone": session.visitor_phone,
+                    "purpose": session.purpose,
+                    "homeownerId": homeowner_id,
+                    "homeownerName": homeowner.full_name if homeowner else "Homeowner",
+                    "message": body,
+                    "route": f"/dashboard/security/messages?sessionId={session.id}",
+                },
+                idempotency_key=f"homeowner-message:{message.id}:{recipient.id}",
+                source="homeowner_service.create_homeowner_session_message",
+            )
     return {
         "messageId": message.id,
         "id": message.id,

@@ -118,6 +118,7 @@ class VisitDecisionPayload(BaseModel):
 
 class HomeownerMessagePayload(BaseModel):
     text: str
+    communicationTarget: Optional[str] = None
     clientId: Optional[str] = None
 
 
@@ -246,6 +247,7 @@ async def homeowner_send_message(
         homeowner_id=user.id,
         session_id=session_id,
         text=payload.text,
+        communication_target=(payload.communicationTarget or None),
     )
     if not data:
         raise AppException("Unable to send message", status_code=400)
