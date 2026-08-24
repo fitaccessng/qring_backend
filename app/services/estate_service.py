@@ -153,6 +153,22 @@ def _estate_plan_capacity(subscription: dict[str, Any]) -> dict[str, int]:
     max_homes = int(limits.get("maxHomes") or limits.get("maxDoors") or 0)
     max_doors = int(limits.get("maxDoors") or 0)
     max_qr_codes = int(limits.get("maxQrCodes") or 0)
+    # Provide sensible defaults per plan when explicit limits are not set.
+    # Estate-level QR limits (and a suggested per-homeowner allowance) by plan:
+    # - starter: estate 1, homeowner 1
+    # - basic: estate 3, homeowner 2
+    # - plus: estate 5, homeowner 3
+    # - growth: estate 10, homeowner 5
+    plan_id = str((subscription or {}).get("plan") or "").strip().lower()
+    if max_qr_codes <= 0:
+        if "starter" in plan_id:
+            max_qr_codes = 1
+        elif "basic" in plan_id:
+            max_qr_codes = 3
+        elif "plus" in plan_id:
+            max_qr_codes = 5
+        elif "growth" in plan_id:
+            max_qr_codes = 10
     if (subscription or {}).get("plan") == "free":
         max_estates = max(max_estates, 1)
         max_homes = max(max_homes, FREE_ESTATE_LIMIT)

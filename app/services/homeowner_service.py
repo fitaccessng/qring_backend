@@ -23,6 +23,20 @@ FREE_HOMEOWNER_LIMIT = 1
 FREE_RESIDENT_LIMIT = FREE_HOMEOWNER_LIMIT
 FREE_ESTATE_MANAGED_LIMIT = 5
 
+
+def _homeowner_qr_limit_for_plan(plan_id: str) -> int:
+    """Return a per-homeowner QR limit suggestion based on plan id/name."""
+    pid = str(plan_id or "").strip().lower()
+    if "starter" in pid:
+        return 1
+    if "basic" in pid:
+        return 2
+    if "plus" in pid:
+        return 3
+    if "growth" in pid:
+        return 5
+    return 0
+
 STATUS_LABELS = {
     "pending": "Pending",
     "submitted": "Submitted",
@@ -245,6 +259,7 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
             "estateId": None,
             "estateName": None,
             "estateOwnerId": None,
+            "hasSecurity": False,
             "home": None,
             "unitLabel": None,
         }
@@ -252,11 +267,25 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
     from app.db.models import Estate
 
     estate = db.query(Estate).filter(Estate.id == row.estate_id).first()
+    # detect whether the estate has any active security users
+    has_security = False
+    try:
+        if estate:
+            sec = (
+                db.query(User)
+                .filter(User.role == UserRole.security, User.estate_id == estate.id, User.is_active.is_(True))
+                .first()
+            )
+            has_security = bool(sec)
+    except Exception:
+        has_security = False
+
     return {
         "managedByEstate": bool(estate),
         "estateId": estate.id if estate else row.estate_id,
         "estateName": estate.name if estate else None,
         "estateOwnerId": estate.owner_id if estate else None,
+        "hasSecurity": has_security,
         "home": {
             "id": row.id,
             "name": row.name,
@@ -755,6 +784,12 @@ def get_homeowner_doors_data(db: Session, homeowner_id: str) -> dict[str, Any]:
         floor = FREE_ESTATE_MANAGED_LIMIT if context.get("managedByEstate") else FREE_HOMEOWNER_LIMIT
         max_doors = max(max_doors, floor)
         max_qr_codes = max(max_qr_codes, floor)
+    # If this homeowner is managed by an estate, apply a per-homeowner quota
+    # derived from the estate plan (so homeowners get their own allowance).
+    if context.get("managedByEstate"):
+        homeowner_limit = _homeowner_qr_limit_for_plan(effective_sub.get("plan"))
+        if homeowner_limit and homeowner_limit > 0:
+            max_qr_codes = homeowner_limit
 
     door_count = len(doors)
     qr_count = sum(len(door.get("qr", [])) for door in doors)
@@ -813,6 +848,11 @@ def create_homeowner_door(
         floor = FREE_ESTATE_MANAGED_LIMIT if context.get("managedByEstate") else FREE_HOMEOWNER_LIMIT
         max_doors = max(max_doors, floor)
         max_qr_codes = max(max_qr_codes, floor)
+    # Apply per-homeowner limit when estate-managed
+    if context.get("managedByEstate"):
+        homeowner_limit = _homeowner_qr_limit_for_plan(effective_sub.get("plan"))
+        if homeowner_limit and homeowner_limit > 0:
+            max_qr_codes = homeowner_limit
 
     total_doors = db.query(Door).filter(Door.home_id.in_(home_ids)).count() if home_ids else 0
     if max_doors and total_doors >= max_doors:
@@ -900,6 +940,12 @@ def generate_homeowner_door_qr(
         if home_ids
         else 0
     )
+
+    # If estate-managed, apply per-homeowner quota
+    if context.get("managedByEstate"):
+        homeowner_limit = _homeowner_qr_limit_for_plan(effective_sub.get("plan"))
+        if homeowner_limit and homeowner_limit > 0:
+            max_qr_codes = homeowner_limit
 
     if max_doors and total_doors > max_doors:
         raise AppException(
