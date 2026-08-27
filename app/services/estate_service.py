@@ -1279,11 +1279,14 @@ def invite_homeowner(
     resolved_unit_name = (unit_name or (primary_home.name if primary_home else "")).strip() or "Assigned unit"
     estate_name = estate.name if estate else "your estate"
     clean_temporary_password = (temporary_password or "").strip() or None
+    bounded_temporary_password = clean_temporary_password[:72] if clean_temporary_password else None
 
     # If a temporary password is provided, update the homeowner's password hash
-    # so they can login with the temporary password sent in the email
-    if clean_temporary_password:
-        homeowner.password_hash = hash_password(clean_temporary_password)
+    # so they can login with the temporary password sent in the email.
+    # bcrypt rejects passwords longer than 72 bytes, so the invite flow must trim
+    # generated values before hashing or sending them as credentials.
+    if bounded_temporary_password:
+        homeowner.password_hash = hash_password(bounded_temporary_password)
         db.add(homeowner)
 
     db.add(
@@ -1313,7 +1316,7 @@ def invite_homeowner(
         resident_name=resident_name,
         unit_name=resolved_unit_name,
         email=homeowner.email,
-        temporary_password=clean_temporary_password,
+        temporary_password=bounded_temporary_password,
         login_link=login_link,
         invite_token=token,
     )

@@ -12,12 +12,22 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 settings = get_settings()
 
 
+def _normalize_bcrypt_password(password: str) -> str:
+    value = str(password or "")
+    if not value:
+        return value
+    encoded = value.encode("utf-8")
+    if len(encoded) <= 72:
+        return value
+    return encoded[:72].decode("utf-8", errors="ignore")
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_normalize_bcrypt_password(password))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_normalize_bcrypt_password(plain_password), hashed_password)
 
 
 def _create_token(
