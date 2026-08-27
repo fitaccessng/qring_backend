@@ -20,7 +20,7 @@ class QRCode(Base):
     plan: Mapped[str] = mapped_column(String(20), default="single")
     home_id: Mapped[str] = mapped_column(String(36), ForeignKey("homes.id"), nullable=False)
     doors_csv: Mapped[str] = mapped_column(Text, default="")
-    mode: Mapped[str] = mapped_column(String(20), default="direct")
+    mode: Mapped[str] = mapped_column(String(80), default="direct")
     estate_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("estates.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)

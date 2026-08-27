@@ -189,6 +189,7 @@ class EstateOperationsServiceTests(unittest.TestCase):
         self.assertEqual(created["homeowner"].email, "long-password@example.com")
         self.assertEqual(created["home"].name, "Unit B")
         self.assertEqual(created["door"].name, "Front Door")
+        self.assertEqual(created["qr"].mode, f"house:{created['home'].id}")
 
     def test_invite_homeowner_trims_temporary_passwords_to_bcrypt_limit(self):
         self._set_plan("estate_basic")
