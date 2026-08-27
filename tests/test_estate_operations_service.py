@@ -26,7 +26,7 @@ from app.services.estate_operations_service import (
     record_vehicle_gate_action,
     update_package_status,
 )
-from app.services.estate_service import invite_homeowner, list_estate_access_logs
+from app.services.estate_service import create_estate_homeowner, invite_homeowner, list_estate_access_logs
 
 
 class EstateOperationsServiceTests(unittest.TestCase):
@@ -170,6 +170,25 @@ class EstateOperationsServiceTests(unittest.TestCase):
 
         with self.assertRaises(AppException):
             get_incident_detail(self.db, actor=outside_owner, incident_id=incident["id"])
+
+    def test_create_estate_homeowner_accepts_long_passwords(self):
+        self._set_plan("estate_basic")
+        long_password = "A" * 120
+
+        created = create_estate_homeowner(
+            self.db,
+            owner_id=self.owner.id,
+            estate_id=self.estate.id,
+            full_name="Long Password Resident",
+            email="long-password@example.com",
+            password=long_password,
+            unit_name="Unit B",
+            door_name="Front Door",
+        )
+
+        self.assertEqual(created["homeowner"].email, "long-password@example.com")
+        self.assertEqual(created["home"].name, "Unit B")
+        self.assertEqual(created["door"].name, "Front Door")
 
     def test_invite_homeowner_trims_temporary_passwords_to_bcrypt_limit(self):
         self._set_plan("estate_basic")
