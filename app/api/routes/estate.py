@@ -198,6 +198,7 @@ class PollVotePayload(BaseModel):
 
 class EstateSettingsPayload(BaseModel):
     reminderFrequencyDays: int
+    securityEnabled: bool = True
     canApproveWithoutHomeowner: bool = False
     mustNotifyHomeowner: bool = True
     requirePhotoVerification: bool = False
@@ -352,6 +353,7 @@ def estate_update_settings(
         estate_id=estate_id,
         owner_id=user.id,
         reminder_frequency_days=payload.reminderFrequencyDays,
+        security_enabled=payload.securityEnabled,
         can_approve_without_homeowner=payload.canApproveWithoutHomeowner,
         must_notify_homeowner=payload.mustNotifyHomeowner,
         require_photo_verification=payload.requirePhotoVerification,

@@ -198,6 +198,9 @@ def _security_recipients_for_session(db: Session, session: VisitorSession) -> li
 
     if not session.estate_id:
         return []
+    estate = db.query(Estate).filter(Estate.id == session.estate_id).first()
+    if estate and not bool(getattr(estate, "security_enabled", True)):
+        return []
 
     query = db.query(User).filter(
         User.role == UserRole.security,

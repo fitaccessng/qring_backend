@@ -425,6 +425,7 @@ def list_estate_overview(db: Session, owner_id: str) -> dict[str, Any]:
             {
                 "estateId": row.id,
                 "estateName": row.name,
+                "securityEnabled": bool(getattr(row, "security_enabled", True)),
                 "canApproveWithoutHomeowner": bool(row.security_can_approve_without_homeowner),
                 "mustNotifyHomeowner": bool(row.security_must_notify_homeowner),
                 "requirePhotoVerification": bool(row.security_require_photo_verification),
@@ -528,6 +529,7 @@ def get_estate_settings(db: Session, *, estate_id: str, owner_id: str) -> dict[s
         "estateId": estate.id,
         "joinCode": estate.join_code or "",
         "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
+        "securityEnabled": bool(getattr(estate, "security_enabled", True)),
         "canApproveWithoutHomeowner": bool(estate.security_can_approve_without_homeowner),
         "mustNotifyHomeowner": bool(estate.security_must_notify_homeowner),
         "requirePhotoVerification": bool(estate.security_require_photo_verification),
@@ -546,6 +548,7 @@ def update_estate_settings(
     owner_id: str,
     reminder_frequency_days: int,
     can_approve_without_homeowner: bool | None = None,
+    security_enabled: bool | None = None,
     must_notify_homeowner: bool | None = None,
     require_photo_verification: bool | None = None,
     require_call_before_approval: bool | None = None,
@@ -562,6 +565,8 @@ def update_estate_settings(
     if frequency_days < 1 or frequency_days > 365:
         raise AppException("reminderFrequencyDays must be between 1 and 365", status_code=400)
     estate.reminder_frequency_days = frequency_days
+    if security_enabled is not None:
+        estate.security_enabled = bool(security_enabled)
     if can_approve_without_homeowner is not None:
         estate.security_can_approve_without_homeowner = bool(can_approve_without_homeowner)
     if must_notify_homeowner is not None:
@@ -583,6 +588,7 @@ def update_estate_settings(
     return {
         "estateId": estate.id,
         "reminderFrequencyDays": int(estate.reminder_frequency_days or 1),
+        "securityEnabled": bool(getattr(estate, "security_enabled", True)),
         "canApproveWithoutHomeowner": bool(estate.security_can_approve_without_homeowner),
         "mustNotifyHomeowner": bool(estate.security_must_notify_homeowner),
         "requirePhotoVerification": bool(estate.security_require_photo_verification),

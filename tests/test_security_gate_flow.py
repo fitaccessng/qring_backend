@@ -13,7 +13,7 @@ from app.db.base import Base
 from app.db.models import Door, Estate, GateLog, Home, Message, Subscription, User, UserRole, VisitorSession
 from app.services.advanced_service import create_snapshot_audit, load_session_snapshot_bytes, load_snapshot_bytes, resolve_session_snapshot_public_url
 from app.services.homeowner_service import create_homeowner_session_message
-from app.services.security_service import list_security_message_threads, update_security_session_status
+from app.services.security_service import list_security_message_threads, notify_security_request, resolve_security_call_target, update_security_session_status
 
 
 class SecurityGateFlowTests(unittest.TestCase):
@@ -219,12 +219,23 @@ class SecurityGateFlowTests(unittest.TestCase):
         self.assertEqual(threads[0]["id"], older_session.id)
         self.assertEqual(threads[0]["last"], "Please deny entry.")
 
+    def test_security_disabled_estate_does_not_route_to_security(self):
+        self.estate.security_enabled = False
+        self.db.commit()
+
+        with unittest.mock.patch("app.services.security_service.create_notification") as notify_mock:
+            notify_security_request(self.db, self.session)
+
+        self.assertIsNone(resolve_security_call_target(self.db, visitor_session=self.session))
+        notify_mock.assert_not_called()
+
     def test_homeowner_message_persists_and_is_returned_to_same_estate_security(self):
         data = create_homeowner_session_message(
             self.db,
             homeowner_id=self.resident.id,
             session_id=self.session.id,
             text="QRING SECURITY DEBUG 001",
+            communication_target="gateman",
         )
 
         self.assertIsNotNone(data)

@@ -258,29 +258,14 @@ async def start_call_session(
         appointment.visitor_name if appointment else (visitor_session.visitor_label if visitor_session else "Visitor")
     )
     caller_name = _resolve_user_display_name(db, caller_id, effective_visitor_name)
-    create_notification(
-        db=db,
-        user_id=effective_homeowner_id,
-        kind="call.request",
-        payload={
-            "callSessionId": row.id,
-            "appointmentId": appointment.id if appointment else None,
-            "sessionId": visitor_session.id if visitor_session else None,
-            "visitorRequestId": row.visitor_request_id,
-            "roomName": row.room_name,
-            "visitorId": row.visitor_id,
-            "visitorName": effective_visitor_name,
-            "callerName": caller_name,
-            "callerRole": caller_role or initiated_by_role,
-            "callerOrigin": caller_origin,
-            "message": f"{caller_name} is calling from the {caller_origin}.",
-        },
-    )
     receiver_user_id = str(receiver_id or "").strip() or None
-    if receiver_user_id and receiver_user_id != effective_homeowner_id:
+    notification_user_ids = [receiver_user_id] if receiver_user_id else []
+    if not notification_user_ids and (caller_role or initiated_by_role) != "homeowner":
+        notification_user_ids = [effective_homeowner_id]
+    for notification_user_id in dict.fromkeys(notification_user_ids):
         create_notification(
             db=db,
-            user_id=receiver_user_id,
+            user_id=notification_user_id,
             kind="call.request",
             payload={
                 "callSessionId": row.id,

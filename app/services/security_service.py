@@ -186,6 +186,7 @@ def get_estate_security_rules(db: Session, estate_id: str) -> dict[str, Any]:
     estate = db.query(Estate).filter(Estate.id == estate_id).first()
     if not estate:
         return {
+            "securityEnabled": False,
             "canApproveWithoutHomeowner": False,
             "mustNotifyHomeowner": True,
             "requirePhotoVerification": False,
@@ -193,6 +194,7 @@ def get_estate_security_rules(db: Session, estate_id: str) -> dict[str, Any]:
             "autoApproveTrustedVisitors": False,
         }
     return {
+        "securityEnabled": bool(getattr(estate, "security_enabled", True)),
         "canApproveWithoutHomeowner": bool(estate.security_can_approve_without_homeowner),
         "mustNotifyHomeowner": bool(estate.security_must_notify_homeowner),
         "requirePhotoVerification": bool(estate.security_require_photo_verification),
@@ -202,6 +204,9 @@ def get_estate_security_rules(db: Session, estate_id: str) -> dict[str, Any]:
 
 
 def list_security_accounts_for_estate(db: Session, estate_id: str, gate_id: str | None = None) -> list[User]:
+    estate = db.query(Estate).filter(Estate.id == estate_id).first()
+    if estate and not bool(getattr(estate, "security_enabled", True)):
+        return []
     query = db.query(User).filter(User.role == UserRole.security, User.estate_id == estate_id, User.is_active.is_(True))
     if gate_id:
         targeted = query.filter((User.gate_id == gate_id) | (User.gate_id.is_(None))).order_by(User.full_name.asc()).all()

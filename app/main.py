@@ -307,6 +307,7 @@ def _seed_dev_data(db: Session):
             name="Demo Estate",
             owner_id=estate_user.id,
             security_can_approve_without_homeowner=False,
+            security_enabled=True,
             security_must_notify_homeowner=True,
             security_require_photo_verification=True,
             security_require_call_before_approval=False,
@@ -584,6 +585,7 @@ def _ensure_runtime_compatibility_schema() -> None:
             columns = {col["name"] for col in inspector.get_columns("estates")}
             _add_column_if_missing(conn, columns, "estates", "join_code", "VARCHAR(24)")
             _add_column_if_missing(conn, columns, "estates", "reminder_frequency_days", "INTEGER DEFAULT 1")
+            _add_column_if_missing(conn, columns, "estates", "security_enabled", "BOOLEAN DEFAULT 1")
             _add_column_if_missing(conn, columns, "estates", "security_can_approve_without_homeowner", "BOOLEAN DEFAULT 0")
             _add_column_if_missing(conn, columns, "estates", "security_must_notify_homeowner", "BOOLEAN DEFAULT 1")
             _add_column_if_missing(conn, columns, "estates", "security_require_photo_verification", "BOOLEAN DEFAULT 0")
