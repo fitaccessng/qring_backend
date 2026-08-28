@@ -359,24 +359,23 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             if not str(field_value or "").strip()
         ]
         if missing_fields:
-            logger.warning(
+            logger.info(
                 "visitor.request missing_fields session_id=%s qr_id=%s missing=%s",
                 session.id,
                 payload.qrId,
                 ",".join(missing_fields),
             )
+            db.delete(session)
+            db.commit()
+            raise AppException(
+                "Visitor name, phone number, purpose of visit, and snapshot are required.",
+                status_code=400,
+                code="VISITOR_REQUEST_INCOMPLETE",
+            )
         phase = "capture_snapshot"
         snapshot_audit = None
         snapshot_b64 = (payload.snapshotBase64 or "").strip()
         snapshot_mime = (payload.snapshotMime or "").strip().lower()
-        if not snapshot_b64 or not snapshot_mime:
-            snapshot_b64, snapshot_mime = _build_placeholder_snapshot_payload()
-            logger.info(
-                "visitor.request using_placeholder_snapshot request_id=%s session_id=%s qr_id=%s",
-                request_id,
-                session.id,
-                payload.qrId,
-            )
         logger.info(
             "QRING_SNAPSHOT_BACKEND_RECEIVED",
             extra={
@@ -579,6 +578,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
 
         door = db.query(Door).filter(Door.id == session.door_id).first()
         door_name = door.name if door else ""
+        snapshot_filename = f"{(session.visitor_label or 'visitor').strip().replace(' ', '-').lower()}-snapshot"
 
         create_notification(
             db=db,
@@ -589,6 +589,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "visitorSessionId": session.id,
                 "doorId": session.door_id,
                 "doorName": door_name,
+                "snapshotName": snapshot_filename,
                 "visitorName": session.visitor_label or "Visitor",
                 "phoneNumber": session.visitor_phone or "",
                 "purpose": session.purpose or "",
@@ -608,6 +609,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     "fileUrl": session.snapshot_url or session.photo_url,
                     "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
                     "doorName": door_name,
+                    "snapshotName": snapshot_filename,
                 },
                 "requestPayload": {
                     "snapshotUrl": session.snapshot_url or session.photo_url,
@@ -616,6 +618,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     "fileUrl": session.snapshot_url or session.photo_url,
                     "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
                     "doorName": door_name,
+                    "snapshotName": snapshot_filename,
                 },
                 "payload": {
                     "snapshotUrl": session.snapshot_url or session.photo_url,
@@ -624,6 +627,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                     "fileUrl": session.snapshot_url or session.photo_url,
                     "snapshotAuditId": snapshot_audit.get("id") if isinstance(snapshot_audit, dict) else None,
                     "doorName": door_name,
+                    "snapshotName": snapshot_filename,
                 },
                 "estateId": session.estate_id,
                 "requestSource": session.request_source or "visitor_qr",
@@ -639,7 +643,6 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             ),
             source="visitor.request",
         )
-        notify_security_request(db, session)
 
         phase = "emit_dashboard_patch"
         await sio.emit(
@@ -658,52 +661,6 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             },
             namespace=settings.DASHBOARD_NAMESPACE,
         )
-        await sio.emit(
-            "new_visitor_request",
-            {"data": serialize_security_session(db, session)},
-            namespace=settings.DASHBOARD_NAMESPACE,
-        )
-        incoming_call_key = build_notification_idempotency_key(
-            event_type="incoming-call",
-            user_id=session.homeowner_id,
-            session_id=session.id,
-            entity_id=str(appointment.id if appointment else session.id),
-            action="ringing",
-        )
-        incoming_call_payload = build_notification_envelope(
-            event_type="incoming-call",
-            idempotency_key=incoming_call_key,
-            session_id=session.id,
-            user_id=session.homeowner_id,
-            source="visitor.request.arrival",
-            payload={
-                "sessionId": session.id,
-                "callSessionId": "",
-                "appointmentId": appointment.id if appointment else None,
-                "homeownerId": session.homeowner_id,
-                "visitorId": session.id,
-                "visitorName": effective_visitor_name,
-                "doorId": session.door_id,
-                "hasVideo": False,
-                "state": "ringing",
-                "message": f"{effective_visitor_name} arrived at your gate.",
-            },
-        )
-        await emit_dashboard_notification(
-            event_name="incoming-call",
-            rooms=[f"user:{session.homeowner_id}"],
-            payload=incoming_call_payload,
-            idempotency_key=f"dashboard:{incoming_call_key}",
-            source="visitor.request.arrival",
-        )
-        await emit_signaling_notification(
-            event_name="incoming-call",
-            rooms=[f"homeowner:{session.homeowner_id}"],
-            payload=incoming_call_payload,
-            idempotency_key=f"signaling:{incoming_call_key}",
-            source="visitor.request.arrival",
-        )
-
         elapsed_ms = (perf_counter() - started) * 1000
         logger.info(
             "visitor.request completed in %.1fms phase=%s qr_id=%s session_id=%s",
@@ -725,6 +682,7 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
                 "imageUrl": session.snapshot_url or session.photo_url,
                 "fileUrl": session.snapshot_url or session.photo_url,
                 "doorName": door_name,
+                "snapshotName": snapshot_filename,
             }
         }
     except Exception as exc:
@@ -853,46 +811,6 @@ async def visitor_appointment_arrival(
             }
         },
         namespace=settings.DASHBOARD_NAMESPACE,
-    )
-    arrival_key = build_notification_idempotency_key(
-        event_type="incoming-call",
-        user_id=str(data.get("homeownerId") or ""),
-        session_id=str(data.get("sessionId") or ""),
-        entity_id=str(appointment_id or ""),
-        action="arrived",
-    )
-    arrival_payload = build_notification_envelope(
-        event_type="incoming-call",
-        idempotency_key=arrival_key,
-        session_id=str(data.get("sessionId") or ""),
-        user_id=str(data.get("homeownerId") or ""),
-        source="visitor.appointment.arrival",
-        payload={
-            "sessionId": data.get("sessionId"),
-            "callSessionId": "",
-            "appointmentId": appointment_id,
-            "homeownerId": data.get("homeownerId"),
-            "visitorId": data.get("visitorId") or data.get("sessionId"),
-            "visitorName": data.get("visitorName") or "Visitor",
-            "doorId": data.get("doorId"),
-            "hasVideo": False,
-            "state": "ringing",
-            "message": f"{data.get('visitorName') or 'Visitor'} arrived for appointment.",
-        },
-    )
-    await emit_dashboard_notification(
-        event_name="incoming-call",
-        rooms=[f"user:{data.get('homeownerId')}"],
-        payload=arrival_payload,
-        idempotency_key=f"dashboard:{arrival_key}",
-        source="visitor.appointment.arrival",
-    )
-    await emit_signaling_notification(
-        event_name="incoming-call",
-        rooms=[f"homeowner:{data.get('homeownerId')}"],
-        payload=arrival_payload,
-        idempotency_key=f"signaling:{arrival_key}",
-        source="visitor.appointment.arrival",
     )
     return {"data": data}
 
