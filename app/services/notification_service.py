@@ -58,6 +58,50 @@ def _safe_json_payload(value) -> dict:
         return {}
 
 
+def _notification_title(kind: str) -> str:
+    title_map = {
+        "visitor.request": "New Visitor Request",
+        "estate.alert": "Estate Alert",
+        "estate.invite": "Estate Invitation",
+        "estate.assignment": "Door Assignment",
+        "estate.payment.status": "Payment Status",
+        "safety.panic": "Panic Alert Near You",
+        "safety.panic.response": "Responder Update",
+        "safety.panic.reported": "Panic Alert Review",
+    }
+    return title_map.get(kind, "Qring Alert")
+
+
+def serialize_notification(row: Notification, payload: dict | None = None) -> dict:
+    data = payload if isinstance(payload, dict) else _safe_json_payload(row.payload)
+    title = str(data.get("title") or _notification_title(row.kind))
+    body = str(data.get("body") or data.get("message") or "You have a new notification.")
+    read_at = row.read_at.isoformat() if row.read_at else None
+    created_at = row.created_at.isoformat()
+    notification_type = str(data.get("type") or row.kind)
+    return {
+        "id": row.id,
+        "recipient_id": row.user_id,
+        "type": notification_type,
+        "title": title,
+        "body": body,
+        "data": data,
+        "is_read": bool(row.read_at),
+        "created_at": created_at,
+        "read_at": read_at,
+        "kind": row.kind,
+        "payload": row.payload,
+        "readAt": read_at,
+        "createdAt": created_at,
+        "notificationId": str(data.get("notificationId") or row.id),
+        "eventId": str(data.get("eventId") or row.id),
+        "idempotencyKey": str(data.get("idempotencyKey") or row.id),
+        "sessionId": str(data.get("sessionId") or "").strip() or None,
+        "userId": row.user_id,
+        "timestamp": data.get("timestamp"),
+    }
+
+
 def create_notification(
     db: Session,
     user_id: str,
@@ -112,20 +156,11 @@ def create_notification(
         route = str((envelope or {}).get("route") or "")
         panic_id = str((envelope or {}).get("panicId") or "")
         action_set = str((envelope or {}).get("actionSet") or ("panic_response" if kind == "safety.panic" and panic_id else ""))
-        title_map = {
-            "visitor.request": "New Visitor Request",
-            "estate.alert": "Estate Alert",
-            "estate.invite": "Estate Invitation",
-            "estate.assignment": "Door Assignment",
-            "estate.payment.status": "Payment Status",
-            "safety.panic": "Panic Alert Near You",
-            "safety.panic.response": "Responder Update",
-            "safety.panic.reported": "Panic Alert Review",
-        }
+        title = _notification_title(kind)
         send_push_fcm(
             db,
             user_id=user_id,
-            title=title_map.get(kind, "Qring Alert"),
+            title=title,
             body=message,
             data={
                 "kind": kind,
@@ -138,35 +173,17 @@ def create_notification(
                 "panicId": panic_id,
                 "route": route,
                 "actionSet": action_set,
-                "title": title_map.get(kind, "Qring Alert"),
+                "title": title,
                 "body": message,
             },
         )
     except Exception:
         # Push failures must not block notification creation.
         pass
-    payload_for_socket = {
-        "id": notification.id,
-        "kind": notification.kind,
-        "payload": notification.payload,
-        "readAt": None,
-        "createdAt": notification.created_at.isoformat(),
-        "notificationId": notification.id,
-        "eventId": envelope.get("eventId"),
-        "idempotencyKey": envelope.get("idempotencyKey"),
-        "type": envelope.get("type"),
-        "sessionId": envelope.get("sessionId"),
-        "userId": user_id,
-        "timestamp": envelope.get("timestamp"),
-        "source": source,
-    }
     notification.payload = json.dumps(envelope)
     db.commit()
     db.refresh(notification)
-    db_payload = {
-        **payload_for_socket,
-        "payload": notification.payload,
-    }
+    db_payload = serialize_notification(notification, envelope)
     _schedule_dashboard_emit(
         emit_dashboard_notification,
         event_name="notification.created",
@@ -245,22 +262,7 @@ def list_notifications(db: Session, user_id: str) -> list[dict]:
         if dedupe_key in dedupe_seen:
             continue
         dedupe_seen.add(dedupe_key)
-        items.append(
-            {
-                "id": row.id,
-                "kind": row.kind,
-                "payload": row.payload,
-                "readAt": row.read_at.isoformat() if row.read_at else None,
-                "createdAt": row.created_at.isoformat(),
-                "notificationId": str(payload.get("notificationId") or row.id),
-                "eventId": str(payload.get("eventId") or row.id),
-                "idempotencyKey": str(payload.get("idempotencyKey") or row.id),
-                "type": str(payload.get("type") or row.kind),
-                "sessionId": str(payload.get("sessionId") or "").strip() or None,
-                "userId": row.user_id,
-                "timestamp": payload.get("timestamp"),
-            }
-        )
+        items.append(serialize_notification(row, payload))
         if len(items) >= 50:
             break
     return items
@@ -278,27 +280,16 @@ def mark_notification_read(db: Session, user_id: str, notification_id: str) -> d
     db.commit()
     db.refresh(row)
     parsed_payload = _safe_json_payload(row.payload)
-    payload = {
-        "id": row.id,
-        "kind": row.kind,
-        "payload": row.payload,
-        "readAt": row.read_at.isoformat() if row.read_at else None,
-        "createdAt": row.created_at.isoformat(),
-    }
+    payload = serialize_notification(row, parsed_payload)
     _schedule_dashboard_emit(
         emit_dashboard_notification,
         event_name="notification.updated",
         rooms=["notifications", f"user:{user_id}", f"user:{user_id}:notifications"],
         payload={
             **payload,
-            "notificationId": row.id,
-            "eventId": row.id,
-            "idempotencyKey": f"notification.updated:{row.id}:{payload['readAt']}",
-            "type": row.kind,
-            "sessionId": str(parsed_payload.get("sessionId") or "").strip() or None,
-            "userId": user_id,
+            "idempotencyKey": f"notification.updated:{row.id}:{payload['read_at']}",
         },
-        idempotency_key=f"dashboard:notification.updated:{row.id}:{payload['readAt']}",
+        idempotency_key=f"dashboard:notification.updated:{row.id}:{payload['read_at']}",
         source="notification_service.mark_read",
     )
     return payload

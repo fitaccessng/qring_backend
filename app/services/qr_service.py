@@ -76,6 +76,7 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
     if not qr or not qr.active:
         raise AppException("QR not found or inactive", status_code=404)
 
+    estate = None
     if qr.estate_id:
         estate = db.query(Estate).filter(Estate.id == qr.estate_id).first()
         if estate:
@@ -112,6 +113,8 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
                 "homeName": home.name if home else "",
                 "homeownerId": user.id if user else "",
                 "homeownerName": user.full_name if user else "",
+                "residentId": user.id if user else "",
+                "residentName": user.full_name if user else "",
             }
         )
 
@@ -130,6 +133,8 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
                     "homeName": home.name if home else "",
                     "homeownerId": "",
                     "homeownerName": "",
+                    "residentId": "",
+                    "residentName": "",
                 }
             )
 
@@ -141,5 +146,11 @@ def resolve_qr(db: Session, qr_id: str) -> dict:
         "doorOptions": door_options,
         "mode": qr.mode,
         "estate_id": qr.estate_id,
+        "estateId": qr.estate_id,
+        "estateName": estate.name if estate else "",
+        "estate": {
+            "id": estate.id,
+            "name": estate.name,
+        } if estate else None,
         "active": qr.active,
     }

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.db.models import Estate, Door, QRCode, User, UserRole, Home
 from app.services.estate_service import create_estate_shared_selector_qr
+from app.services.qr_service import resolve_qr
 
 
 class QRIdempotencyTests(unittest.TestCase):
@@ -65,6 +66,18 @@ class QRIdempotencyTests(unittest.TestCase):
         # Second creation should return the same qr (idempotent)
         result2 = create_estate_shared_selector_qr(db=self.db, owner_id=self.estate_owner.id, estate_id=self.estate.id)
         self.assertEqual(result1["qrId"], result2["qrId"])
+
+    def test_resolve_estate_selector_qr_includes_estate_and_resident_options(self):
+        created = create_estate_shared_selector_qr(db=self.db, owner_id=self.estate_owner.id, estate_id=self.estate.id)
+
+        resolved = resolve_qr(self.db, created["qrId"])
+
+        self.assertEqual(resolved["estateId"], self.estate.id)
+        self.assertEqual(resolved["estateName"], "Test Estate")
+        self.assertEqual(resolved["estate"]["name"], "Test Estate")
+        self.assertEqual(resolved["doorOptions"][0]["homeName"], "Unit A")
+        self.assertEqual(resolved["doorOptions"][0]["residentId"], self.homeowner.id)
+        self.assertEqual(resolved["doorOptions"][0]["residentName"], "Homeowner")
 
     def test_concurrent_creation_returns_single_row(self):
         # Create one selector QR directly
