@@ -16,7 +16,7 @@ from app.services.notification_service import create_notification
 OPEN_SECURITY_STATUSES = {"submitted", "received_by_security", "forwarded_to_homeowner", "approved"}
 STATE_FLOW = {
     "pending": {"received_by_security", "forwarded_to_homeowner", "approved", "rejected", "completed"},
-    "submitted": {"received_by_security"},
+    "submitted": {"received_by_security", "approved", "rejected"},
     "received_by_security": {"forwarded_to_homeowner", "approved", "rejected"},
     "forwarded_to_homeowner": {"approved", "rejected"},
     "approved": {"gate_confirmed", "completed"},
@@ -468,7 +468,8 @@ def update_security_session_status(
     normalized_target = (preferred_communication_target or "").strip().lower() or None
     if normalized_target not in {None, "visitor", "gateman"}:
         raise AppException("Preferred communication target is invalid.", status_code=400)
-    home, estate, _ = _route_targets_for_session(db, session)
+    home, estate, security_users = _route_targets_for_session(db, session)
+    has_security_path = bool(estate) and bool(getattr(estate, "security_enabled", True)) and bool(security_users)
     rules = get_estate_security_rules(db, estate.id if estate else "")
     homeowner_settings = (
         db.query(HomeownerSetting).filter(HomeownerSetting.user_id == session.homeowner_id).first()
@@ -583,17 +584,27 @@ def update_security_session_status(
     elif actor.role == UserRole.homeowner:
         if session.homeowner_id != actor.id:
             raise AppException("You cannot decide this visitor request", status_code=403)
-        if session.status == "submitted":
+        if session.status == "submitted" and has_security_path:
             _transition_session(session, "received_by_security", now=now)
         if action in {"approve", "reject"}:
             if normalized_channel:
                 session.preferred_communication_channel = normalized_channel
             if normalized_target:
                 session.preferred_communication_target = normalized_target
-            if session.status == "received_by_security":
+            if session.status == "received_by_security" and has_security_path:
                 _transition_session(session, "forwarded_to_homeowner", now=now)
-            _transition_session(session, "approved" if action == "approve" else "rejected", now=now)
-            if action == "reject":
+            if session.status == "submitted" and not has_security_path:
+                session.status = "approved" if action == "approve" else "rejected"
+                session.state_updated_at = now
+                if action == "approve":
+                    session.homeowner_decision_at = session.homeowner_decision_at or now
+                else:
+                    session.homeowner_decision_at = session.homeowner_decision_at or now
+                    session.gate_status = "denied_at_gate"
+                    session.ended_at = now
+            else:
+                _transition_session(session, "approved" if action == "approve" else "rejected", now=now)
+            if action == "reject" and session.gate_status != "denied_at_gate":
                 session.gate_status = "denied_at_gate"
                 session.ended_at = now
             _create_gate_log(db, session=session, actor=actor, action=f"homeowner_{action}")

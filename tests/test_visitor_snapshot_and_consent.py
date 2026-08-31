@@ -206,7 +206,7 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
         self.assertEqual(logical_type, "photo")
         self.assertEqual(content_type, "image/jpeg")
 
-    def test_visitor_request_uses_fallback_placeholder_snapshot_when_missing(self):
+    def test_visitor_request_rejects_missing_snapshot(self):
         with (
             patch("app.api.routes.visitor.resolve_qr") as mock_resolve_qr,
             patch("app.api.routes.visitor.create_snapshot_audit") as mock_create_snapshot_audit,
@@ -247,12 +247,10 @@ class VisitorSnapshotAndConsentTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(request_response.status_code, 200, request_response.text)
-            request_payload = request_response.json().get("data") or {}
-            self.assertTrue(request_payload.get("sessionId"))
-            self.assertEqual(request_payload.get("visitorName"), "Fallback Visitor")
-            mock_create_snapshot_audit.assert_called_once()
-            self.assertTrue(mock_create_snapshot_audit.call_args.kwargs.get("media_bytes"))
+            self.assertEqual(request_response.status_code, 400, request_response.text)
+            response_payload = request_response.json()
+            self.assertEqual(response_payload.get("code"), "VISITOR_REQUEST_INCOMPLETE")
+            mock_create_snapshot_audit.assert_not_called()
 
     def test_create_snapshot_audit_returns_download_route_for_firebase_storage(self):
         class _Blob:

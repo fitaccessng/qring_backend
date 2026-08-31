@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import uuid
 from datetime import timedelta
+from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -223,11 +224,32 @@ class SecurityGateFlowTests(unittest.TestCase):
         self.estate.security_enabled = False
         self.db.commit()
 
-        with unittest.mock.patch("app.services.security_service.create_notification") as notify_mock:
+        with mock.patch("app.services.security_service.create_notification") as notify_mock:
             notify_security_request(self.db, self.session)
 
         self.assertIsNone(resolve_security_call_target(self.db, visitor_session=self.session))
         notify_mock.assert_not_called()
+
+    def test_homeowner_decision_skips_security_pipeline_when_estate_has_no_security(self):
+        self.estate.security_enabled = False
+        self.session.status = "submitted"
+        self.session.gate_status = "waiting"
+        self.db.commit()
+
+        updated = update_security_session_status(
+            self.db,
+            session_id=self.session.id,
+            actor=self.resident,
+            action="approve",
+            preferred_communication_channel="audio",
+            preferred_communication_target="visitor",
+        )
+
+        self.assertEqual(updated.status, "approved")
+        self.assertIsNone(updated.handled_by_security_id)
+        self.assertEqual(updated.preferred_communication_channel, "audio")
+        self.assertEqual(updated.preferred_communication_target, "visitor")
+        self.assertNotEqual(updated.status, "received_by_security")
 
     def test_homeowner_message_persists_and_is_returned_to_same_estate_security(self):
         data = create_homeowner_session_message(
