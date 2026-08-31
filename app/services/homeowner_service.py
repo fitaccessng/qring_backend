@@ -13,6 +13,7 @@ from app.core.time import utc_now
 from app.db.models import Appointment, Door, Estate, Home, Message, Notification, QRCode, User, UserRole, VisitorSession
 from app.core.exceptions import AppException
 from app.services.advanced_service import resolve_session_snapshot_public_url, resolve_snapshot_public_url
+from app.services.estate_security import estate_has_security, estate_security_available
 from app.services.notification_service import create_notification
 from app.services.payment_service import get_effective_subscription, is_paid_subscription_expired
 
@@ -263,6 +264,8 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
             "estateName": None,
             "estateOwnerId": None,
             "hasSecurity": False,
+            "securityEnabled": False,
+            "securityAvailable": False,
             "home": None,
             "unitLabel": None,
         }
@@ -270,25 +273,14 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
     from app.db.models import Estate
 
     estate = db.query(Estate).filter(Estate.id == row.estate_id).first()
-    # detect whether the estate has any active security users
-    has_security = False
-    try:
-        if estate:
-            sec = (
-                db.query(User)
-                .filter(User.role == UserRole.security, User.estate_id == estate.id, User.is_active.is_(True))
-                .first()
-            )
-            has_security = bool(sec)
-    except Exception:
-        has_security = False
-
     return {
         "managedByEstate": bool(estate),
         "estateId": estate.id if estate else row.estate_id,
         "estateName": estate.name if estate else None,
         "estateOwnerId": estate.owner_id if estate else None,
-        "hasSecurity": has_security,
+        "hasSecurity": estate_has_security(db, estate.id if estate else row.estate_id),
+        "securityAvailable": estate_security_available(db, estate.id if estate else row.estate_id),
+        "securityEnabled": bool(getattr(estate, "security_enabled", False)) if estate else False,
         "home": {
             "id": row.id,
             "name": row.name,

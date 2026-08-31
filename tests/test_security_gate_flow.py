@@ -14,6 +14,7 @@ from app.db.base import Base
 from app.db.models import Door, Estate, GateLog, Home, Message, Subscription, User, UserRole, VisitorSession
 from app.services.advanced_service import create_snapshot_audit, load_session_snapshot_bytes, load_snapshot_bytes, resolve_session_snapshot_public_url
 from app.services.homeowner_service import create_homeowner_session_message
+from app.services.estate_security import estate_has_security, estate_security_available
 from app.services.security_service import list_security_message_threads, notify_security_request, resolve_security_call_target, update_security_session_status
 
 
@@ -228,6 +229,20 @@ class SecurityGateFlowTests(unittest.TestCase):
             notify_security_request(self.db, self.session)
 
         self.assertIsNone(resolve_security_call_target(self.db, visitor_session=self.session))
+        notify_mock.assert_not_called()
+
+    def test_security_configuration_is_not_changed_by_inactive_security_accounts(self):
+        self.estate.security_enabled = True
+        self.security.is_active = False
+        self.db.commit()
+
+        self.assertTrue(estate_has_security(self.db, self.estate.id, gate_id="main"))
+        self.assertFalse(estate_security_available(self.db, self.estate.id, gate_id="main"))
+        self.assertIsNone(resolve_security_call_target(self.db, visitor_session=self.session))
+
+        with mock.patch("app.services.security_service.create_notification") as notify_mock:
+            notify_security_request(self.db, self.session)
+
         notify_mock.assert_not_called()
 
     def test_homeowner_decision_skips_security_pipeline_when_estate_has_no_security(self):

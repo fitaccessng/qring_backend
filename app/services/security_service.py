@@ -11,6 +11,7 @@ from app.core.exceptions import AppException
 from app.core.time import utc_now
 from app.db.models import AuditLog, Appointment, CallSession, Door, Estate, EstateAlert, GateLog, Home, HomeownerSetting, Message, Notification, Office, OfficeMember, User, UserRole, VisitorSession
 from app.services.advanced_service import resolve_session_snapshot_public_url
+from app.services.estate_security import estate_has_security, estate_security_available
 from app.services.notification_service import create_notification
 
 OPEN_SECURITY_STATUSES = {"submitted", "received_by_security", "forwarded_to_homeowner", "approved"}
@@ -204,8 +205,7 @@ def get_estate_security_rules(db: Session, estate_id: str) -> dict[str, Any]:
 
 
 def list_security_accounts_for_estate(db: Session, estate_id: str, gate_id: str | None = None) -> list[User]:
-    estate = db.query(Estate).filter(Estate.id == estate_id).first()
-    if estate and not bool(getattr(estate, "security_enabled", True)):
+    if not estate_security_available(db, estate_id, gate_id=gate_id):
         return []
     query = db.query(User).filter(User.role == UserRole.security, User.estate_id == estate_id, User.is_active.is_(True))
     if gate_id:
@@ -469,7 +469,7 @@ def update_security_session_status(
     if normalized_target not in {None, "visitor", "gateman"}:
         raise AppException("Preferred communication target is invalid.", status_code=400)
     home, estate, security_users = _route_targets_for_session(db, session)
-    has_security_path = bool(estate) and bool(getattr(estate, "security_enabled", True)) and bool(security_users)
+    has_security_path = bool(estate) and estate_has_security(db, estate.id, gate_id=session.gate_id)
     rules = get_estate_security_rules(db, estate.id if estate else "")
     homeowner_settings = (
         db.query(HomeownerSetting).filter(HomeownerSetting.user_id == session.homeowner_id).first()

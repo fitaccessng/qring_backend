@@ -324,6 +324,39 @@ def create_snapshot_audit(
             cloud_upload_result.bytes or len(media_bytes),
         )
     else:
+        try:
+            bucket = _get_storage_bucket()
+            if bucket is not None:
+                storage_path = str(relative_path).replace("\\", "/")
+                blob = bucket.blob(storage_path)
+                blob.cache_control = "private, max-age=0, no-cache"
+                blob.metadata = {
+                    **(getattr(blob, "metadata", None) or {}),
+                    "residentId": effective_resident_id,
+                    "visitorSessionId": visitor_session_id or "",
+                    "appointmentId": appointment_id or "",
+                    "source": source,
+                }
+                blob.upload_from_string(media_bytes, content_type=content_type)
+                media_path = f"firebase:{storage_path}"
+                media_url = None
+                logger.info(
+                    "snapshot.audit.firebase_saved resident_id=%s media_id=%s path=%s bytes=%s",
+                    effective_resident_id,
+                    media_id,
+                    storage_path,
+                    len(media_bytes),
+                )
+        except Exception:
+            logger.exception(
+                "snapshot.audit.firebase_fallback_failed resident_id=%s media_id=%s path=%s bytes=%s",
+                effective_resident_id,
+                media_id,
+                str(relative_path),
+                len(media_bytes),
+            )
+
+    if cloud_upload_result is None and not media_path:
         absolute_path = _media_base_dir() / relative_path
         try:
             absolute_path.parent.mkdir(parents=True, exist_ok=True)
@@ -380,8 +413,7 @@ def create_snapshot_audit(
         raise
     db.refresh(row)
 
-    # For Cloudinary-backed snapshots, return the absolute secure URL as canonical.
-    public_url = media_url or ""
+    public_url = media_url or resolve_snapshot_public_url(db, row.id)
 
     return {
         "id": row.id,

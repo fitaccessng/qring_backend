@@ -142,7 +142,7 @@ async def _emit_call_requested_events(
     payload_has_video: bool,
     source: str,
 ) -> None:
-    if not linked_session or not incoming_room_user_id:
+    if not linked_session:
         return
     caller_name = (caller_user.full_name if caller_user else "") or row.visitor_id or "Visitor"
     caller_role = row.initiated_by_role or (caller_user.role.value if caller_user else "visitor")
@@ -177,17 +177,22 @@ async def _emit_call_requested_events(
         event_type="call.requested",
         idempotency_key=call_invite_key,
         session_id=linked_session,
-        user_id=caller_user.id if caller_user else None,
+        user_id=incoming_room_user_id or (caller_user.id if caller_user else None),
         source=source,
         payload=payload,
     )
+    signaling_rooms = [f"session:{linked_session}"]
+    if incoming_room_user_id:
+        signaling_rooms.append(f"user:{incoming_room_user_id}")
     await emit_signaling_notification(
         event_name="call.requested",
-        rooms=[f"session:{linked_session}", f"user:{incoming_room_user_id}"],
+        rooms=signaling_rooms,
         payload=event_payload,
         idempotency_key=call_invite_key,
         source=source,
     )
+    if not incoming_room_user_id:
+        return
     logger.info(
         "qring.call.incoming.emit call_id=%s session_id=%s caller_user_id=%s recipient_user_id=%s event=%s room=%s call_type=%s",
         row.id,

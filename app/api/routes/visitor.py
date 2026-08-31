@@ -643,8 +643,37 @@ async def visitor_request(payload: VisitorRequestCreate, db: Session = Depends(g
             ),
             source="visitor.request",
         )
+        notify_security_request(db, session)
 
         phase = "emit_dashboard_patch"
+        request_event_payload = {
+            "sessionId": session.id,
+            "visitorSessionId": session.id,
+            "visitorRequestId": session.request_id,
+            "estateId": session.estate_id,
+            "residentId": session.homeowner_id,
+            "homeownerId": session.homeowner_id,
+            "visitorName": session.visitor_label or "Visitor",
+            "visitorPhone": session.visitor_phone or "",
+            "phoneNumber": session.visitor_phone or "",
+            "purpose": session.purpose or "",
+            "snapshotUrl": session.snapshot_url or session.photo_url,
+            "photoUrl": session.snapshot_url or session.photo_url,
+            "status": session.status,
+            "createdAt": session.started_at.isoformat() if session.started_at else None,
+        }
+        await emit_dashboard_notification(
+            event_name="visitor.request.created",
+            rooms=[f"user:{session.homeowner_id}"],
+            payload={"data": request_event_payload},
+            idempotency_key=build_notification_idempotency_key(
+                event_type="visitor.request.created",
+                user_id=session.homeowner_id,
+                session_id=session.id,
+                entity_id=str(request_id or session.id),
+            ),
+            source="visitor.request",
+        )
         await sio.emit(
             "dashboard.patch",
             {

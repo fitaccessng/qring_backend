@@ -12,7 +12,7 @@ from unittest.mock import patch
 from app.core.time import utc_now
 from app.core.security import create_access_token
 from app.db.base import Base
-from app.db.models import CallSession, Door, Home, Message, User, UserRole, VisitorSession
+from app.db.models import CallSession, Door, Estate, Home, Message, Notification, User, UserRole, VisitorSession
 from app.db.session import get_db
 from app.main import fastapi_app
 from app.services.visitor_session_auth import issue_visitor_session_token
@@ -51,10 +51,20 @@ class VisitorSessionCallContractTests(unittest.TestCase):
         self.db.add_all([self.homeowner, self.other_homeowner])
         self.db.flush()
 
+        self.estate = Estate(
+            id=str(uuid.uuid4()),
+            name="Contract Estate",
+            owner_id=self.other_homeowner.id,
+            security_enabled=False,
+        )
+        self.db.add(self.estate)
+        self.db.flush()
+
         self.home = Home(
             id=str(uuid.uuid4()),
             name="Unit 9A",
             homeowner_id=self.homeowner.id,
+            estate_id=self.estate.id,
         )
         self.door = Door(
             id=str(uuid.uuid4()),
@@ -78,6 +88,7 @@ class VisitorSessionCallContractTests(unittest.TestCase):
             status="approved",
             photo_url="https://cdn.example.com/snapshot.jpg",
             snapshot_url="https://cdn.example.com/snapshot.jpg",
+            estate_id=self.estate.id,
         )
         self.db.add(self.visitor_session)
         self.db.flush()
@@ -188,6 +199,106 @@ class VisitorSessionCallContractTests(unittest.TestCase):
         self.assertEqual(payload.get("callType"), "video")
         self.assertTrue(payload.get("callSessionId"))
         self.assertEqual(payload.get("status"), "ringing")
+        self._mocks[5].assert_awaited()
+        emit_kwargs = self._mocks[5].await_args.kwargs
+        self.assertEqual(emit_kwargs["event_name"], "call.requested")
+        self.assertEqual(emit_kwargs["rooms"], [f"session:{self.visitor_session.id}"])
+
+    def test_request_without_security_goes_to_homeowner_and_not_security(self):
+        with (
+            patch("app.api.routes.visitor.resolve_qr") as mock_resolve_qr,
+            patch("app.api.routes.visitor.create_snapshot_audit") as mock_create_snapshot_audit,
+        ):
+            request_id = f"no-security-{uuid.uuid4()}"
+            mock_resolve_qr.return_value = {"home_id": self.home.id, "doors": [self.door.id], "mode": "direct"}
+            mock_create_snapshot_audit.return_value = {
+                "id": "snapshot-no-security",
+                "fileUrl": "https://cdn.example.com/no-security.jpg",
+                "url": "https://cdn.example.com/no-security.jpg",
+            }
+            response = self.client.post(
+                "/api/v1/visitor/request",
+                json={
+                    "requestId": request_id,
+                    "qrId": f"qr-{uuid.uuid4()}",
+                    "doorId": self.door.id,
+                    "name": "Direct Visitor",
+                    "phoneNumber": "+2348000000002",
+                    "purpose": "Visit homeowner",
+                    "visitorType": "guest",
+                    "snapshotBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
+                    "snapshotMime": "image/png",
+                    "deviceId": "device-direct-1",
+                    "consentAccepted": True,
+                    "consentAcceptedAt": utc_now().isoformat(),
+                    "consentStorage": "session",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        session_id = response.json()["data"]["sessionId"]
+        session = self.db.query(VisitorSession).filter(VisitorSession.id == session_id).one()
+        self.assertEqual(session.homeowner_id, self.homeowner.id)
+        self.assertEqual(session.estate_id, self.estate.id)
+        self.assertIsNone(session.handled_by_security_id)
+        self.assertEqual(session.snapshot_url, "https://cdn.example.com/no-security.jpg")
+        self.assertEqual(session.visitor_label, "Direct Visitor")
+        self.assertEqual(session.visitor_phone, "+2348000000002")
+        self.assertEqual(session.purpose, "Visit homeowner")
+        notifications = self.db.query(Notification).filter(Notification.payload.contains(session_id)).all()
+        self.assertTrue(any(row.user_id == self.homeowner.id and row.kind == "visitor.request" for row in notifications))
+        self.assertFalse(any(row.kind == "security.visitor_request" for row in notifications))
+
+    def test_request_with_security_goes_to_homeowner_and_security(self):
+        self.estate.security_enabled = True
+        security_user = User(
+            id=str(uuid.uuid4()),
+            full_name="Contract Security",
+            email="contract-security@example.com",
+            password_hash="hashed",
+            role=UserRole.security,
+            email_verified=True,
+            estate_id=self.estate.id,
+            is_active=True,
+        )
+        self.db.add(security_user)
+        self.db.commit()
+
+        with (
+            patch("app.api.routes.visitor.resolve_qr") as mock_resolve_qr,
+            patch("app.api.routes.visitor.create_snapshot_audit") as mock_create_snapshot_audit,
+        ):
+            request_id = f"with-security-{uuid.uuid4()}"
+            mock_resolve_qr.return_value = {"home_id": self.home.id, "doors": [self.door.id], "mode": "direct"}
+            mock_create_snapshot_audit.return_value = {
+                "id": "snapshot-with-security",
+                "fileUrl": "https://cdn.example.com/with-security.jpg",
+                "url": "https://cdn.example.com/with-security.jpg",
+            }
+            response = self.client.post(
+                "/api/v1/visitor/request",
+                json={
+                    "requestId": request_id,
+                    "qrId": f"qr-{uuid.uuid4()}",
+                    "doorId": self.door.id,
+                    "name": "Shared Visitor",
+                    "phoneNumber": "+2348000000003",
+                    "purpose": "Estate visit",
+                    "visitorType": "guest",
+                    "snapshotBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=",
+                    "snapshotMime": "image/png",
+                    "deviceId": "device-shared-1",
+                    "consentAccepted": True,
+                    "consentAcceptedAt": utc_now().isoformat(),
+                    "consentStorage": "session",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        session_id = response.json()["data"]["sessionId"]
+        notifications = self.db.query(Notification).filter(Notification.payload.contains(session_id)).all()
+        self.assertTrue(any(row.user_id == self.homeowner.id and row.kind == "visitor.request" for row in notifications))
+        self.assertTrue(any(row.user_id == security_user.id and row.kind == "security.visitor_request" for row in notifications))
 
     def test_call_request_rejects_visitor_auth(self):
         response = self.client.post(
