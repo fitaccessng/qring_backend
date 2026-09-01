@@ -618,6 +618,9 @@ def register_socket_events(sio):
 
     @sio.on(RealtimeEvent.WEBRTC_OFFER, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_offer(sid, payload):
+        # If LiveKit is configured, do not forward legacy WebRTC signaling by default.
+        if settings.LIVEKIT_URL:
+            return {"ok": False, "reason": "legacy_webrtc_disabled"}
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
@@ -648,6 +651,9 @@ def register_socket_events(sio):
 
     @sio.on(RealtimeEvent.WEBRTC_ANSWER, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_answer(sid, payload):
+        # If LiveKit is configured, do not forward legacy WebRTC signaling by default.
+        if settings.LIVEKIT_URL:
+            return {"ok": False, "reason": "legacy_webrtc_disabled"}
         session_id = await _get_allowed_session_id(sid, payload)
         if not session_id:
             return {"ok": False, "reason": "session_not_joined"}
@@ -694,10 +700,16 @@ def register_socket_events(sio):
 
     @sio.on(RealtimeEvent.WEBRTC_ICE, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_ice(sid, payload):
+        # If LiveKit is configured, do not forward legacy WebRTC signaling by default.
+        if settings.LIVEKIT_URL:
+            return {"ok": False, "reason": "legacy_webrtc_disabled"}
         return await _handle_webrtc_ice(sid, payload)
 
     @sio.on(RealtimeEvent.WEBRTC_ICE_CANDIDATE, namespace=settings.SIGNALING_NAMESPACE)
     async def webrtc_ice_candidate(sid, payload):
+        # If LiveKit is configured, do not forward legacy WebRTC signaling by default.
+        if settings.LIVEKIT_URL:
+            return {"ok": False, "reason": "legacy_webrtc_disabled"}
         return await _handle_webrtc_ice(sid, payload)
 
     @sio.on(RealtimeEvent.CHAT_MESSAGE, namespace=settings.SIGNALING_NAMESPACE)

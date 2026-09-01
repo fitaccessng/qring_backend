@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from jose import jwt
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
 import logging
 from typing import Optional
 import uuid
+from datetime import timedelta
 
 from app.api.deps import get_optional_current_user
 from app.core.config import get_settings
@@ -17,8 +19,10 @@ from app.services.call_service import (
     join_call_as_homeowner,
     join_call_as_security,
     join_call_as_visitor,
+    mark_call_session_connecting,
     start_call_session,
 )
+from app.core.time import utc_now
 from app.services.realtime_config_service import build_webrtc_rtc_config
 from app.services.realtime_notification_service import (
     build_notification_envelope,
@@ -110,6 +114,21 @@ class JoinCallPayload(BaseModel):
 class EndCallPayload(BaseModel):
     callSessionId: str
     participantType: Optional[str] = None
+    visitorId: Optional[str] = None
+    visitorToken: Optional[str] = None
+
+    @field_validator("callSessionId", mode="before")
+    @classmethod
+    def validate_call_session_id(cls, value):
+        try:
+            return str(uuid.UUID(str(value)))
+        except Exception as exc:
+            raise ValueError("callSessionId must be a valid UUID") from exc
+
+
+class LiveKitTokenPayload(BaseModel):
+    callSessionId: str
+    participantType: str
     visitorId: Optional[str] = None
     visitorToken: Optional[str] = None
 
@@ -573,6 +592,110 @@ async def join_call(
             "status": data["status"],
             "displayName": data.get("displayName"),
             "rtcConfig": data.get("rtcConfig"),
+        }
+    }
+
+
+def _livekit_token_ttl_seconds() -> int:
+    return max(1800, int(settings.LIVEKIT_TOKEN_TTL_SECONDS or 3600))
+
+
+def _build_livekit_token(*, identity: str, name: str, room_name: str, metadata: dict) -> str:
+    if not settings.LIVEKIT_URL or not settings.LIVEKIT_API_KEY or not settings.LIVEKIT_API_SECRET:
+        raise AppException("LIVEKIT_TOKEN_FAILED: LiveKit is not configured.", status_code=503)
+    now = utc_now()
+    exp = now + timedelta(seconds=_livekit_token_ttl_seconds())
+    claims = {
+        "iss": settings.LIVEKIT_API_KEY,
+        "sub": identity,
+        "nbf": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+        "name": name,
+        "metadata": metadata,
+        "video": {
+            "roomJoin": True,
+            "room": room_name,
+            "canPublish": True,
+            "canSubscribe": True,
+            "canPublishData": True,
+        },
+    }
+    return jwt.encode(claims, settings.LIVEKIT_API_SECRET, algorithm="HS256")
+
+
+@router.post("/livekit/token")
+async def create_livekit_token(
+    payload: LiveKitTokenPayload,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_optional_current_user),
+):
+    participant_type = (payload.participantType or "").strip().lower()
+    if participant_type not in {"homeowner", "visitor", "security", "office"}:
+        raise AppException("CALL_NOT_AUTHORIZED: participantType must be homeowner, visitor, security or office.", status_code=400)
+
+    if participant_type == "homeowner":
+        if not user or user.role.value != "homeowner":
+            raise AppException("CALL_NOT_AUTHORIZED: Homeowner authentication is required.", status_code=401)
+        data = join_call_as_homeowner(db, call_session_id=payload.callSessionId, homeowner_id=user.id)
+        identity = f"homeowner:{user.id}"
+    elif participant_type in {"security", "office"}:
+        if not user or user.role.value not in {"security", "office", "office_staff"}:
+            raise AppException("CALL_NOT_AUTHORIZED: Security authentication is required.", status_code=401)
+        data = join_call_as_security(db, call_session_id=payload.callSessionId, security_user_id=user.id)
+        identity = f"{participant_type}:{user.id}"
+    else:
+        if not (payload.visitorId or "").strip():
+            raise AppException("CALL_NOT_AUTHORIZED: visitorId is required for visitor token requests.", status_code=400)
+        target_call = db.query(CallSession).filter(CallSession.id == payload.callSessionId).first()
+        if not target_call:
+            raise AppException("CALL_NOT_FOUND: Call session not found.", status_code=404)
+        session_id = target_call.visitor_session_id or target_call.visitor_id
+        session = db.query(VisitorSession).filter(VisitorSession.id == session_id).first()
+        if not session:
+            raise AppException("CALL_NOT_FOUND: Visitor session not found.", status_code=404)
+        from app.services.visitor_session_auth import require_visitor_session_access
+
+        require_visitor_session_access(db, session=session, visitor_token=payload.visitorToken)
+        data = join_call_as_visitor(db, call_session_id=payload.callSessionId, visitor_id=(payload.visitorId or ""))
+        identity = f"visitor:{payload.visitorId}"
+
+    row = db.query(CallSession).filter(CallSession.id == payload.callSessionId).first()
+    if not row:
+        raise AppException("CALL_NOT_FOUND: Call session not found.", status_code=404)
+    if row.status in {"ended", "missed", "rejected", "failed", "cancelled"}:
+        raise AppException("CALL_ALREADY_ENDED: Call has ended.", status_code=409)
+    mark_call_session_connecting(db, call_session_id=row.id)
+    token = _build_livekit_token(
+        identity=identity,
+        name=data.get("displayName") or participant_type.title(),
+        room_name=row.room_name,
+        metadata={
+            "callSessionId": row.id,
+            "sessionId": row.visitor_session_id or row.visitor_id,
+            "participantType": participant_type,
+            "callType": row.call_type,
+        },
+    )
+    logger.info(
+        "[QRING CALL] token generated call_id=%s session_id=%s participant_type=%s room_name=%s",
+        row.id,
+        row.visitor_session_id or row.visitor_id,
+        participant_type,
+        row.room_name,
+    )
+    now = utc_now()
+    expires_at = now + timedelta(seconds=_livekit_token_ttl_seconds())
+    return {
+        "data": {
+            "token": token,
+            "serverUrl": settings.LIVEKIT_URL,
+            "roomName": row.room_name,
+            "callSessionId": row.id,
+            "sessionId": row.visitor_session_id or row.visitor_id,
+            "participantIdentity": identity,
+            "callType": row.call_type,
+            "expiresIn": _livekit_token_ttl_seconds(),
+            "expiresAt": expires_at.isoformat(),
         }
     }
 

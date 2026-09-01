@@ -193,6 +193,10 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str = ""
     WEBRTC_STUN_URL: str = "stun:stun.l.google.com:19302"
     WEBRTC_REQUIRE_TURN: bool = False
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_TOKEN_TTL_SECONDS: int = 3600
     APPOINTMENT_SHARE_BASE_URL: str = "https://www.useqring.online"
     MEDIA_STORAGE_PATH: str = ""
     BREVO_API_KEY: str = ""
