@@ -96,6 +96,12 @@ def _ensure_firebase_app():
 
     if firebase_admin._apps:
         app = firebase_admin.get_app()
+        app_project = getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId")
+        if settings.FIREBASE_PROJECT_ID and app_project and app_project != settings.FIREBASE_PROJECT_ID:
+            raise AppException(
+                f"Firebase Admin project mismatch: configured={settings.FIREBASE_PROJECT_ID} app={app_project}",
+                status_code=500,
+            )
         logger.info(
             "Firebase Admin already initialized project=%s configured_project=%s credential_source=existing_app",
             getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
@@ -106,6 +112,12 @@ def _ensure_firebase_app():
     with _firebase_init_lock:
         if firebase_admin._apps:
             app = firebase_admin.get_app()
+            app_project = getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId")
+            if settings.FIREBASE_PROJECT_ID and app_project and app_project != settings.FIREBASE_PROJECT_ID:
+                raise AppException(
+                    f"Firebase Admin project mismatch: configured={settings.FIREBASE_PROJECT_ID} app={app_project}",
+                    status_code=500,
+                )
             logger.info(
                 "Firebase Admin already initialized project=%s configured_project=%s credential_source=existing_app",
                 getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
@@ -116,6 +128,17 @@ def _ensure_firebase_app():
             raise AppException("FIREBASE_PROJECT_ID is not configured", status_code=500)
         service_account = _load_firebase_service_account()
         if service_account:
+            service_account_project = str(service_account.get("project_id") or "").strip()
+            if service_account_project != settings.FIREBASE_PROJECT_ID:
+                logger.error(
+                    "Firebase Admin credential project mismatch configured_project=%s credential_project=%s",
+                    settings.FIREBASE_PROJECT_ID,
+                    service_account_project or "missing",
+                )
+                raise AppException(
+                    f"Firebase Admin credential project mismatch: configured={settings.FIREBASE_PROJECT_ID} credential={service_account_project or 'missing'}",
+                    status_code=500,
+                )
             logger.info(
                 "Firebase Admin initializing configured_project=%s credential_source=service_account service_account_project=%s service_account_type=%s private_key_present=%s",
                 settings.FIREBASE_PROJECT_ID,
@@ -134,16 +157,10 @@ def _ensure_firebase_app():
                 settings.FIREBASE_PROJECT_ID,
             )
             return app
-        logger.warning(
-            "Firebase service account credentials not configured. Falling back to default credentials lookup."
+        raise AppException(
+            "Firebase Admin service-account credentials are required for production token verification",
+            status_code=500,
         )
-        app = firebase_admin.initialize_app(options={"projectId": settings.FIREBASE_PROJECT_ID})
-        logger.info(
-            "Firebase Admin initialized project=%s configured_project=%s credential_source=default_credentials",
-            getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
-            settings.FIREBASE_PROJECT_ID,
-        )
-        return app
 
 
 def _verify_google_id_token(id_token: str, expected_email: str | None = None) -> tuple[str, str]:
