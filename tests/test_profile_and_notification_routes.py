@@ -129,6 +129,31 @@ class ProfileAndNotificationRouteTests(unittest.TestCase):
         self.assertFalse(own.is_active)
         self.assertTrue(other.is_active)
 
+    def test_onboarding_state_persists_and_derived_estate_tasks_cannot_be_forged(self) -> None:
+        initial = self.client.get("/api/v1/auth/onboarding", headers=self.headers)
+        self.assertEqual(initial.status_code, 200, initial.text)
+        self.assertTrue(initial.json()["data"]["state"]["estate"])
+        self.assertFalse(initial.json()["data"]["requiredComplete"])
+
+        skipped = self.client.put(
+            "/api/v1/auth/onboarding",
+            headers=self.headers,
+            json={"securitySkipped": True, "artisansSkipped": True, "explore": True, "estate": True, "residents": True},
+        )
+        self.assertEqual(skipped.status_code, 200, skipped.text)
+        data = skipped.json()["data"]
+        self.assertTrue(data["state"]["securitySkipped"])
+        self.assertTrue(data["state"]["artisansSkipped"])
+        self.assertTrue(data["state"]["explore"])
+        self.assertTrue(data["state"]["estate"])
+        self.assertFalse(data["state"]["residents"])
+        self.assertFalse(data["requiredComplete"])
+
+        refreshed = self.client.get("/api/v1/auth/onboarding", headers=self.headers)
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertTrue(refreshed.json()["data"]["state"]["securitySkipped"])
+        self.assertFalse(refreshed.json()["data"]["requiredComplete"])
+
 
 if __name__ == "__main__":
     unittest.main()

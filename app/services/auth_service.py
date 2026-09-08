@@ -319,6 +319,68 @@ def update_current_user_profile(db: Session, user: User, *, full_name: str, phon
     return serialize_current_user(db, user)
 
 
+def get_onboarding_state(db: Session, user: User) -> dict:
+    stored = dict(user.onboarding_state or {})
+    if user.role == UserRole.estate:
+        estates = db.query(Estate).filter(Estate.owner_id == user.id).all()
+        estate_ids = [estate.id for estate in estates]
+        resident_count = (
+            db.query(Home).filter(Home.estate_id.in_(estate_ids)).count()
+            if estate_ids
+            else 0
+        )
+        security_count = (
+            db.query(User)
+            .filter(User.estate_id.in_(estate_ids), User.role == UserRole.security, User.is_active.is_(True))
+            .count()
+            if estate_ids
+            else 0
+        )
+        artisan_count = 0
+        for estate in estates:
+            try:
+                artisan_count += len(json.loads(estate.artisan_contacts_json or "[]"))
+            except (TypeError, json.JSONDecodeError):
+                continue
+        derived = {
+            "estate": bool(estates),
+            "residents": resident_count > 0,
+            "security": security_count > 0 or bool(stored.get("securitySkipped")),
+            "artisans": artisan_count > 0 or bool(stored.get("artisansSkipped")),
+            "explore": bool(stored.get("explore")),
+        }
+        required_complete = derived["estate"] and derived["residents"] and derived["explore"]
+        return {
+            "role": user.role.value,
+            "state": {**stored, **derived},
+            "requiredComplete": required_complete,
+            "complete": required_complete,
+        }
+
+    if user.role == UserRole.homeowner:
+        complete = bool(stored.get("completed"))
+        return {
+            "role": user.role.value,
+            "state": stored,
+            "requiredComplete": complete,
+            "complete": complete,
+        }
+
+    return {"role": user.role.value, "state": {}, "requiredComplete": True, "complete": True}
+
+
+def update_onboarding_state(db: Session, user: User, patch: dict) -> dict:
+    if user.role not in {UserRole.estate, UserRole.homeowner}:
+        raise AppException("Onboarding is not available for this account", status_code=403)
+    allowed = {"securitySkipped", "artisansSkipped", "explore", "completed"}
+    current = dict(user.onboarding_state or {})
+    current.update({key: bool(value) for key, value in patch.items() if key in allowed})
+    user.onboarding_state = current
+    db.commit()
+    db.refresh(user)
+    return get_onboarding_state(db, user)
+
+
 def _normalize_referral_code(referral_code: str | None) -> str | None:
     if referral_code is None:
         return None

@@ -35,6 +35,13 @@ class ProfileUpdateRequest(BaseModel):
     phone: str | None = None
 
 
+class OnboardingStateUpdateRequest(BaseModel):
+    securitySkipped: bool | None = None
+    artisansSkipped: bool | None = None
+    explore: bool | None = None
+    completed: bool | None = None
+
+
 @router.post("/signup")
 def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     data = auth_service.signup(
@@ -191,3 +198,20 @@ def update_current_user_profile(
     user: User = Depends(get_current_user),
 ):
     return {"data": auth_service.update_current_user_profile(db, user, full_name=payload.fullName, phone=payload.phone)}
+
+
+@router.get("/onboarding")
+def onboarding_state(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": auth_service.get_onboarding_state(db, user)}
+
+
+@router.put("/onboarding")
+def update_onboarding_state(
+    payload: OnboardingStateUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return {"data": auth_service.update_onboarding_state(db, user, payload.model_dump(exclude_none=True))}
