@@ -6,6 +6,7 @@ import base64
 import logging
 import re
 import secrets
+import time
 from threading import Thread, Lock
 from urllib.parse import quote
 from datetime import datetime, timedelta
@@ -94,24 +95,55 @@ def _ensure_firebase_app():
         )
 
     if firebase_admin._apps:
-        return firebase_admin.get_app()
+        app = firebase_admin.get_app()
+        logger.info(
+            "Firebase Admin already initialized project=%s configured_project=%s credential_source=existing_app",
+            getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
+            settings.FIREBASE_PROJECT_ID,
+        )
+        return app
 
     with _firebase_init_lock:
         if firebase_admin._apps:
-            return firebase_admin.get_app()
+            app = firebase_admin.get_app()
+            logger.info(
+                "Firebase Admin already initialized project=%s configured_project=%s credential_source=existing_app",
+                getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
+                settings.FIREBASE_PROJECT_ID,
+            )
+            return app
         if not settings.FIREBASE_PROJECT_ID:
             raise AppException("FIREBASE_PROJECT_ID is not configured", status_code=500)
         service_account = _load_firebase_service_account()
         if service_account:
+            logger.info(
+                "Firebase Admin initializing configured_project=%s credential_source=service_account service_account_project=%s service_account_type=%s private_key_present=%s",
+                settings.FIREBASE_PROJECT_ID,
+                service_account.get("project_id"),
+                service_account.get("type"),
+                bool(service_account.get("private_key")),
+            )
             cred = firebase_credentials.Certificate(service_account)
-            return firebase_admin.initialize_app(
+            app = firebase_admin.initialize_app(
                 credential=cred,
                 options={"projectId": settings.FIREBASE_PROJECT_ID},
             )
+            logger.info(
+                "Firebase Admin initialized project=%s configured_project=%s",
+                getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
+                settings.FIREBASE_PROJECT_ID,
+            )
+            return app
         logger.warning(
             "Firebase service account credentials not configured. Falling back to default credentials lookup."
         )
-        return firebase_admin.initialize_app(options={"projectId": settings.FIREBASE_PROJECT_ID})
+        app = firebase_admin.initialize_app(options={"projectId": settings.FIREBASE_PROJECT_ID})
+        logger.info(
+            "Firebase Admin initialized project=%s configured_project=%s credential_source=default_credentials",
+            getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
+            settings.FIREBASE_PROJECT_ID,
+        )
+        return app
 
 
 def _verify_google_id_token(id_token: str, expected_email: str | None = None) -> tuple[str, str]:
@@ -119,15 +151,24 @@ def _verify_google_id_token(id_token: str, expected_email: str | None = None) ->
         raise AppException("idToken is required", status_code=400)
 
     app = _ensure_firebase_app()
+    token_claims = _peek_token_claims(id_token)
+    now = int(time.time())
+    exp = token_claims.get("exp")
     try:
         decoded = firebase_auth.verify_id_token(id_token, app=app)
     except Exception as exc:
-        token_preview = _peek_token_claims(id_token)
-        logger.warning(
-            "Google token verification failed: %s | project=%s | preview=%s",
+        logger.exception(
+            "Google token verification failed exception_type=%s exception=%s configured_project=%s app_project=%s token_issuer=%s token_audience=%s token_exp=%s current_epoch=%s token_expired=%s clock_skew_seconds=%s",
             exc.__class__.__name__,
+            str(exc),
             settings.FIREBASE_PROJECT_ID,
-            token_preview,
+            getattr(app, "project_id", None) or getattr(app, "options", {}).get("projectId"),
+            token_claims.get("iss"),
+            token_claims.get("aud"),
+            exp,
+            now,
+            isinstance(exp, int) and exp <= now,
+            now - exp if isinstance(exp, int) else None,
         )
         raise AppException("Invalid Google ID token", status_code=401) from exc
 
@@ -167,17 +208,30 @@ def _peek_token_claims(id_token: str) -> dict:
 
 def _load_firebase_service_account() -> dict | None:
     raw_json = (settings.FIREBASE_SERVICE_ACCOUNT_JSON or "").strip()
+    raw_base64 = (settings.FIREBASE_SERVICE_ACCOUNT_BASE64 or "").strip()
+    logger.info(
+        "Firebase service account config json_present=%s base64_present=%s base64_length=%s",
+        bool(raw_json),
+        bool(raw_base64),
+        len(raw_base64),
+    )
     if raw_json:
         try:
             return json.loads(raw_json)
         except json.JSONDecodeError as exc:
             raise AppException("FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON", status_code=500) from exc
 
-    raw_base64 = (settings.FIREBASE_SERVICE_ACCOUNT_BASE64 or "").strip()
     if raw_base64:
         try:
             decoded = base64.b64decode(raw_base64).decode("utf-8")
-            return json.loads(decoded)
+            service_account = json.loads(decoded)
+            logger.info(
+                "Firebase service account Base64 decoded project=%s type=%s private_key_present=%s",
+                service_account.get("project_id"),
+                service_account.get("type"),
+                bool(service_account.get("private_key")),
+            )
+            return service_account
         except Exception as exc:
             raise AppException("FIREBASE_SERVICE_ACCOUNT_BASE64 is invalid", status_code=500) from exc
 
