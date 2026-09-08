@@ -321,6 +321,8 @@ def update_current_user_profile(db: Session, user: User, *, full_name: str, phon
 
 def get_onboarding_state(db: Session, user: User) -> dict:
     stored = dict(user.onboarding_state or {})
+    created_at = user.created_at.timestamp() if user.created_at else 0
+    eligible = bool(user.onboarding_state is not None or created_at >= time.time() - (30 * 24 * 60 * 60))
     if user.role == UserRole.estate:
         estates = db.query(Estate).filter(Estate.owner_id == user.id).all()
         estate_ids = [estate.id for estate in estates]
@@ -352,6 +354,7 @@ def get_onboarding_state(db: Session, user: User) -> dict:
         required_complete = derived["estate"] and derived["residents"] and derived["explore"]
         return {
             "role": user.role.value,
+            "eligible": eligible,
             "state": {**stored, **derived},
             "requiredComplete": required_complete,
             "complete": required_complete,
@@ -361,12 +364,13 @@ def get_onboarding_state(db: Session, user: User) -> dict:
         complete = bool(stored.get("completed"))
         return {
             "role": user.role.value,
+            "eligible": eligible,
             "state": stored,
             "requiredComplete": complete,
             "complete": complete,
         }
 
-    return {"role": user.role.value, "state": {}, "requiredComplete": True, "complete": True}
+    return {"role": user.role.value, "eligible": False, "state": {}, "requiredComplete": True, "complete": True}
 
 
 def update_onboarding_state(db: Session, user: User, patch: dict) -> dict:
