@@ -42,7 +42,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         full_name=payload.fullName,
         email=payload.email,
         password=payload.password,
-        role=payload.role,
+        role="estate",
         referral_code=payload.referralCode,
     )
     return {"data": data}
@@ -95,7 +95,7 @@ def google_signup(payload: GoogleSignupRequest, request: Request, db: Session = 
         id_token=payload.idToken,
         email=payload.email,
         display_name=payload.displayName,
-        role=payload.role,
+        role="estate",
         referral_code=payload.referralCode,
         user_agent=request.headers.get("user-agent", ""),
         ip_address=client_ip,

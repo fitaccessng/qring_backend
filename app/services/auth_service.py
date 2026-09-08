@@ -461,18 +461,7 @@ def signup(
 
     _validate_password_strength(password)
 
-    normalized_role = (role or "").strip().lower()
-    if normalized_role == "resident":
-        normalized_role = "homeowner"
-
-    try:
-        user_role = UserRole(normalized_role)
-    except ValueError as exc:
-        raise AppException("Invalid role", status_code=400) from exc
-    if user_role == UserRole.admin:
-        raise AppException("Admin signup is not allowed on this endpoint", status_code=403)
-    if user_role == UserRole.office_staff:
-        raise AppException("Office staff accounts must be created by an office admin.", status_code=403)
+    user_role = UserRole.estate
     referrer = _resolve_referrer(db, referral_code)
 
     user = User(
@@ -487,10 +476,6 @@ def signup(
     db.commit()
     db.refresh(user)
     ensure_signup_trial_subscription(db, user.id, now=user.created_at)
-    if user_role == UserRole.office:
-        if not user.email_verified:
-            _queue_email_verification(user.email)
-        return {"id": user.id, "email": user.email, "requiresEmailVerification": True}
     # Send email verification best-effort without blocking the signup response.
     if not user.email_verified:
         _queue_email_verification(user.email)
@@ -595,16 +580,7 @@ def google_signup(
     if existing:
         raise AppException("Email already exists", status_code=409)
 
-    normalized_role = (role or "").strip().lower()
-    if normalized_role == "resident":
-        normalized_role = "homeowner"
-
-    try:
-        user_role = UserRole(normalized_role)
-    except ValueError as exc:
-        raise AppException("Invalid role", status_code=400) from exc
-    if user_role == UserRole.office_staff:
-        raise AppException("Office staff accounts must be created by an office admin.", status_code=403)
+    user_role = UserRole.estate
 
     referrer = _resolve_referrer(db, referral_code)
 
