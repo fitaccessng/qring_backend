@@ -66,6 +66,7 @@ class AuthUser(BaseModel):
     gateId: Optional[str] = None
     referralCode: Optional[str] = None
     referralEarnings: Optional[int] = None
+    createdAt: Optional[str] = None
 
 
 class AuthResponse(BaseModel):

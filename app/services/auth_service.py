@@ -281,6 +281,7 @@ def _issue_auth_tokens(db: Session, user: User, user_agent: str = "", ip_address
             "gateId": user.gate_id,
             "referralCode": user.referral_code,
             "referralEarnings": int(user.referral_earnings or 0),
+            "createdAt": user.created_at.isoformat() if user.created_at else None,
         },
     )
 
