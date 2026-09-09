@@ -23,7 +23,7 @@ from app.services.call_service import (
     join_call_as_visitor,
     start_call_session,
 )
-from app.api.routes.calls import StartCallPayload, start_call
+from app.api.routes.calls import RequestCallPayload, StartCallPayload, start_call
 
 
 class CallServiceTests(unittest.TestCase):
@@ -115,6 +115,39 @@ class CallServiceTests(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
+
+    def test_canonical_livekit_hasAudio_hasVideo_contract_survives_route_models(self):
+        start_audio = StartCallPayload(
+            appointmentId=str(self.appointment.id),
+            sessionId=None,
+            visitorId=str(uuid.uuid4()),
+            type="audio",
+            hasAudio=True,
+            hasVideo=False,
+        )
+        self.assertTrue(start_audio.hasAudio)
+        self.assertFalse(start_audio.hasVideo)
+
+        start_video = StartCallPayload(
+            appointmentId=str(self.appointment.id),
+            sessionId=None,
+            visitorId=str(uuid.uuid4()),
+            type="video",
+            hasAudio=True,
+            hasVideo=True,
+        )
+        self.assertTrue(start_video.hasAudio)
+        self.assertTrue(start_video.hasVideo)
+
+        request_video = RequestCallPayload(
+            visitorRequestId="req-1",
+            visitorSessionId=str(uuid.uuid4()),
+            type="video",
+            hasAudio=True,
+            hasVideo=True,
+        )
+        self.assertTrue(request_video.hasAudio)
+        self.assertTrue(request_video.hasVideo)
 
     def test_call_initiation_creates_session(self):
         with patch("app.services.call_service.create_notification") as notify_mock:

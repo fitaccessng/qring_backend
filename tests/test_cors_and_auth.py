@@ -76,6 +76,29 @@ class CorsAndAuthRegressionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertCorsHeaders(response)
 
+    def test_admin_collection_routes_exist(self):
+        registered_paths = {
+            route.path
+            for route in fastapi_app.routes
+            if isinstance(route, APIRoute)
+            and getattr(route, "path", "").startswith("/api/v1/admin/")
+            and hasattr(route, "methods")
+            and "GET" in route.methods
+        }
+
+        expected_paths = {
+            "/api/v1/admin/overview",
+            "/api/v1/admin/estates",
+            "/api/v1/admin/users",
+            "/api/v1/admin/homeowners",
+            "/api/v1/admin/staff",
+            "/api/v1/admin/security",
+            "/api/v1/admin/visitors",
+        }
+
+        missing = sorted(expected_paths - registered_paths)
+        self.assertEqual(missing, [], msg=f"Missing admin collection routes: {missing}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,7 @@ class StartCallPayload(BaseModel):
     sessionId: Optional[str] = None
     visitorId: Optional[str] = None
     visitorName: Optional[str] = None
+    hasAudio: Optional[bool] = None
     hasVideo: Optional[bool] = None
     type: Optional[str] = None
     visitorToken: Optional[str] = None
@@ -52,6 +53,22 @@ class StartCallPayload(BaseModel):
     def validate_target(self):
         if not (self.appointmentId or self.sessionId):
             raise ValueError("appointmentId or sessionId is required")
+        normalized_type = (self.type or "").strip().lower()
+        if normalized_type and normalized_type not in {"audio", "video"}:
+            raise ValueError("type must be audio or video")
+        if self.hasAudio is None:
+            self.hasAudio = True
+        self.hasAudio = bool(self.hasAudio)
+        if normalized_type == "video":
+            self.hasVideo = True
+        elif normalized_type == "audio":
+            self.hasVideo = False
+        elif self.hasVideo is None:
+            self.hasVideo = False
+        else:
+            self.hasVideo = bool(self.hasVideo)
+        if self.hasVideo and self.type and self.type.lower() == "audio":
+            raise ValueError("call type and hasVideo cannot contradict each other")
         return self
 
     @field_validator("appointmentId", "sessionId", mode="before")
@@ -81,9 +98,30 @@ class RequestCallPayload(BaseModel):
     visitorRequestId: str
     visitorSessionId: Optional[str] = None
     type: Optional[str] = None
+    hasAudio: Optional[bool] = None
     hasVideo: Optional[bool] = None
     visitorName: Optional[str] = None
     communicationTarget: Optional[str] = None
+
+    @model_validator(mode="after")
+    def normalize_call_contract(self):
+        normalized_type = (self.type or "").strip().lower()
+        if normalized_type and normalized_type not in {"audio", "video"}:
+            raise ValueError("type must be audio or video")
+        if self.hasAudio is None:
+            self.hasAudio = True
+        self.hasAudio = bool(self.hasAudio)
+        if normalized_type == "video":
+            self.hasVideo = True
+        elif normalized_type == "audio":
+            self.hasVideo = False
+        elif self.hasVideo is None:
+            self.hasVideo = False
+        else:
+            self.hasVideo = bool(self.hasVideo)
+        if self.hasVideo and self.type and self.type.lower() == "audio":
+            raise ValueError("call type and hasVideo cannot contradict each other")
+        return self
 
     @field_validator("visitorRequestId", mode="before")
     @classmethod
@@ -182,6 +220,7 @@ async def _emit_call_requested_events(
         "deliveryRoom": f"session:{linked_session}",
         "status": row.status,
         "visitorId": row.visitor_id,
+        "hasAudio": True,
         "hasVideo": payload_has_video,
         "type": row.call_type,
         "role": caller_user.role.value if caller_user else "visitor",
@@ -362,6 +401,8 @@ async def start_call(
         homeowner_name = (homeowner.full_name if homeowner else "") or ""
 
     if linked_session:
+        has_audio = True
+        has_video = row.call_type == "video"
         call_invite_key = build_notification_idempotency_key(
             event_type="call.invite",
             user_id=incoming_room_user_id,
@@ -385,7 +426,8 @@ async def start_call(
                 "deliveryRoom": f"session:{linked_session}",
                 "status": row.status,
                 "visitorId": row.visitor_id,
-                "hasVideo": bool(payload.hasVideo) or row.call_type == "video",
+                "hasAudio": has_audio,
+                "hasVideo": has_video,
                 "type": row.call_type,
                 "role": user.role.value if user else "visitor",
                 "callerName": caller_name,
@@ -435,6 +477,7 @@ async def start_call(
                         "deliveryRoom": f"session:{linked_session}",
                         "status": row.status,
                         "visitorId": row.visitor_id,
+                        "hasAudio": True,
                         "hasVideo": bool(payload.hasVideo) or row.call_type == "video",
                         "type": row.call_type,
                         "role": user.role.value if user else "visitor",

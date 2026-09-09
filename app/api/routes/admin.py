@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from fastapi import APIRouter, Depends, Query
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
@@ -16,6 +18,7 @@ from app.db.session import get_db
 from app.services.admin_service import create_door, create_qr_code, fund_wallet, get_admin_overview, list_wallet_balances, list_wallet_transactions
 from app.services.payment_service import list_subscription_plans, upsert_plan
 from app.services.audit_service import list_audit_logs, write_audit_log
+from app.socket.server import sio
 
 router = APIRouter()
 settings = get_settings()
@@ -178,14 +181,24 @@ def admin_update_plan(
 @router.get("/users")
 def admin_list_users(
     role: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None),
+    estate_id: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
     query = db.query(User).order_by(User.created_at.desc())
     if role:
-        query = query.filter(User.role == UserRole(role))
+        try:
+            query = query.filter(User.role == UserRole(role))
+        except Exception:
+            query = query.filter(User.role == UserRole(role.lower()))
+    if status:
+        active_filter = str(status).strip().lower() in {"active", "enabled", "true", "1"}
+        query = query.filter(User.is_active.is_(active_filter))
+    if estate_id:
+        query = query.filter(User.estate_id == estate_id)
     if q:
         term = f"%{q.strip().lower()}%"
         query = query.filter((User.email.ilike(term)) | (User.full_name.ilike(term)))
@@ -198,6 +211,8 @@ def admin_list_users(
                 "email": row.email,
                 "role": row.role.value,
                 "active": bool(row.is_active),
+                "status": "active" if row.is_active else "suspended",
+                "estateId": row.estate_id,
                 "createdAt": row.created_at.isoformat() if row.created_at else None,
             }
             for row in rows
@@ -205,20 +220,51 @@ def admin_list_users(
     }
 
 
-@router.patch("/users/{user_id}")
-def admin_patch_user(
-    user_id: str,
-    payload: UserPatch,
+@router.get("/estate-managers")
+def admin_list_estate_managers(
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
-    actor: User = Depends(require_roles("admin")),
+    _: User = Depends(require_roles("admin")),
+):
+    query = db.query(User).filter(User.role == UserRole.estate).order_by(User.created_at.desc())
+    if q:
+        term = f"%{q.strip().lower()}%"
+        query = query.filter(or_(User.email.ilike(term), User.full_name.ilike(term)))
+    rows = query.limit(limit).all()
+    estates = db.query(Estate).filter(Estate.owner_id.in_([r.id for r in rows])).all() if rows else []
+    estate_by_owner_id = {row.owner_id: row for row in estates}
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "fullName": row.full_name,
+                "email": row.email,
+                "role": row.role.value,
+                "estateId": estate_by_owner_id.get(row.id).id if estate_by_owner_id.get(row.id) else None,
+                "estateName": estate_by_owner_id.get(row.id).name if estate_by_owner_id.get(row.id) else None,
+                "estateStatus": estate_by_owner_id.get(row.id).is_active if estate_by_owner_id.get(row.id) else None,
+                "active": bool(row.is_active),
+                "emailVerified": bool(row.email_verified),
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+                "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/users/{user_id}")
+def admin_get_user_details(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
 ):
     row = db.query(User).filter(User.id == user_id).first()
     if not row:
-        return {"data": None}
-    if payload.isActive is not None:
-        row.is_active = bool(payload.isActive)
-    db.commit()
-    write_audit_log(db, actor_user_id=actor.id, action="user.patch", resource_type="user", resource_id=row.id, meta={"isActive": payload.isActive})
+        raise HTTPException(status_code=404, detail="User not found")
+    estate = db.query(Estate).filter(Estate.id == row.estate_id).first() if row.estate_id else None
+    home = db.query(Home).filter(Home.homeowner_id == row.id).order_by(Home.created_at.desc()).first() if row.role == UserRole.homeowner else None
     return {
         "data": {
             "id": row.id,
@@ -226,8 +272,176 @@ def admin_patch_user(
             "email": row.email,
             "role": row.role.value,
             "active": bool(row.is_active),
+            "status": "active" if row.is_active else "suspended",
+            "emailVerified": bool(row.email_verified),
+            "estateId": row.estate_id,
+            "estateName": estate.name if estate else None,
+            "gateId": row.gate_id,
+            "homeId": home.id if home else None,
+            "homeName": home.name if home else None,
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
+            "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
         }
     }
+
+
+@router.get("/estates/{estate_id}")
+def admin_get_estate_details(
+    estate_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    estate = db.query(Estate).filter(Estate.id == estate_id).first()
+    if not estate:
+        raise HTTPException(status_code=404, detail="Estate not found")
+    manager = db.query(User).filter(User.id == estate.owner_id).first()
+    homeowners = db.query(User).filter(User.role == UserRole.homeowner, User.estate_id == estate.id).all()
+    security = db.query(User).filter(User.role == UserRole.security, User.estate_id == estate.id).all()
+    staff = db.query(User).filter(User.role.in_([UserRole.office, UserRole.office_staff]), User.estate_id == estate.id).all()
+    visitor_rows = db.query(VisitorSession).filter(VisitorSession.estate_id == estate.id).order_by(VisitorSession.started_at.desc()).limit(50).all()
+    return {
+        "data": {
+            "id": estate.id,
+            "name": estate.name,
+            "ownerId": estate.owner_id,
+            "managerName": manager.full_name if manager else None,
+            "managerEmail": manager.email if manager else None,
+            "createdAt": estate.created_at.isoformat() if estate.created_at else None,
+            "securityEnabled": bool(estate.security_enabled),
+            "isActive": estate.is_active,
+            "homeowners": [
+                {
+                    "id": row.id,
+                    "fullName": row.full_name,
+                    "email": row.email,
+                    "active": bool(row.is_active),
+                }
+                for row in homeowners
+            ],
+            "security": [
+                {
+                    "id": row.id,
+                    "fullName": row.full_name,
+                    "email": row.email,
+                    "active": bool(row.is_active),
+                    "gateId": row.gate_id,
+                }
+                for row in security
+            ],
+            "staff": [
+                {
+                    "id": row.id,
+                    "fullName": row.full_name,
+                    "email": row.email,
+                    "role": row.role.value,
+                    "active": bool(row.is_active),
+                }
+                for row in staff
+            ],
+            "visitors": [
+                {
+                    "id": row.id,
+                    "visitor": row.visitor_label,
+                    "status": row.status,
+                    "homeownerId": row.homeowner_id,
+                    "startedAt": row.started_at.isoformat() if row.started_at else None,
+                }
+                for row in visitor_rows
+            ],
+        }
+    }
+
+
+@router.patch("/users/{user_id}")
+async def admin_patch_user(
+    user_id: str,
+    payload: UserPatch,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles("admin")),
+):
+    row = db.query(User).filter(User.id == user_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if actor.id == row.id:
+        raise HTTPException(status_code=403, detail="You cannot change your own admin account through this route")
+    if payload.isActive is not None:
+        row.is_active = bool(payload.isActive)
+    db.commit()
+    db.refresh(row)
+    action = "user.suspend" if row.is_active is False else "user.unsuspend"
+    write_audit_log(db, actor_user_id=actor.id, action=action, resource_type="user", resource_id=row.id, meta={"isActive": payload.isActive})
+    await sio.emit("admin.user.updated", {"event": action, "userId": row.id, "active": bool(row.is_active)}, room="admin:system", namespace=settings.DASHBOARD_NAMESPACE)
+    return {
+        "data": {
+            "id": row.id,
+            "fullName": row.full_name,
+            "email": row.email,
+            "role": row.role.value,
+            "active": bool(row.is_active),
+            "status": "active" if row.is_active else "suspended",
+        }
+    }
+
+
+@router.post("/users/{user_id}/suspend")
+async def admin_suspend_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles("admin")),
+):
+    row = db.query(User).filter(User.id == user_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if actor.id == row.id:
+        raise HTTPException(status_code=403, detail="You cannot suspend yourself")
+    row.is_active = False
+    db.commit()
+    db.refresh(row)
+    write_audit_log(db, actor_user_id=actor.id, action="user.suspend", resource_type="user", resource_id=row.id, meta={"targetId": row.id, "targetEmail": row.email, "targetRole": row.role.value})
+    await sio.emit("admin.user.updated", {"event": "user.suspended", "userId": row.id, "active": False}, room="admin:system", namespace=settings.DASHBOARD_NAMESPACE)
+    return {"data": {"id": row.id, "active": False, "status": "suspended"}}
+
+
+@router.post("/users/{user_id}/unsuspend")
+async def admin_unsuspend_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles("admin")),
+):
+    row = db.query(User).filter(User.id == user_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    row.is_active = True
+    db.commit()
+    db.refresh(row)
+    write_audit_log(db, actor_user_id=actor.id, action="user.unsuspend", resource_type="user", resource_id=row.id, meta={"targetId": row.id, "targetEmail": row.email, "targetRole": row.role.value})
+    await sio.emit("admin.user.updated", {"event": "user.unsuspended", "userId": row.id, "active": True}, room="admin:system", namespace=settings.DASHBOARD_NAMESPACE)
+    return {"data": {"id": row.id, "active": True, "status": "active"}}
+
+
+@router.delete("/users/{user_id}")
+async def admin_delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles("admin")),
+):
+    row = db.query(User).filter(User.id == user_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if actor.id == row.id:
+        raise HTTPException(status_code=403, detail="You cannot delete yourself")
+    if row.role == UserRole.admin:
+        remaining_admins = db.query(User).filter(User.role == UserRole.admin, User.is_active.is_(True), User.id != row.id).count()
+        if remaining_admins == 0:
+            raise HTTPException(status_code=403, detail="Cannot delete the last active admin")
+    row.is_active = False
+    row.full_name = f"{row.full_name} [deleted]"
+    row.email = f"{row.email}.deleted"
+    db.commit()
+    db.refresh(row)
+    write_audit_log(db, actor_user_id=actor.id, action="user.delete", resource_type="user", resource_id=row.id, meta={"targetId": row.id, "targetEmail": row.email, "targetRole": row.role.value})
+    await sio.emit("admin.user.updated", {"event": "user.deleted", "userId": row.id, "active": False}, room="admin:system", namespace=settings.DASHBOARD_NAMESPACE)
+    return {"data": {"id": row.id, "deleted": True, "active": False, "status": "suspended"}}
 
 
 @router.get("/estates")
@@ -249,6 +463,147 @@ def admin_list_estates(
                 "createdAt": row.created_at.isoformat() if row.created_at else None,
             }
             for row in estates
+        ]
+    }
+
+
+@router.get("/homeowners")
+def admin_list_homeowners(
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    query = db.query(User).filter(User.role == UserRole.homeowner).order_by(User.created_at.desc())
+    if q:
+        term = f"%{q.strip().lower()}%"
+        query = query.filter(or_(User.email.ilike(term), User.full_name.ilike(term)))
+    rows = query.limit(limit).all()
+    estate_ids = [row.estate_id for row in rows if row.estate_id]
+    estates = db.query(Estate).filter(Estate.id.in_(estate_ids)).all() if estate_ids else []
+    estate_by_id = {row.id: row for row in estates}
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "fullName": row.full_name,
+                "email": row.email,
+                "role": row.role.value,
+                "active": bool(row.is_active),
+                "estateId": row.estate_id,
+                "estateName": estate_by_id.get(row.estate_id).name if estate_by_id.get(row.estate_id) else None,
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/staff")
+def admin_list_staff(
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    query = db.query(User).filter(User.role.in_([UserRole.office, UserRole.office_staff])).order_by(User.created_at.desc())
+    if q:
+        term = f"%{q.strip().lower()}%"
+        query = query.filter(or_(User.email.ilike(term), User.full_name.ilike(term)))
+    rows = query.limit(limit).all()
+    estate_ids = [row.estate_id for row in rows if row.estate_id]
+    estates = db.query(Estate).filter(Estate.id.in_(estate_ids)).all() if estate_ids else []
+    estate_by_id = {row.id: row for row in estates}
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "fullName": row.full_name,
+                "email": row.email,
+                "role": row.role.value,
+                "staffType": row.role.value,
+                "active": bool(row.is_active),
+                "estateId": row.estate_id,
+                "estateName": estate_by_id.get(row.estate_id).name if estate_by_id.get(row.estate_id) else None,
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/security")
+def admin_list_security(
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    query = db.query(User).filter(User.role == UserRole.security).order_by(User.created_at.desc())
+    if q:
+        term = f"%{q.strip().lower()}%"
+        query = query.filter(or_(User.email.ilike(term), User.full_name.ilike(term)))
+    rows = query.limit(limit).all()
+    estate_ids = [row.estate_id for row in rows if row.estate_id]
+    estates = db.query(Estate).filter(Estate.id.in_(estate_ids)).all() if estate_ids else []
+    estate_by_id = {row.id: row for row in estates}
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "fullName": row.full_name,
+                "email": row.email,
+                "role": row.role.value,
+                "active": bool(row.is_active),
+                "estateId": row.estate_id,
+                "estateName": estate_by_id.get(row.estate_id).name if estate_by_id.get(row.estate_id) else None,
+                "gateId": row.gate_id,
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/visitors")
+def admin_list_visitors(
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+):
+    query = db.query(VisitorSession).order_by(VisitorSession.started_at.desc())
+    if q:
+        term = f"%{q.strip().lower()}%"
+        query = query.filter(
+            or_(
+                VisitorSession.visitor_label.ilike(term),
+                VisitorSession.status.ilike(term),
+                VisitorSession.purpose.ilike(term),
+            )
+        )
+    rows = query.limit(limit).all()
+    homeowner_ids = [row.homeowner_id for row in rows]
+    homeowners = db.query(User).filter(User.id.in_(homeowner_ids)).all() if homeowner_ids else []
+    homeowner_by_id = {row.id: row for row in homeowners}
+    estate_ids = [row.estate_id for row in rows if row.estate_id]
+    estates = db.query(Estate).filter(Estate.id.in_(estate_ids)).all() if estate_ids else []
+    estate_by_id = {row.id: row for row in estates}
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "visitor": row.visitor_label,
+                "status": row.status,
+                "homeownerId": row.homeowner_id,
+                "homeownerName": homeowner_by_id.get(row.homeowner_id).full_name if homeowner_by_id.get(row.homeowner_id) else None,
+                "homeownerEmail": homeowner_by_id.get(row.homeowner_id).email if homeowner_by_id.get(row.homeowner_id) else None,
+                "estateId": row.estate_id,
+                "estateName": estate_by_id.get(row.estate_id).name if estate_by_id.get(row.estate_id) else None,
+                "startedAt": row.started_at.isoformat() if row.started_at else None,
+                "endedAt": row.ended_at.isoformat() if row.ended_at else None,
+            }
+            for row in rows
         ]
     }
 
