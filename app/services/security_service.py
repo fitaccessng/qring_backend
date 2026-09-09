@@ -469,7 +469,7 @@ def update_security_session_status(
     if normalized_target not in {None, "visitor", "gateman"}:
         raise AppException("Preferred communication target is invalid.", status_code=400)
     home, estate, security_users = _route_targets_for_session(db, session)
-    has_security_path = bool(estate) and estate_has_security(db, estate.id, gate_id=session.gate_id)
+    has_security_path = bool(estate) and estate_security_available(db, estate.id, gate_id=session.gate_id)
     rules = get_estate_security_rules(db, estate.id if estate else "")
     homeowner_settings = (
         db.query(HomeownerSetting).filter(HomeownerSetting.user_id == session.homeowner_id).first()

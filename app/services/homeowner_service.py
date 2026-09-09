@@ -273,14 +273,17 @@ def get_homeowner_context(db: Session, homeowner_id: str) -> dict[str, Any]:
     from app.db.models import Estate
 
     estate = db.query(Estate).filter(Estate.id == row.estate_id).first()
+    estate_id = estate.id if estate else row.estate_id
+    security_available = estate_security_available(db, estate_id)
+    security_enabled = bool(getattr(estate, "security_enabled", False)) if estate else False
     return {
         "managedByEstate": bool(estate),
-        "estateId": estate.id if estate else row.estate_id,
+        "estateId": estate_id,
         "estateName": estate.name if estate else None,
         "estateOwnerId": estate.owner_id if estate else None,
-        "hasSecurity": estate_has_security(db, estate.id if estate else row.estate_id),
-        "securityAvailable": estate_security_available(db, estate.id if estate else row.estate_id),
-        "securityEnabled": bool(getattr(estate, "security_enabled", False)) if estate else False,
+        "hasSecurity": security_available,
+        "securityAvailable": security_available,
+        "securityEnabled": security_enabled,
         "home": {
             "id": row.id,
             "name": row.name,
@@ -605,17 +608,21 @@ def create_homeowner_session_message(
         return None
 
     homeowner = db.query(User).filter(User.id == homeowner_id).first()
-    # Deliver homeowner messages to the session (visitor) by default. If the
-    # homeowner requested "gateman" as communication_target and a security user
-    # is available, notify security users instead.
+    # Default delivery is directly to the visitor conversation. If a requested
+    # security target exists, only route to security when an active security
+    # account is genuinely available for the session estate/gate. Otherwise,
+    # the service falls back to the direct visitor/homeowner message model.
     message_receiver_id = None
     recipient_ids: list[str] = []
-    if communication_target and str(communication_target).strip().lower() == "gateman":
+    requested_target = (communication_target or "").strip().lower()
+    if requested_target == "gateman":
         recipients = _security_recipients_for_session(db, session)
         primary_recipient = recipients[0] if recipients else None
         if primary_recipient:
             message_receiver_id = primary_recipient.id
             recipient_ids = [r.id for r in recipients]
+        # No active security user means the conversation remains direct
+        # visitor ↔ homeowner; do not create a fake security-only recipient.
 
     message = Message(
         session_id=session_id,

@@ -9,8 +9,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
-from app.db.models import Door, Home, Message, Notification, User, UserRole, VisitorSession
-from app.services.homeowner_service import list_homeowner_message_threads
+from app.db.models import Door, Estate, Home, Message, Notification, User, UserRole, VisitorSession
+from app.services.homeowner_service import create_homeowner_session_message, get_homeowner_context, list_homeowner_message_threads
 
 
 class HomeownerMessageThreadsServiceTests(unittest.TestCase):
@@ -164,6 +164,64 @@ class HomeownerMessageThreadsServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["lastSenderType"], "visitor")
         self.assertEqual(rows[0]["unread"], 1)
         self.assertEqual(rows[0]["photoUrl"], "/uploads/snapshot.jpg")
+
+    def test_homeowner_context_marks_security_absent_when_estate_has_no_active_security_users(self):
+        estate = Estate(
+            id=str(uuid.uuid4()),
+            name="No Guard Estate",
+            owner_id=self.homeowner.id,
+            security_enabled=True,
+        )
+        self.db.add(estate)
+        self.db.flush()
+
+        self.home.estate_id = estate.id
+        self.db.add(self.home)
+        self.db.commit()
+
+        context = get_homeowner_context(self.db, homeowner_id=self.homeowner.id)
+
+        self.assertEqual(context["estateId"], estate.id)
+        self.assertFalse(context["hasSecurity"])
+        self.assertFalse(context["securityAvailable"])
+        self.assertTrue(context["securityEnabled"])
+
+    def test_homeowner_message_creation_falls_back_from_gateman_target_when_no_security_users_exist(self):
+        estate = Estate(
+            id=str(uuid.uuid4()),
+            name="No Guard Estate",
+            owner_id=self.homeowner.id,
+            security_enabled=True,
+        )
+        self.db.add(estate)
+        self.db.flush()
+
+        self.home.estate_id = estate.id
+        self.db.add(self.home)
+        self.db.commit()
+
+        session = self._create_session()
+        session.estate_id = estate.id
+        session.home_id = self.home.id
+        session.homeowner_id = self.homeowner.id
+        session.door_id = self.door.id
+        session.status = "submitted"
+        self.db.add(session)
+        self.db.commit()
+
+        message = create_homeowner_session_message(
+            self.db,
+            homeowner_id=self.homeowner.id,
+            session_id=session.id,
+            text="Okay, I'm coming.",
+            communication_target="gateman",
+        )
+
+        self.assertIsNotNone(message)
+        self.assertEqual(message["sessionId"], session.id)
+        self.assertEqual(message["text"], "Okay, I'm coming.")
+        self.assertEqual(message["receiverId"], None)
+        self.assertEqual(message["recipientIds"], [])
 
 
 if __name__ == "__main__":
