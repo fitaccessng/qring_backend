@@ -22,6 +22,24 @@ class OfficeSignupFlowTests(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
+    def test_signup_initializes_empty_onboarding_state_for_new_estate_account(self):
+        with patch.object(auth_service, "_validate_password_strength", return_value=None), patch.object(
+            auth_service, "_resolve_referrer", return_value=None
+        ), patch.object(auth_service, "_queue_email_verification", return_value=None):
+            auth_service.signup(
+                db=self.db,
+                full_name="Ada Lovelace",
+                email="ada@example.com",
+                password="Abc12345",
+                role="estate",
+            )
+
+        user = self.db.query(User).filter(User.email == "ada@example.com").first()
+        self.assertIsNotNone(user)
+        self.assertEqual(user.role, UserRole.estate)
+        self.assertIsNotNone(user.onboarding_state)
+        self.assertEqual(user.onboarding_state, {})
+
     def test_office_signup_is_left_pending_until_email_verification(self):
         with patch.object(auth_service, "_validate_password_strength", return_value=None), patch.object(
             auth_service, "_resolve_referrer", return_value=None

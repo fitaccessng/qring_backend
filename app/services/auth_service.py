@@ -538,6 +538,7 @@ def signup(
         role=user_role,
         referred_by_user_id=referrer.id if referrer else None,
         email_verified=False if user_role == UserRole.office else settings.ENVIRONMENT == "development",
+        onboarding_state={},
     )
     db.add(user)
     db.commit()
@@ -660,6 +661,7 @@ def google_signup(
         email_verified=True,
         is_active=True,
         referred_by_user_id=referrer.id if referrer else None,
+        onboarding_state={},
     )
     db.add(user)
     db.commit()
