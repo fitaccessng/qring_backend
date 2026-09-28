@@ -2,7 +2,11 @@
 
 This is the active production topology:
 
-`React + Capacitor app -> Socket.IO signaling on Railway -> Coturn on VPS -> direct WebRTC media`
+`React + Capacitor app -> Socket.IO call signaling on Railway + LiveKit Cloud audio/video media`
+
+The LiveKit endpoint must resolve and be reachable from clients. Set `VITE_LIVEKIT_URL` in the frontend build environment and `LIVEKIT_URL` in the backend environment to `wss://qring-1dbjv5ze.livekit.cloud`. The backend returns its `LIVEKIT_URL` with each signed call token, so that value is authoritative for clients. Keep `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` on the backend only, and use credentials issued by the same LiveKit project as the endpoint. Configure all three backend variables and the frontend build variable in their respective Railway services; local env files do not configure Railway.
+
+Coturn and Twilio ICE settings below apply only to the legacy direct-WebRTC path when LiveKit is not configured; they do not provide media relay for LiveKit calls.
 
 ## Core rules
 
@@ -63,6 +67,7 @@ sudo systemctl status coturn
 ## Frontend env
 
 ```env
+VITE_LIVEKIT_URL=wss://qring-1dbjv5ze.livekit.cloud
 VITE_SOCKET_URL=https://qring-backend-production.up.railway.app
 VITE_SOCKET_PATH=/socket.io
 VITE_SIGNALING_NAMESPACE=/realtime/signaling
@@ -75,6 +80,9 @@ VITE_RTC_MONITORING_URL=https://YOUR_MONITORING_ENDPOINT/rtc
 ## Backend env
 
 ```env
+LIVEKIT_URL=wss://qring-1dbjv5ze.livekit.cloud
+LIVEKIT_API_KEY=<LiveKit project API key>
+LIVEKIT_API_SECRET=<LiveKit project API secret>
 REDIS_URL=redis://default:<password>@<railway-private-host>:6379
 REDIS_CONNECT_TIMEOUT_SECONDS=2
 REDIS_SOCKET_TIMEOUT_SECONDS=2

@@ -6,7 +6,11 @@ from fastapi import APIRouter
 
 from app.core.config import get_settings
 from app.core.redis import get_async_redis_health
-from app.services.realtime_config_service import get_turn_diagnostics, webrtc_realtime_configured
+from app.services.realtime_config_service import (
+    get_livekit_config_diagnostics,
+    get_turn_diagnostics,
+    webrtc_realtime_configured,
+)
 from app.services.realtime_runtime_service import get_realtime_runtime_snapshot
 from app.socket.manager import socket_state
 
@@ -17,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/health")
 async def health():
+    livekit = get_livekit_config_diagnostics()
     turn = await get_turn_diagnostics()
     redis = await get_async_redis_health()
     runtime = get_realtime_runtime_snapshot()
@@ -32,6 +37,7 @@ async def health():
     return {
         "status": status,
         "realtimeConfigured": await webrtc_realtime_configured(),
+        "livekit": livekit,
         "turnConfigured": turn["configured"],
         "turnProductionReady": turn.get("productionReady"),
         "stunUrl": settings.WEBRTC_STUN_URL,
@@ -49,6 +55,7 @@ async def health():
 
 @router.get("/health/realtime")
 async def realtime_health():
+    livekit = get_livekit_config_diagnostics()
     try:
         redis = await get_async_redis_health()
         socket_diagnostics = await socket_state.diagnostics()
@@ -77,6 +84,7 @@ async def realtime_health():
         "degradedReasons": degraded_reasons,
         "redis": redis,
         "turn": turn,
+        "livekit": livekit,
         "runtime": get_realtime_runtime_snapshot(),
         "socketState": socket_diagnostics,
     }

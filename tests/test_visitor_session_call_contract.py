@@ -4,6 +4,7 @@ import unittest
 import uuid
 
 from fastapi.testclient import TestClient
+from jose import jwt
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -15,6 +16,7 @@ from app.db.base import Base
 from app.db.models import CallSession, Door, Estate, Home, Message, Notification, User, UserRole, VisitorSession
 from app.db.session import get_db
 from app.main import fastapi_app
+from app.api.routes import calls
 from app.services.visitor_session_auth import issue_visitor_session_token
 
 
@@ -203,6 +205,50 @@ class VisitorSessionCallContractTests(unittest.TestCase):
         emit_kwargs = self._mocks[5].await_args.kwargs
         self.assertEqual(emit_kwargs["event_name"], "call.requested")
         self.assertEqual(emit_kwargs["rooms"], [f"session:{self.visitor_session.id}"])
+
+    def test_livekit_token_uses_authenticated_identity_and_call_room(self):
+        call = CallSession(
+            id=str(uuid.uuid4()),
+            visitor_session_id=self.visitor_session.id,
+            room_name=f"qring-call-{uuid.uuid4()}",
+            visitor_id=self.visitor_session.id,
+            homeowner_id=self.homeowner.id,
+            caller_id=self.homeowner.id,
+            call_type="video",
+            status="ringing",
+        )
+        self.db.add(call)
+        self.db.commit()
+
+        with patch.multiple(
+            calls.settings,
+            LIVEKIT_URL="wss://qring-1dbjv5ze.livekit.cloud",
+            LIVEKIT_API_KEY="test-only-livekit-key",
+            LIVEKIT_API_SECRET="test-only-livekit-secret",
+        ):
+            response = self.client.post(
+                "/api/v1/calls/livekit/token",
+                headers={"Authorization": f"Bearer {self.homeowner_token}"},
+                json={"callSessionId": call.id, "participantType": "homeowner"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()["data"]
+        claims = jwt.decode(
+            payload["token"],
+            "test-only-livekit-secret",
+            algorithms=["HS256"],
+            issuer="test-only-livekit-key",
+        )
+        self.assertEqual(payload["serverUrl"], "wss://qring-1dbjv5ze.livekit.cloud")
+        self.assertEqual(payload["participantIdentity"], f"homeowner:{self.homeowner.id}")
+        self.assertEqual(claims["sub"], f"homeowner:{self.homeowner.id}")
+        self.assertEqual(payload["roomName"], call.room_name)
+        self.assertEqual(claims["video"]["room"], call.room_name)
+        self.assertTrue(claims["video"]["roomJoin"])
+        self.assertTrue(claims["video"]["canPublish"])
+        self.assertTrue(claims["video"]["canSubscribe"])
+
 
     def test_request_without_security_goes_to_homeowner_and_not_security(self):
         with (

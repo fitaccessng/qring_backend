@@ -11,6 +11,29 @@ class RealtimeConfigServiceTests(unittest.TestCase):
     def setUp(self):
         realtime_config_service._ice_cache.update({"expires_at": 0.0, "ice_servers": None, "error": ""})
 
+    def test_livekit_diagnostics_report_configuration_without_credentials(self):
+        with patch.multiple(
+            realtime_config_service.settings,
+            LIVEKIT_URL="wss://qring-1dbjv5ze.livekit.cloud",
+            LIVEKIT_API_KEY="test-only-livekit-key",
+            LIVEKIT_API_SECRET="test-only-livekit-secret",
+        ):
+            diagnostics = realtime_config_service.get_livekit_config_diagnostics()
+
+        self.assertEqual(
+            diagnostics,
+            {
+                "configured": True,
+                "urlConfigured": True,
+                "urlValid": True,
+                "endpointHost": "qring-1dbjv5ze.livekit.cloud",
+                "apiKeyConfigured": True,
+                "apiSecretConfigured": True,
+            },
+        )
+        self.assertNotIn("test-only-livekit-key", str(diagnostics))
+        self.assertNotIn("test-only-livekit-secret", str(diagnostics))
+
     def test_twilio_credentials_report_healthy_when_token_generation_succeeds(self):
         ice_servers = [{"urls": ["stun:global.stun.twilio.com:3478"]}]
         with patch.multiple(

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.core.config import get_settings
 try:
@@ -15,6 +16,22 @@ except ModuleNotFoundError:  # pragma: no cover - dependency installed in deploy
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+def get_livekit_config_diagnostics() -> dict[str, Any]:
+    livekit_url = str(settings.LIVEKIT_URL or "").strip()
+    parsed_url = urlsplit(livekit_url)
+    url_valid = parsed_url.scheme == "wss" and bool(parsed_url.hostname)
+    api_key_configured = bool(str(settings.LIVEKIT_API_KEY or "").strip())
+    api_secret_configured = bool(str(settings.LIVEKIT_API_SECRET or "").strip())
+    return {
+        "configured": url_valid and api_key_configured and api_secret_configured,
+        "urlConfigured": bool(livekit_url),
+        "urlValid": url_valid,
+        "endpointHost": parsed_url.hostname or "",
+        "apiKeyConfigured": api_key_configured,
+        "apiSecretConfigured": api_secret_configured,
+    }
 
 _ICE_CACHE_TTL_SECONDS = 20 * 60
 _ice_cache: dict[str, Any] = {

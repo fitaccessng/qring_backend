@@ -36,7 +36,7 @@ from app.services.estate_alert_service import (
     run_scheduled_payment_reminders,
 )
 from app.services.safety_service import create_safety_tables
-from app.services.realtime_config_service import get_turn_diagnostics
+from app.services.realtime_config_service import get_livekit_config_diagnostics, get_turn_diagnostics
 from app.services.realtime_runtime_service import append_startup_diagnostic, mark_realtime_state
 from app.services.subscription_lifecycle_service import run_subscription_lifecycle_jobs
 
@@ -1021,6 +1021,27 @@ async def on_startup():
         f"Startup checks running for environment={settings.ENVIRONMENT} process_role={settings.PROCESS_ROLE}.",
         code="startup.begin",
     )
+    livekit = get_livekit_config_diagnostics()
+    if livekit["configured"]:
+        append_startup_diagnostic(
+            f"LiveKit configured for endpoint={livekit['endpointHost']} (API key and secret present).",
+            code="livekit.configured",
+        )
+    else:
+        missing_livekit = [
+            name
+            for name, present in (
+                ("LIVEKIT_URL", livekit["urlValid"]),
+                ("LIVEKIT_API_KEY", livekit["apiKeyConfigured"]),
+                ("LIVEKIT_API_SECRET", livekit["apiSecretConfigured"]),
+            )
+            if not present
+        ]
+        append_startup_diagnostic(
+            f"LiveKit configuration is incomplete; missing or invalid: {', '.join(missing_livekit)}.",
+            level="warning",
+            code="livekit.incomplete",
+        )
 
     # Fail fast on weak/default secrets in production-like environments.
     if env in {"production", "staging"}:
